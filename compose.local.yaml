@@ -1,0 +1,15 @@
+services:
+  api:
+    build:
+      context: ../backend
+      args:
+        VERSION: ${PROJECT_VERSION:-0.1.0}
+        VCS_REF: ${VCS_REF:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+  web:
+    build:
+      context: ../web
+      args:
+        VERSION: ${PROJECT_VERSION:-0.1.0}
+        VCS_REF: ${VCS_REF:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}

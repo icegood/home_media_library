@@ -1,0 +1,59 @@
+services:
+  api:
+    image: ${API_IMAGE:?API_IMAGE is required. Use ./start.sh or ./deploy/start.sh so it is derived from PROJECT_VERSION and mode.}
+    env_file: ${ENV_FILE:?ENV_FILE is required. Use ./start.sh or ./deploy/start.sh.}
+    volumes:
+      - ${RUNTIME_DIR:-./runtime}:/runtime
+      - ${MEDIA_ROOT:-./sample-media}:/media:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "8080"
+    stop_grace_period: 35s
+    restart: unless-stopped
+  web:
+    image: ${WEB_IMAGE:?WEB_IMAGE is required. Use ./start.sh or ./deploy/start.sh so it is derived from PROJECT_VERSION and mode.}
+    depends_on:
+      - api
+    expose:
+      - "8080"
+    restart: unless-stopped
+  gateway:
+    image: caddy:2.10-alpine
+    depends_on:
+      - web
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        config="$${CADDY_CONFIG_FILE:-/runtime/app-config/gateway/Caddyfile}"
+        while [ ! -s "$$config" ]; do sleep 1; done
+        caddy run --config "$$config" --adapter caddyfile &
+        pid="$$!"
+        checksum="$$(cksum "$$config")"
+        while kill -0 "$$pid" 2>/dev/null; do
+          sleep 2
+          current="$$(cksum "$$config")"
+          if [ "$$current" != "$$checksum" ]; then
+            if caddy reload --config "$$config" --adapter caddyfile; then
+              checksum="$$current"
+            fi
+          fi
+        done
+        wait "$$pid"
+    environment:
+      CADDY_CONFIG_FILE: /runtime/app-config/gateway/Caddyfile
+      XDG_DATA_HOME: /runtime/caddy-data
+      XDG_CONFIG_HOME: /runtime/caddy-config
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ${RUNTIME_DIR:-./runtime}:/runtime
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ${DOCKER_NETWORK_NAME:-media-library}
+    external: ${DOCKER_NETWORK_EXTERNAL:-false}
