@@ -1,0 +1,133 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"media-library/backend/internal/api"
+	"media-library/backend/internal/applog"
+	"media-library/backend/internal/gatewayconfig"
+	"media-library/backend/internal/scanner"
+	"media-library/backend/internal/store"
+	"media-library/backend/internal/transcode"
+)
+
+func main() {
+	const addr = ":8080"
+	secret := os.Getenv("JWT_SECRET")
+	if len(secret) < 32 {
+		log.Fatal("JWT_SECRET must contain at least 32 characters")
+	}
+
+	// Repository: DB_DRIVER selects the backing store. sqlite is the primary
+	// implementation, postgres is an alternative.
+	var repository store.Store
+	switch driver := env("DB_DRIVER", "sqlite"); driver {
+	case "sqlite":
+		sqliteStore, err := store.NewSQLite(env("DB_DSN", "/runtime/app-data/media-library.db"))
+		if err != nil {
+			log.Fatalf("open sqlite store: %v", err)
+		}
+		defer sqliteStore.Close()
+		repository = sqliteStore
+	case "postgres":
+		postgresStore, err := store.NewPostgres(env("DB_DSN", "postgres://media:media@localhost:5432/media?sslmode=disable"))
+		if err != nil {
+			log.Fatalf("open postgres store: %v", err)
+		}
+		defer postgresStore.Close()
+		repository = postgresStore
+	default:
+		log.Fatalf("unknown DB_DRIVER %q (want sqlite or postgres)", driver)
+	}
+	if settings, err := repository.ServerSettings(context.Background()); err == nil {
+		if parsed, err := applog.ParseLevel(settings.LogLevel); err == nil {
+			applog.SetLevel(parsed)
+		}
+	}
+	logPath := env("APP_LOG_FILE", "/runtime/app-config/logs/app.log")
+	if err := applog.ConfigureFile(logPath); err != nil {
+		log.Fatalf("configure app log: %v", err)
+	}
+	gatewayPath := env("GATEWAY_CONFIG_FILE", "/gateway/Caddyfile")
+	if err := gatewayconfig.Write(gatewayPath, gatewayconfig.Load(context.Background(), repository)); err != nil {
+		log.Fatalf("write gateway config: %v", err)
+	}
+	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	handler := (&api.API{
+		Store:             repository,
+		Scanner:           scanner.Scanner{Store: repository},
+		Transcoder:        transcode.Service{},
+		JWTSecret:         []byte(secret),
+		GatewayConfigPath: gatewayPath,
+		CaddyDataDir:      env("CADDY_DATA_DIR", "/runtime/caddy-data"),
+		ThumbnailDir:      env("THUMBNAIL_DIR", "/thumbnails"),
+		LogFile:           logPath,
+		Shutdown:          stop,
+		ContainerStop:     dockerStopSelf,
+	}).Handler()
+
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		applog.Printf(applog.Info, "media API listening on %s", addr)
+		errCh <- server.ListenAndServe()
+	}()
+	select {
+	case <-stopCtx.Done():
+		applog.Printf(applog.Info, "media API shutdown requested")
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("graceful shutdown failed: %v", err)
+	}
+	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+	applog.Printf(applog.Info, "media API stopped")
+}
+
+func env(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func dockerStopSelf(ctx context.Context) error {
+	if _, err := os.Stat("/var/run/docker.sock"); err != nil {
+		return fmt.Errorf("docker socket unavailable: %w", err)
+	}
+	container := strings.TrimSpace(os.Getenv("HOSTNAME"))
+	if override := strings.TrimSpace(os.Getenv("DOCKER_SELF_CONTAINER")); override != "" {
+		container = override
+	}
+	if container == "" {
+		return errors.New("container id is unavailable")
+	}
+	output, err := exec.CommandContext(ctx, "docker", "stop", container).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker stop %s: %w: %s", container, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}

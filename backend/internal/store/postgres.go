@@ -1,0 +1,1703 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"path"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"golang.org/x/crypto/bcrypt"
+
+	"media-library/backend/internal/domain"
+)
+
+//go:embed migrations/postgres/*.sql
+var postgresMigrations embed.FS
+
+// Postgres is a full database-backed implementation of Store backed by a
+// Postgres database via the pgx stdlib driver. The schema mirrors the SQLite
+// store; relative paths are never stored, they are computed on the fly.
+type Postgres struct {
+	db *sql.DB
+}
+
+func NewPostgres(dsn string) (*Postgres, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("postgres dsn is empty")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(10)
+	store := &Postgres{db: db}
+	if err := store.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *Postgres) Close() error {
+	return s.db.Close()
+}
+
+func (s *Postgres) migrate() error {
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	entries, err := fs.Glob(postgresMigrations, "migrations/postgres/*.sql")
+	if err != nil {
+		return err
+	}
+	sort.Strings(entries)
+	for _, name := range entries {
+		version := filepath.Base(name)
+		var applied string
+		err := s.db.QueryRow(`SELECT version FROM schema_migrations WHERE version = $1`, version).Scan(&applied)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		data, err := postgresMigrations.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(string(data)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", version, err)
+		}
+		if _, err := s.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES($1, $2)`,
+			version, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pgPlaceholders rewrites every '?' placeholder in query to a numbered $N
+// placeholder, starting at start, keeping args in order.
+func pgPlaceholders(query string, args []any, start int) (string, []any) {
+	var b strings.Builder
+	index := start
+	rest := query
+	for {
+		pos := strings.Index(rest, "?")
+		if pos < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:pos])
+		b.WriteString("$")
+		b.WriteString(strconv.Itoa(index))
+		index++
+		rest = rest[pos+1:]
+	}
+	return b.String(), args
+}
+
+// idsINPostgres is the Postgres variant of idsIN: numbered placeholders
+// starting at start.
+func idsINPostgres(ids map[int]bool, start int) (string, []any) {
+	values := make([]int, 0, len(ids))
+	for id := range ids {
+		values = append(values, id)
+	}
+	sort.Ints(values)
+	if len(values) == 0 {
+		return "NULL", nil
+	}
+	parts := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, id := range values {
+		parts[i] = "$" + strconv.Itoa(start+i)
+		args[i] = id
+	}
+	return strings.Join(parts, ","), args
+}
+
+func (s *Postgres) SetupRequired(ctx context.Context) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 0, nil
+}
+
+func (s *Postgres) CreateInitialAdmin(ctx context.Context, user domain.User, password string) (domain.User, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return domain.User{}, err
+	}
+	if count != 0 {
+		return domain.User{}, ErrConflict
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return domain.User{}, err
+	}
+	user.Login = strings.ToLower(strings.TrimSpace(user.Login))
+	user.Role = domain.RoleAdmin
+	user.PasswordHash = string(hash)
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO users(login, password_hash, role) VALUES($1,$2,$3) RETURNING id`,
+		user.Login, user.PasswordHash, user.Role).Scan(&user.ID); err != nil {
+		return domain.User{}, err
+	}
+	return user, nil
+}
+
+func (s *Postgres) ServerSettings(ctx context.Context) (domain.ServerSettings, error) {
+	settings := domain.DefaultServerSettings()
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `SELECT value_json FROM server_settings WHERE id = 0`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return settings, nil
+	}
+	if err != nil {
+		return settings, err
+	}
+	if len(raw) != 0 {
+		if err := json.Unmarshal(raw, &settings); err != nil {
+			return settings, err
+		}
+	}
+	return settings, nil
+}
+
+func (s *Postgres) SaveServerSettings(ctx context.Context, settings domain.ServerSettings) error {
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO server_settings(id, value_json) VALUES(0,$1::jsonb)
+		ON CONFLICT(id) DO UPDATE SET value_json = excluded.value_json`, string(data))
+	return err
+}
+
+func (s *Postgres) MIMETypeForExtension(ctx context.Context, extension string) (string, error) {
+	var mimeType string
+	err := s.db.QueryRowContext(ctx, `SELECT mime_type FROM media_mime_extensions WHERE extension = $1`, strings.ToLower(strings.TrimSpace(extension))).Scan(&mimeType)
+	if err != nil {
+		return "", translateErr(err)
+	}
+	return mimeType, nil
+}
+
+func (s *Postgres) UserSettings(ctx context.Context, userID int) (domain.UserSettings, error) {
+	settings := domain.DefaultUserSettings()
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `SELECT value_json FROM user_settings WHERE user_id = $1`, userID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return settings, nil
+	}
+	if err != nil {
+		return settings, err
+	}
+	if len(raw) != 0 {
+		if err := json.Unmarshal(raw, &settings); err != nil {
+			return settings, err
+		}
+	}
+	return settings, nil
+}
+
+func (s *Postgres) SaveUserSettings(ctx context.Context, userID int, settings domain.UserSettings) error {
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO user_settings(user_id, value_json) VALUES($1,$2::jsonb)
+		ON CONFLICT(user_id) DO UPDATE SET value_json = excluded.value_json`, userID, string(data))
+	return err
+}
+
+func (s *Postgres) Authenticate(ctx context.Context, login, password string) (domain.User, error) {
+	login = strings.ToLower(strings.TrimSpace(login))
+	var user domain.User
+	err := s.db.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE login = $1`, login).
+		Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role)
+	if err != nil {
+		return user, translateErr(err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) == nil {
+		return user, nil
+	}
+	if verifyEmbySHA1(user.PasswordHash, password) {
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return user, err
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = $1 WHERE id = $2`, string(hash), user.ID); err != nil {
+			return user, err
+		}
+		user.PasswordHash = string(hash)
+		return user, nil
+	}
+	return domain.User{}, ErrNotFound
+}
+
+func (s *Postgres) User(ctx context.Context, id int) (domain.User, error) {
+	var user domain.User
+	err := s.db.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE id = $1`, id).
+		Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role)
+	if err != nil {
+		return user, translateErr(err)
+	}
+	return user, nil
+}
+
+func (s *Postgres) Users(ctx context.Context) ([]domain.User, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, login, password_hash, role FROM users ORDER BY role, login`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []domain.User
+	for rows.Next() {
+		var user domain.User
+		if err := rows.Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (s *Postgres) CreateUser(ctx context.Context, user domain.User, password string) (domain.User, error) {
+	var err error
+	user, err = normalizeUserForSave(user)
+	if err != nil {
+		return domain.User{}, err
+	}
+	if len(password) < 12 {
+		return domain.User{}, ErrNotFound
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return domain.User{}, err
+	}
+	user.PasswordHash = string(hash)
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO users(login, password_hash, role) VALUES($1,$2,$3) RETURNING id`, user.Login, user.PasswordHash, user.Role).Scan(&user.ID); err != nil {
+		return domain.User{}, err
+	}
+	return user, nil
+}
+
+func (s *Postgres) UpdateUser(ctx context.Context, user domain.User, password string) (domain.User, error) {
+	var err error
+	user, err = normalizeUserForSave(user)
+	if err != nil {
+		return domain.User{}, err
+	}
+	var res sql.Result
+	if strings.TrimSpace(password) != "" {
+		if len(password) < 12 {
+			return domain.User{}, ErrNotFound
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return domain.User{}, err
+		}
+		res, err = s.db.ExecContext(ctx, `UPDATE users SET login = $1, role = $2, password_hash = $3 WHERE id = $4`, user.Login, user.Role, string(hash), user.ID)
+	} else {
+		res, err = s.db.ExecContext(ctx, `UPDATE users SET login = $1, role = $2 WHERE id = $3`, user.Login, user.Role, user.ID)
+	}
+	if err != nil {
+		return domain.User{}, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return domain.User{}, err
+	}
+	if affected == 0 {
+		return domain.User{}, ErrNotFound
+	}
+	return s.User(ctx, user.ID)
+}
+
+func (s *Postgres) ImportSnapshot(ctx context.Context, snapshot domain.ImportSnapshot) (domain.ImportResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.ImportResult{}, err
+	}
+	defer tx.Rollback()
+	result := domain.ImportResult{}
+	userIDs := map[int]int{}
+	for _, user := range snapshot.Users {
+		user.Login = strings.ToLower(strings.TrimSpace(user.Login))
+		if user.Login == "" {
+			continue
+		}
+		originalID := user.ID
+		id := user.ID
+		if id == domain.InvalidID {
+			id = 0
+		}
+		if id != 0 {
+			var existing domain.User
+			err := tx.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE id = $1`, id).
+				Scan(&existing.ID, &existing.Login, &existing.PasswordHash, &existing.Role)
+			if err == nil {
+				userIDs[originalID] = existing.ID
+				result.Users = append(result.Users, domain.ImportedUser{User: existing, Existed: true})
+				continue
+			}
+		}
+		if user.Role == "" {
+			user.Role = domain.RoleRegular
+		}
+		imported := domain.ImportedUser{User: user}
+		if id == 0 {
+			if err := tx.QueryRowContext(ctx, `INSERT INTO users(login, password_hash, role) VALUES($1,$2,$3) RETURNING id`,
+				user.Login, user.PasswordHash, user.Role).Scan(&id); err != nil {
+				continue
+			}
+			if user.PasswordHash == "" {
+				password := temporaryPassword(strconv.Itoa(id), user.Login)
+				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+				if err != nil {
+					return result, err
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = $1 WHERE id = $2`, string(hash), id); err != nil {
+					return result, err
+				}
+				imported.TemporaryPassword = password
+			}
+		} else {
+			if user.PasswordHash == "" {
+				password := temporaryPassword(strconv.Itoa(id), user.Login)
+				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+				if err != nil {
+					return result, err
+				}
+				user.PasswordHash = string(hash)
+				imported.TemporaryPassword = password
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO users(id, login, password_hash, role) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4)`,
+				id, user.Login, user.PasswordHash, user.Role); err != nil {
+				continue
+			}
+		}
+		user.ID = id
+		user.PasswordHash = ""
+		userIDs[originalID] = id
+		imported.User = user
+		result.Users = append(result.Users, imported)
+	}
+	libraryIDs := map[int]int{}
+	for _, library := range snapshot.Libraries {
+		name := strings.TrimSpace(library.Name)
+		if name == "" {
+			continue
+		}
+		originalID := library.ID
+		id := library.ID
+		roots := []domain.LibraryRoot{}
+		for _, root := range library.Roots {
+			if strings.TrimSpace(root.Path) == "" {
+				continue
+			}
+			folderID, err := s.ensureFolderByPathTx(ctx, tx, normalizePath(root.Path))
+			if err != nil {
+				return result, err
+			}
+			roots = append(roots, domain.LibraryRoot{ID: folderID, Path: root.Path})
+		}
+		if id == domain.InvalidID {
+			if err := tx.QueryRowContext(ctx, `INSERT INTO libraries(name) VALUES($1) RETURNING id`, name).Scan(&id); err != nil {
+				return result, err
+			}
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO libraries(id, name) OVERRIDING SYSTEM VALUE VALUES($1,$2)`, id, name); err != nil {
+			continue
+		}
+		for _, root := range roots {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+				id, root.ID); err != nil {
+				return result, err
+			}
+		}
+		library.ID = id
+		library.Name = name
+		library.Roots = roots
+		libraryIDs[originalID] = id
+		result.Libraries = append(result.Libraries, library)
+	}
+	for _, link := range snapshot.Access {
+		userID, ok := userIDs[link.UserID]
+		if !ok {
+			continue
+		}
+		libID, ok := libraryIDs[link.LibraryID]
+		if !ok {
+			continue
+		}
+		var role string
+		if err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id = $1`, userID).Scan(&role); err != nil {
+			continue
+		}
+		if role == string(domain.RoleAdmin) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO library_access(library_id, user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			libID, userID); err != nil {
+			return result, err
+		}
+		result.Access = append(result.Access, domain.ImportAccess{LibraryID: libID, UserID: userID})
+	}
+	// Keep identity sequences ahead of any explicitly inserted ids.
+	if _, err := tx.Exec(`SELECT setval(pg_get_serial_sequence('users', 'id'),
+		(SELECT COALESCE(MAX(id), 0) FROM users), (SELECT COUNT(*) FROM users) > 0)`); err != nil {
+		return result, err
+	}
+	if _, err := tx.Exec(`SELECT setval(pg_get_serial_sequence('libraries', 'id'),
+		(SELECT COALESCE(MAX(id), 0) FROM libraries), (SELECT COUNT(*) FROM libraries) > 0)`); err != nil {
+		return result, err
+	}
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *Postgres) loadRoots(ctx context.Context, libraryID int) []domain.LibraryRoot {
+	rows, err := s.db.QueryContext(ctx, `SELECT lr.folder_id, f.path FROM library_roots lr
+		JOIN media_folders f ON f.id = lr.folder_id
+		WHERE lr.library_id = $1 ORDER BY f.path`, libraryID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	roots := []domain.LibraryRoot{}
+	for rows.Next() {
+		var root domain.LibraryRoot
+		if err := rows.Scan(&root.ID, &root.Path); err != nil {
+			continue
+		}
+		roots = append(roots, root)
+	}
+	return roots
+}
+
+func (s *Postgres) libraryStats(ctx context.Context, libraryID int) domain.LibraryStats {
+	var stats domain.LibraryStats
+	query := `WITH RECURSIVE sub(id) AS (
+		SELECT lr.folder_id FROM library_roots lr WHERE lr.library_id = $1
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
+	)
+	SELECT COUNT(*),
+		(SELECT COUNT(*) FROM media m JOIN sub ON m.folder_id = sub.id),
+		(SELECT COUNT(*) FROM media m JOIN sub ON m.folder_id = sub.id WHERE m.mime_type LIKE 'video/%'),
+		(SELECT COUNT(*) FROM media m JOIN sub ON m.folder_id = sub.id WHERE m.mime_type LIKE 'image/%')
+	FROM sub WHERE id NOT IN (SELECT folder_id FROM library_roots WHERE library_id = $2)`
+	err := s.db.QueryRowContext(ctx, query, libraryID, libraryID).
+		Scan(&stats.Folders, &stats.Files, &stats.Videos, &stats.Images)
+	if err != nil {
+		return domain.LibraryStats{}
+	}
+	return stats
+}
+
+func (s *Postgres) loadLibrary(ctx context.Context, id int) (domain.Library, error) {
+	var library domain.Library
+	err := s.db.QueryRowContext(ctx, `SELECT id, name FROM libraries WHERE id = $1`, id).
+		Scan(&library.ID, &library.Name)
+	if err != nil {
+		return library, translateErr(err)
+	}
+	library.Roots = s.loadRoots(ctx, id)
+	library.Stats = s.libraryStats(ctx, id)
+	return library, nil
+}
+
+func (s *Postgres) LibrariesForUser(ctx context.Context, userID int, admin bool) ([]domain.Library, error) {
+	var ids []int
+	var rows *sql.Rows
+	var err error
+	if admin {
+		rows, err = s.db.QueryContext(ctx, `SELECT id FROM libraries`)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT DISTINCT l.id FROM libraries l
+			JOIN library_access la ON la.library_id = l.id WHERE la.user_id = $1`, userID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	out := make([]domain.Library, 0, len(ids))
+	for _, id := range ids {
+		library, err := s.loadLibrary(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !admin {
+			for index := range library.Roots {
+				library.Roots[index].Path = ""
+			}
+		}
+		out = append(out, library)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *Postgres) Library(ctx context.Context, id int) (domain.Library, error) {
+	return s.loadLibrary(ctx, id)
+}
+
+func (s *Postgres) Folder(ctx context.Context, id int) (domain.MediaFolder, error) {
+	var folder domain.MediaFolder
+	var parentID sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT id, parent_id, path FROM media_folders WHERE id = $1`, id).
+		Scan(&folder.ID, &parentID, &folder.Path)
+	if err != nil {
+		return folder, translateErr(err)
+	}
+	if parentID.Valid {
+		folder.ParentID = int(parentID.Int64)
+	} else {
+		folder.ParentID = domain.InvalidID
+	}
+	return folder, nil
+}
+
+func (s *Postgres) CanRead(ctx context.Context, userID, libraryID int, admin bool) (bool, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM libraries WHERE id = $1`, libraryID).Scan(&exists); err != nil {
+		return false, translateErr(err)
+	}
+	if admin {
+		return true, nil
+	}
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM library_access WHERE library_id = $1 AND user_id = $2)`,
+		libraryID, userID).Scan(&ok)
+	return ok, err
+}
+
+func (s *Postgres) CanReadMedia(ctx context.Context, userID, mediaID int, admin bool) (bool, error) {
+	var folderID int
+	if err := s.db.QueryRowContext(ctx, `SELECT folder_id FROM media WHERE id = $1`, mediaID).Scan(&folderID); err != nil {
+		return false, translateErr(err)
+	}
+	if admin {
+		return true, nil
+	}
+	subSQL, subArgs := accessibleSubtree(userID, false)
+	subPG, args := pgPlaceholders(subSQL, subArgs, 1)
+	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+	SELECT EXISTS(SELECT 1 FROM sub WHERE id = ` + "$" + strconv.Itoa(len(args)+1) + `)`
+	args = append(args, folderID)
+	var ok bool
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&ok)
+	return ok, err
+}
+
+func (s *Postgres) Entries(ctx context.Context, libraryID int, dir string) ([]domain.Entry, error) {
+	dir = strings.Trim(path.Clean("/"+dir), "/")
+	library, err := s.loadLibrary(ctx, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	out := []domain.Entry{}
+	showRootWrappers := true
+	for _, mapping := range library.Roots {
+		mappingName := pathLabel(mapping.Path)
+		if showRootWrappers && dir == "" {
+			out = append(out, domain.Entry{ID: mapping.ID, Name: mappingName,
+				RelativePath: mappingName, Type: "folder",
+				FolderThumbnails: s.folderThumbnails(ctx, mapping.ID, 3), FolderThumbnail: mapping.ID})
+			continue
+		}
+		folderDir := dir
+		if showRootWrappers {
+			if dir != mappingName && !strings.HasPrefix(dir, mappingName+"/") {
+				continue
+			}
+			folderDir = strings.TrimPrefix(strings.TrimPrefix(dir, mappingName), "/")
+		} else if dir == mappingName || strings.HasPrefix(dir, mappingName+"/") {
+			folderDir = strings.TrimPrefix(strings.TrimPrefix(dir, mappingName), "/")
+		}
+		parentID := mapping.ID
+		if folderDir != "" {
+			parentID = s.descendantFolderID(ctx, mapping.ID, folderDir)
+			if parentID == domain.InvalidID {
+				continue
+			}
+		}
+		folderRows, err := s.db.QueryContext(ctx, `SELECT id, parent_id, path FROM media_folders WHERE parent_id = $1`, parentID)
+		if err != nil {
+			return nil, err
+		}
+		for folderRows.Next() {
+			var folder domain.MediaFolder
+			var parentIDValue sql.NullInt64
+			if err := folderRows.Scan(&folder.ID, &parentIDValue, &folder.Path); err != nil {
+				folderRows.Close()
+				return nil, err
+			}
+			if parentIDValue.Valid {
+				folder.ParentID = int(parentIDValue.Int64)
+			} else {
+				folder.ParentID = domain.InvalidID
+			}
+			name := folderLabel(folder)
+			copyFolder := folder
+			copyFolder.RelativePath = path.Join(dir, name)
+			out = append(out, domain.Entry{ID: folder.ID, Name: name,
+				RelativePath: path.Join(dir, name), Type: "folder", Folder: &copyFolder,
+				FolderThumbnails: s.folderThumbnails(ctx, folder.ID, 3), FolderThumbnail: folder.ID})
+		}
+		folderRows.Close()
+		mediaRows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.folder_id = $1`, parentID)
+		if err != nil {
+			return nil, err
+		}
+		for mediaRows.Next() {
+			item, err := scanMedia(mediaRows, nil)
+			if err != nil {
+				mediaRows.Close()
+				return nil, err
+			}
+			copy := item
+			copy.RelativePath = path.Join(dir, item.Name)
+			out = append(out, domain.Entry{ID: item.ID, Name: item.Name,
+				RelativePath: path.Join(dir, item.Name), Type: "media", Media: &copy})
+		}
+		mediaRows.Close()
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Type != out[j].Type {
+			return out[i].Type == "folder"
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+func (s *Postgres) EntriesForFolder(ctx context.Context, libraryID, folderID int) ([]domain.Entry, error) {
+	library, err := s.loadLibrary(ctx, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	inLibrary := false
+	for _, root := range library.Roots {
+		if s.folderIsUnderRoot(ctx, root.ID, folderID) {
+			inLibrary = true
+			break
+		}
+	}
+	if !inLibrary {
+		return nil, ErrNotFound
+	}
+	return s.entriesForParent(ctx, folderID)
+}
+
+func (s *Postgres) folderIsUnderRoot(ctx context.Context, rootID, folderID int) bool {
+	current := folderID
+	for current != domain.InvalidID {
+		if current == rootID {
+			return true
+		}
+		var parentID sql.NullInt64
+		err := s.db.QueryRowContext(ctx, `SELECT parent_id FROM media_folders WHERE id = $1`, current).Scan(&parentID)
+		if err != nil || !parentID.Valid {
+			return false
+		}
+		current = int(parentID.Int64)
+	}
+	return false
+}
+
+func (s *Postgres) entriesForParent(ctx context.Context, parentID int) ([]domain.Entry, error) {
+	out := []domain.Entry{}
+	folderRows, err := s.db.QueryContext(ctx, `SELECT id, parent_id, path FROM media_folders WHERE parent_id = $1`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	for folderRows.Next() {
+		var folder domain.MediaFolder
+		var parentIDValue sql.NullInt64
+		if err := folderRows.Scan(&folder.ID, &parentIDValue, &folder.Path); err != nil {
+			folderRows.Close()
+			return nil, err
+		}
+		if parentIDValue.Valid {
+			folder.ParentID = int(parentIDValue.Int64)
+		} else {
+			folder.ParentID = domain.InvalidID
+		}
+		name := folderLabel(folder)
+		copyFolder := folder
+		copyFolder.RelativePath = s.relativePath(ctx, folder.ID, folder.Path)
+		out = append(out, domain.Entry{ID: folder.ID, Name: name,
+			RelativePath: copyFolder.RelativePath, Type: "folder", Folder: &copyFolder,
+			FolderThumbnails: s.folderThumbnails(ctx, folder.ID, 3), FolderThumbnail: folder.ID})
+	}
+	folderRows.Close()
+	mediaRows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.folder_id = $1`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	for mediaRows.Next() {
+		item, err := scanMedia(mediaRows, nil)
+		if err != nil {
+			mediaRows.Close()
+			return nil, err
+		}
+		copy := item
+		copy.RelativePath = s.relativePath(ctx, item.FolderID, item.Path)
+		out = append(out, domain.Entry{ID: item.ID, Name: item.Name,
+			RelativePath: copy.RelativePath, Type: "media", Media: &copy})
+	}
+	mediaRows.Close()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Type != out[j].Type {
+			return out[i].Type == "folder"
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+func (s *Postgres) descendantFolderID(ctx context.Context, rootID int, relativePath string) int {
+	current := rootID
+	for _, name := range strings.Split(relativePath, "/") {
+		next := s.childFolderIDByLabel(ctx, current, name)
+		if next == domain.InvalidID {
+			return domain.InvalidID
+		}
+		current = next
+	}
+	return current
+}
+
+func (s *Postgres) childFolderIDByLabel(ctx context.Context, parentID int, name string) int {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, path FROM media_folders WHERE parent_id = $1`, parentID)
+	if err != nil {
+		return domain.InvalidID
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var folder domain.MediaFolder
+		if err := rows.Scan(&folder.ID, &folder.Path); err != nil {
+			continue
+		}
+		if folderLabel(folder) == name {
+			return folder.ID
+		}
+	}
+	return domain.InvalidID
+}
+
+func (s *Postgres) folderThumbnails(ctx context.Context, folderID int, limit int) []domain.ThumbnailRef {
+	query := `WITH RECURSIVE sub(id) AS (
+		SELECT $1::bigint
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+	SELECT m.id FROM media m JOIN sub ON m.folder_id = sub.id
+	ORDER BY (CASE WHEN m.gps <> '' THEN 1 ELSE 0 END)*2 + (CASE WHEN m.mime_type LIKE 'image/%' THEN 1 ELSE 0 END) +
+		(CASE WHEN m.metadata_json <> '{}'::jsonb THEN 1 ELSE 0 END) DESC,
+		m.path ASC
+	LIMIT $2`
+	rows, err := s.db.QueryContext(ctx, query, folderID, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	refs := []domain.ThumbnailRef{}
+	seen := map[int]bool{}
+	for rows.Next() {
+		var mediaID int
+		if err := rows.Scan(&mediaID); err != nil || seen[mediaID] {
+			continue
+		}
+		seen[mediaID] = true
+		refs = append(refs, domain.ThumbnailRef{MediaID: mediaID, Index: 0})
+	}
+	return refs
+}
+
+func (s *Postgres) FolderThumbnailRefs(ctx context.Context, folderID int, limit int) ([]domain.ThumbnailRef, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE id = $1`, folderID).Scan(&exists); err != nil {
+		return nil, translateErr(err)
+	}
+	return s.folderThumbnails(ctx, folderID, limit), nil
+}
+
+func (s *Postgres) Media(ctx context.Context, id int) (domain.Media, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.id = $1`, id)
+	item, err := scanMedia(row, nil)
+	if err != nil {
+		return item, translateErr(err)
+	}
+	item.RelativePath = s.relativePath(ctx, item.FolderID, item.Path)
+	return item, nil
+}
+
+func (s *Postgres) MediaByPath(ctx context.Context, mediaPath string) (domain.Media, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.path = $1`, normalizePath(mediaPath))
+	item, err := scanMedia(row, nil)
+	if err != nil {
+		return item, translateErr(err)
+	}
+	return item, nil
+}
+
+func (s *Postgres) FavoriteViews(ctx context.Context, userID int) ([]domain.FavoriteView, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT fv.id, fv.name, COUNT(fvi.media_id)
+		FROM favorite_views fv LEFT JOIN favorite_view_items fvi ON fvi.favorite_view_id = fv.id
+		WHERE fv.user_id = $1 GROUP BY fv.id, fv.name ORDER BY fv.name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	views := []domain.FavoriteView{}
+	for rows.Next() {
+		var view domain.FavoriteView
+		if err := rows.Scan(&view.ID, &view.Name, &view.Count); err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, rows.Err()
+}
+
+func (s *Postgres) CreateFavoriteView(ctx context.Context, userID int, name string) (domain.FavoriteView, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return domain.FavoriteView{}, ErrConflict
+	}
+	var id int
+	err := s.db.QueryRowContext(ctx, `INSERT INTO favorite_views(user_id, name) VALUES($1,$2) RETURNING id`, userID, name).Scan(&id)
+	if err != nil {
+		return domain.FavoriteView{}, err
+	}
+	return domain.FavoriteView{ID: id, Name: name, Count: 0}, nil
+}
+
+func (s *Postgres) UpdateFavoriteView(ctx context.Context, userID, viewID int, name string) (domain.FavoriteView, error) {
+	var existing domain.FavoriteView
+	err := s.db.QueryRowContext(ctx, `SELECT id, name FROM favorite_views WHERE id = $1 AND user_id = $2`, viewID, userID).
+		Scan(&existing.ID, &existing.Name)
+	if err != nil {
+		return existing, translateErr(err)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return existing, ErrConflict
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE favorite_views SET name = $1 WHERE id = $2`, name, viewID); err != nil {
+		return existing, err
+	}
+	existing.Name = name
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM favorite_view_items WHERE favorite_view_id = $1`, viewID).Scan(&count); err != nil {
+		return existing, err
+	}
+	existing.Count = count
+	return existing, nil
+}
+
+func (s *Postgres) DeleteFavoriteView(ctx context.Context, userID, viewID int) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM favorite_views WHERE id = $1 AND user_id = $2`, viewID, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Postgres) FavoriteMedia(ctx context.Context, userID, viewID int, admin bool) ([]domain.Media, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM favorite_views WHERE id = $1 AND user_id = $2`, viewID, userID).Scan(&exists); err != nil {
+		return nil, translateErr(err)
+	}
+	subSQL, subArgs := accessibleSubtree(userID, admin)
+	subPG, args := pgPlaceholders(subSQL, subArgs, 1)
+	viewPlaceholder := "$" + strconv.Itoa(len(args)+1)
+	flagPlaceholder := "$" + strconv.Itoa(len(args)+2)
+	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+	SELECT ` + mediaColumns + ` FROM favorite_view_items fvi
+	JOIN media m ON m.id = fvi.media_id
+	WHERE fvi.favorite_view_id = ` + viewPlaceholder + ` AND (` + flagPlaceholder + ` = 1 OR m.folder_id IN (SELECT id FROM sub))
+	ORDER BY m.name`
+	args = append(args, viewID)
+	if admin {
+		args = append(args, 1)
+	} else {
+		args = append(args, 0)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Media{}
+	for rows.Next() {
+		item, err := scanMedia(rows, nil)
+		if err != nil {
+			return nil, err
+		}
+		item.Favorite = true
+		out = append(out, item)
+	}
+	s.attachRelativePaths(ctx, out)
+	return out, rows.Err()
+}
+
+func (s *Postgres) SetFavorite(ctx context.Context, userID, viewID, mediaID int, favorite bool) (domain.Media, error) {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return domain.Media{}, err
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM favorite_views WHERE id = $1 AND user_id = $2`, viewID, userID).Scan(&exists); err != nil {
+		return domain.Media{}, translateErr(err)
+	}
+	if favorite {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO favorite_view_items(favorite_view_id, media_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			viewID, mediaID); err != nil {
+			return domain.Media{}, err
+		}
+	} else {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM favorite_view_items WHERE favorite_view_id = $1 AND media_id = $2`,
+			viewID, mediaID); err != nil {
+			return domain.Media{}, err
+		}
+	}
+	item, err := s.Media(ctx, mediaID)
+	if err != nil {
+		return item, err
+	}
+	item.Favorite, err = s.IsFavorite(ctx, userID, mediaID)
+	return item, err
+}
+
+func (s *Postgres) IsFavorite(ctx context.Context, userID, mediaID int) (bool, error) {
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM favorite_view_items fvi
+		JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
+		WHERE fv.user_id = $1 AND fvi.media_id = $2)`, userID, mediaID).Scan(&ok)
+	return ok, err
+}
+
+func (s *Postgres) UpdateGPS(ctx context.Context, id int, patch domain.GPSPatch) (domain.Media, error) {
+	return s.UpdateMediaDetails(ctx, id, domain.MediaDetailsPatch{GPS: patch.GPS})
+}
+
+func (s *Postgres) UpdateMediaDetails(ctx context.Context, id int, patch domain.MediaDetailsPatch) (domain.Media, error) {
+	if _, err := s.Media(ctx, id); err != nil {
+		return domain.Media{}, err
+	}
+	sets := []string{}
+	args := []any{}
+	next := func() string {
+		ph := "$" + strconv.Itoa(len(args)+1)
+		return ph
+	}
+	if patch.Name != nil {
+		sets = append(sets, "name = "+next())
+		args = append(args, strings.TrimSpace(*patch.Name))
+	}
+	if patch.GPS != nil {
+		sets = append(sets, "gps = "+next())
+		args = append(args, strings.TrimSpace(*patch.GPS))
+	}
+	if patch.TakenAt != nil {
+		sets = append(sets, "taken_at = "+next())
+		args = append(args, strings.TrimSpace(*patch.TakenAt))
+	}
+	if len(sets) > 0 {
+		args = append(args, id)
+		if _, err := s.db.ExecContext(ctx, `UPDATE media SET `+strings.Join(sets, ", ")+` WHERE id = $`+strconv.Itoa(len(args)), args...); err != nil {
+			return domain.Media{}, err
+		}
+	}
+	return s.Media(ctx, id)
+}
+
+func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool) ([]domain.MapMedia, error) {
+	query := `WITH RECURSIVE covers(folder_id, library_id) AS (
+		SELECT lr.folder_id, lr.library_id FROM library_roots lr
+		UNION ALL
+		SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+	SELECT ` + mediaColumns + `, MIN(covers.library_id)
+	FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	WHERE m.gps <> '' AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
+	GROUP BY m.id`
+	args := []any{}
+	if admin {
+		args = append(args, 1, 0)
+	} else {
+		args = append(args, 0, userID)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MapMedia{}
+	roots := map[int]string{}
+	for rows.Next() {
+		var libraryID int
+		item, err := scanMedia(rows, &libraryID)
+		if err != nil {
+			return nil, err
+		}
+		root, ok := roots[item.FolderID]
+		if !ok {
+			root = s.rootPathForFolder(ctx, item.FolderID)
+			roots[item.FolderID] = root
+		}
+		if root != "" {
+			item.RelativePath = strings.TrimPrefix(strings.TrimPrefix(item.Path, root), "/")
+		}
+		out = append(out, domain.MapMedia{Media: item, LibraryID: libraryID})
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) MediaForLibrary(ctx context.Context, libraryID int) ([]domain.Media, error) {
+	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
+		return nil, err
+	}
+	rel := relativePathExpr("m.path", "covers.root_path")
+	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
+		SELECT lr.folder_id, f.path FROM library_roots lr JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = $1
+		UNION ALL
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	ORDER BY relative_path`
+	rows, err := s.db.QueryContext(ctx, query, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Media{}
+	for rows.Next() {
+		var relativePath string
+		item, err := scanMedia(rows, &relativePath)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = relativePath
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error) {
+	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
+		return nil, err
+	}
+	rel := relativePathExpr("path", "root_path")
+	rows, err := s.db.QueryContext(ctx, `WITH RECURSIVE covers(id, parent_id, path, root_path) AS (
+		SELECT f.id, COALESCE(f.parent_id, -1), f.path, f.path FROM library_roots lr JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = $1
+		UNION
+		SELECT f.id, COALESCE(f.parent_id, -1), f.path, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.id)
+		SELECT DISTINCT id, parent_id, path, `+rel+` AS relative_path FROM covers ORDER BY path`, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MediaFolder{}
+	for rows.Next() {
+		var folder domain.MediaFolder
+		if err := rows.Scan(&folder.ID, &folder.ParentID, &folder.Path, &folder.RelativePath); err != nil {
+			return nil, err
+		}
+		out = append(out, folder)
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) ThumbnailCleanupRefsForLibrary(ctx context.Context, libraryID int) (domain.ThumbnailCleanupRefs, error) {
+	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
+		return domain.ThumbnailCleanupRefs{}, err
+	}
+	covers := `WITH RECURSIVE covers(folder_id) AS (
+		SELECT lr.folder_id FROM library_roots lr WHERE lr.library_id = $1
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+	mediaRows, err := s.db.QueryContext(ctx, covers+`
+		SELECT DISTINCT t.media_id, t.thumbnail_index
+		FROM thumbnails t JOIN media m ON m.id = t.media_id JOIN covers ON covers.folder_id = m.folder_id
+		ORDER BY t.media_id, t.thumbnail_index`, libraryID)
+	if err != nil {
+		return domain.ThumbnailCleanupRefs{}, err
+	}
+	refs := domain.ThumbnailCleanupRefs{}
+	for mediaRows.Next() {
+		var ref domain.ThumbnailRef
+		if err := mediaRows.Scan(&ref.MediaID, &ref.Index); err != nil {
+			mediaRows.Close()
+			return domain.ThumbnailCleanupRefs{}, err
+		}
+		refs.Media = append(refs.Media, ref)
+	}
+	if err := mediaRows.Close(); err != nil {
+		return domain.ThumbnailCleanupRefs{}, err
+	}
+	folderRows, err := s.db.QueryContext(ctx, covers+`
+		SELECT DISTINCT ftf.folder_id
+		FROM folder_thumbnail_files ftf JOIN covers ON covers.folder_id = ftf.folder_id
+		ORDER BY ftf.folder_id`, libraryID)
+	if err != nil {
+		return domain.ThumbnailCleanupRefs{}, err
+	}
+	defer folderRows.Close()
+	for folderRows.Next() {
+		var folderID int
+		if err := folderRows.Scan(&folderID); err != nil {
+			return domain.ThumbnailCleanupRefs{}, err
+		}
+		refs.Folders = append(refs.Folders, folderID)
+	}
+	return refs, folderRows.Err()
+}
+
+func (s *Postgres) SetMediaActionError(ctx context.Context, id int, action, message string) error {
+	column := ""
+	switch action {
+	case "metadata":
+		column = "metadata_error"
+	case "thumbnail":
+		column = "thumbnail_error"
+	default:
+		return ErrNotFound
+	}
+	query := `UPDATE media SET ` + column + ` = $1 WHERE id = $2`
+	res, err := s.db.ExecContext(ctx, query, strings.TrimSpace(message), id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Postgres) PruneFolder(ctx context.Context, rootFolderID int, keepFolders, keepMedia map[int]bool) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE id = $1`, rootFolderID).Scan(&exists); err != nil {
+		return translateErr(err)
+	}
+	subtree := `WITH RECURSIVE sub(id) AS (
+		SELECT $1::bigint
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)`
+	keepMediaPlaceholders, mediaArgs := idsINPostgres(keepMedia, 2)
+	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media
+		WHERE folder_id IN (SELECT id FROM sub) AND id NOT IN (`+keepMediaPlaceholders+`)`,
+		append([]any{rootFolderID}, mediaArgs...)...); err != nil {
+		return err
+	}
+	keepFolderPlaceholders, folderArgs := idsINPostgres(keepFolders, 3)
+	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media_folders
+		WHERE id IN (SELECT id FROM sub) AND id <> $2 AND id NOT IN (`+keepFolderPlaceholders+`)
+		AND id NOT IN (SELECT DISTINCT folder_id FROM media)`,
+		append([]any{rootFolderID, rootFolderID}, folderArgs...)...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Postgres) DeleteLibrary(ctx context.Context, id int) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM libraries WHERE id = $1`, id).Scan(&exists); err != nil {
+		return translateErr(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = $1`, id); err != nil {
+		return err
+	}
+	covers := `WITH RECURSIVE covers(folder_id, library_id) AS (
+		SELECT lr.folder_id, lr.library_id FROM library_roots lr
+		UNION ALL
+		SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+	if _, err := s.db.ExecContext(ctx, covers+` DELETE FROM media
+		WHERE folder_id NOT IN (SELECT covers.folder_id FROM covers)`); err != nil {
+		return err
+	}
+	for {
+		res, err := s.db.ExecContext(ctx, `DELETE FROM media_folders
+			WHERE id NOT IN (SELECT folder_id FROM library_roots)
+			  AND id NOT IN (SELECT DISTINCT folder_id FROM media)
+			  AND id NOT IN (SELECT DISTINCT parent_id FROM media_folders WHERE parent_id IS NOT NULL)`)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return nil
+		}
+	}
+}
+
+func (s *Postgres) CreateLibrary(ctx context.Context, library domain.Library) (domain.Library, error) {
+	name := strings.TrimSpace(library.Name)
+	if name == "" {
+		return domain.Library{}, ErrConflict
+	}
+	if s.libraryNameExists(ctx, name, domain.InvalidID) {
+		return domain.Library{}, ErrConflict
+	}
+	roots, err := s.ensureRoots(ctx, library.Roots)
+	if err != nil {
+		return domain.Library{}, err
+	}
+	var id int
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO libraries(name) VALUES($1) RETURNING id`,
+		name).Scan(&id); err != nil {
+		return domain.Library{}, err
+	}
+	for _, root := range roots {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			id, root.ID); err != nil {
+			return domain.Library{}, err
+		}
+	}
+	library.ID = id
+	library.Name = name
+	library.Roots = roots
+	return library, nil
+}
+
+func (s *Postgres) UpdateLibrary(ctx context.Context, library domain.Library) error {
+	name := strings.TrimSpace(library.Name)
+	if name == "" {
+		return ErrConflict
+	}
+	if _, err := s.loadLibrary(ctx, library.ID); err != nil {
+		return err
+	}
+	if s.libraryNameExists(ctx, name, library.ID) {
+		return ErrConflict
+	}
+	roots, err := s.ensureRoots(ctx, library.Roots)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE libraries SET name = $1 WHERE id = $2`,
+		name, library.ID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM library_roots WHERE library_id = $1`, library.ID); err != nil {
+		return err
+	}
+	for _, root := range roots {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			library.ID, root.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Postgres) libraryNameExists(ctx context.Context, name string, exceptID int) bool {
+	var id int
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM libraries WHERE lower(name) = lower($1) AND id <> $2 LIMIT 1`,
+		name, exceptID).Scan(&id)
+	return err == nil
+}
+
+func (s *Postgres) ensureRoots(ctx context.Context, roots []domain.LibraryRoot) ([]domain.LibraryRoot, error) {
+	out := make([]domain.LibraryRoot, 0, len(roots))
+	seen := map[int]bool{}
+	for _, root := range roots {
+		root.Path = normalizePath(root.Path)
+		if root.Path == "" {
+			continue
+		}
+		folderID, err := s.ensureFolderByPath(ctx, root.Path)
+		if err != nil {
+			return nil, err
+		}
+		if seen[folderID] {
+			continue
+		}
+		seen[folderID] = true
+		out = append(out, domain.LibraryRoot{ID: folderID, Path: root.Path})
+	}
+	return out, nil
+}
+
+func (s *Postgres) ensureFolderByPath(ctx context.Context, path string) (int, error) {
+	var id int
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE path = $1`, path).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	err = s.db.QueryRowContext(ctx, `INSERT INTO media_folders(parent_id, path) VALUES(NULL, $1) ON CONFLICT(path) DO NOTHING RETURNING id`, path).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE path = $1`, path).Scan(&id)
+		return id, err
+	}
+	return 0, err
+}
+
+func (s *Postgres) ensureFolderByPathTx(ctx context.Context, tx *sql.Tx, path string) (int, error) {
+	var id int
+	err := tx.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE path = $1`, path).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	err = tx.QueryRowContext(ctx, `INSERT INTO media_folders(parent_id, path) VALUES(NULL, $1) ON CONFLICT(path) DO NOTHING RETURNING id`, path).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE path = $1`, path).Scan(&id)
+		return id, err
+	}
+	return 0, err
+}
+
+func (s *Postgres) SetAccess(ctx context.Context, libraryID, userID int, allowed bool) error {
+	if _, err := s.Library(ctx, libraryID); err != nil {
+		return err
+	}
+	if _, err := s.User(ctx, userID); err != nil {
+		return err
+	}
+	if allowed {
+		_, err := s.db.ExecContext(ctx, `INSERT INTO library_access(library_id, user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			libraryID, userID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM library_access WHERE library_id = $1 AND user_id = $2`, libraryID, userID)
+	return err
+}
+
+func (s *Postgres) LibraryAccess(ctx context.Context, libraryID int) ([]domain.LibraryUserAccess, error) {
+	if _, err := s.Library(ctx, libraryID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id, u.login, u.password_hash, u.role,
+		(u.role = 'admin' OR la.user_id IS NOT NULL) AS allowed
+		FROM users u LEFT JOIN library_access la ON la.user_id = u.id AND la.library_id = $1
+		ORDER BY u.role, u.login`, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var access []domain.LibraryUserAccess
+	for rows.Next() {
+		var item domain.LibraryUserAccess
+		if err := rows.Scan(&item.User.ID, &item.User.Login, &item.User.PasswordHash, &item.User.Role, &item.Allowed); err != nil {
+			return nil, err
+		}
+		access = append(access, item)
+	}
+	return access, rows.Err()
+}
+
+func (s *Postgres) UpsertFolder(ctx context.Context, folder domain.MediaFolder) (domain.MediaFolder, error) {
+	folder.Path = normalizePath(folder.Path)
+	var id int
+	if folder.Path != "" {
+		err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE path = $1`, folder.Path).Scan(&id)
+		if err == nil {
+			folder.ID = id
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return folder, err
+		}
+	}
+	parentID := folder.ParentID
+	if folder.Path != "" {
+		if dirID, err := s.folderIDByPath(ctx, filepath.Dir(folder.Path)); err == nil && dirID != folder.ID {
+			parentID = dirID
+		}
+	}
+	if folder.ID != domain.InvalidID {
+		if _, err := s.db.ExecContext(ctx, `UPDATE media_folders SET parent_id = $1 WHERE id = $2`,
+			parentIDOrNull(parentID), folder.ID); err != nil {
+			return folder, err
+		}
+		folder.ParentID = parentID
+		return folder, nil
+	}
+	var newID int
+	err := s.db.QueryRowContext(ctx, `INSERT INTO media_folders(parent_id, path) VALUES($1,$2) RETURNING id`,
+		parentIDOrNull(parentID), folder.Path).Scan(&newID)
+	if err != nil {
+		return folder, err
+	}
+	folder.ID = newID
+	folder.ParentID = parentID
+	return folder, nil
+}
+
+func (s *Postgres) folderIDByPath(ctx context.Context, path string) (int, error) {
+	var id int
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE path = $1`, normalizePath(path)).Scan(&id)
+	if err != nil {
+		return domain.InvalidID, err
+	}
+	return id, nil
+}
+
+func (s *Postgres) UpsertMedia(ctx context.Context, media domain.Media) (domain.Media, error) {
+	media.Path = normalizePath(media.Path)
+	if media.Path != "" {
+		if id, err := s.mediaIDByPath(ctx, media.Path); err == nil {
+			media.ID = id
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return media, err
+		}
+	}
+	folderID := media.FolderID
+	if media.Path != "" {
+		if dirID, err := s.folderIDByPath(ctx, filepath.Dir(media.Path)); err == nil {
+			folderID = dirID
+		}
+	}
+	if folderID == domain.InvalidID {
+		return media, ErrNotFound
+	}
+	if media.Path != "" && media.ThumbnailError == "" {
+		if existing, err := s.mediaByPath(ctx, media.Path); err == nil {
+			media.ThumbnailError = existing.ThumbnailError
+		}
+	}
+	metadataJSON, err := json.Marshal(media.Metadata)
+	if err != nil {
+		return media, err
+	}
+	if media.ID == domain.InvalidID {
+		var newID int
+		err := s.db.QueryRowContext(ctx, `INSERT INTO media(folder_id, path, name, mime_type, size, metadata_json, gps, taken_at, metadata_error, thumbnail_error)
+			VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10) RETURNING id`,
+			folderID, media.Path, media.Name, media.MIMEType, media.Size,
+			string(metadataJSON), media.GPS, media.TakenAt, media.MetadataError, media.ThumbnailError).Scan(&newID)
+		if err != nil {
+			return media, err
+		}
+		media.ID = newID
+	} else {
+		if _, err := s.db.ExecContext(ctx, `UPDATE media SET folder_id = $1, name = $2, mime_type = $3, size = $4, metadata_json = $5::jsonb, gps = $6, taken_at = $7, metadata_error = $8, thumbnail_error = $9 WHERE id = $10`,
+			folderID, media.Name, media.MIMEType, media.Size,
+			string(metadataJSON), media.GPS, media.TakenAt, media.MetadataError, media.ThumbnailError, media.ID); err != nil {
+			return media, err
+		}
+	}
+	media.FolderID = folderID
+	return media, nil
+}
+
+func (s *Postgres) mediaIDByPath(ctx context.Context, mediaPath string) (int, error) {
+	var id int
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM media WHERE path = $1`, normalizePath(mediaPath)).Scan(&id)
+	if err != nil {
+		return domain.InvalidID, err
+	}
+	return id, nil
+}
+
+func (s *Postgres) mediaByPath(ctx context.Context, mediaPath string) (domain.Media, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.path = $1`, normalizePath(mediaPath))
+	return scanMedia(row, nil)
+}
+
+func (s *Postgres) Thumbnail(ctx context.Context, mediaID int, index int) (domain.Thumbnail, error) {
+	var thumbnail domain.Thumbnail
+	err := s.db.QueryRowContext(ctx, `SELECT media_id, thumbnail_index, mime_type FROM thumbnails WHERE media_id = $1 AND thumbnail_index = $2`,
+		mediaID, index).Scan(&thumbnail.MediaID, &thumbnail.Index, &thumbnail.MIMEType)
+	if err != nil {
+		return thumbnail, translateErr(err)
+	}
+	return thumbnail, nil
+}
+
+func (s *Postgres) FolderThumbnailFile(ctx context.Context, folderID int) (domain.FolderThumbnail, error) {
+	var thumbnail domain.FolderThumbnail
+	err := s.db.QueryRowContext(ctx, `SELECT folder_id, mime_type FROM folder_thumbnail_files WHERE folder_id = $1`, folderID).Scan(&thumbnail.FolderID, &thumbnail.MIMEType)
+	if err != nil {
+		return thumbnail, translateErr(err)
+	}
+	return thumbnail, nil
+}
+
+func (s *Postgres) UpsertFolderThumbnail(ctx context.Context, thumbnail domain.FolderThumbnail) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO folder_thumbnail_files(folder_id, mime_type) VALUES($1,$2)
+		ON CONFLICT(folder_id) DO UPDATE SET mime_type = excluded.mime_type`, thumbnail.FolderID, thumbnail.MIMEType); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM folder_thumbnails WHERE folder_id = $1`, thumbnail.FolderID); err != nil {
+		return err
+	}
+	for index, ref := range thumbnail.Sources {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO folder_thumbnails(folder_id, thumbnail_index, source_media_id) VALUES($1,$2,$3)`,
+			thumbnail.FolderID, index, ref.MediaID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Postgres) UpsertThumbnail(ctx context.Context, thumbnail domain.Thumbnail) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM media WHERE id = $1`, thumbnail.MediaID).Scan(&exists); err != nil {
+		return translateErr(err)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO thumbnails(media_id, thumbnail_index, mime_type) VALUES($1,$2,$3)
+		ON CONFLICT(media_id, thumbnail_index) DO UPDATE SET mime_type = excluded.mime_type`,
+		thumbnail.MediaID, thumbnail.Index, thumbnail.MIMEType)
+	return err
+}
+
+func (s *Postgres) SaveJob(ctx context.Context, job domain.BackgroundJob) error {
+	options, err := json.Marshal(job.Options)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO background_jobs(id, category, type, library_id, library_name, root_path, status, paused, cancelable, current_path, processed, total, error, started_at, finished_at, options_json)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb)
+		ON CONFLICT(id) DO UPDATE SET category = excluded.category, type = excluded.type, library_id = excluded.library_id, library_name = excluded.library_name,
+			root_path = excluded.root_path, status = excluded.status, paused = excluded.paused, cancelable = excluded.cancelable,
+			current_path = excluded.current_path, processed = excluded.processed, total = excluded.total, error = excluded.error,
+			started_at = excluded.started_at, finished_at = excluded.finished_at, options_json = excluded.options_json`,
+		job.ID, job.Category, job.Type, job.LibraryID, job.LibraryName, job.RootPath, job.Status, job.Paused, job.Cancelable,
+		job.CurrentPath, job.Processed, job.Total, job.Error, job.StartedAt.UTC(), job.FinishedAt, string(options))
+	return err
+}
+
+func (s *Postgres) Jobs(ctx context.Context) ([]domain.BackgroundJob, error) {
+	return s.jobsWhere(ctx, "")
+}
+
+func (s *Postgres) UnfinishedJobs(ctx context.Context) ([]domain.BackgroundJob, error) {
+	return s.jobsWhere(ctx, `WHERE status IN ('running', 'paused', 'cancelling')`)
+}
+
+func (s *Postgres) DeleteFinishedJobsBefore(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM background_jobs WHERE finished_at IS NOT NULL AND finished_at < $1`, before.UTC())
+	return err
+}
+
+func (s *Postgres) jobsWhere(ctx context.Context, where string) ([]domain.BackgroundJob, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, category, type, library_id, library_name, root_path, status, paused, cancelable, current_path, processed, total, error, started_at, finished_at, options_json
+		FROM background_jobs `+where+` ORDER BY started_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	jobs := []domain.BackgroundJob{}
+	for rows.Next() {
+		var job domain.BackgroundJob
+		var optionsRaw []byte
+		if err := rows.Scan(&job.ID, &job.Category, &job.Type, &job.LibraryID, &job.LibraryName, &job.RootPath, &job.Status, &job.Paused, &job.Cancelable,
+			&job.CurrentPath, &job.Processed, &job.Total, &job.Error, &job.StartedAt, &job.FinishedAt, &optionsRaw); err != nil {
+			return nil, err
+		}
+		if len(optionsRaw) != 0 {
+			_ = json.Unmarshal(optionsRaw, &job.Options)
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+// BeginBulk/EndBulk/AbortBulk are no-ops for Postgres for now: the server owns
+// one process-wide pool, and each statement uses that pool instead of opening a
+// new connection. SQLite is the path that needs an exclusive bulk transaction.
+func (s *Postgres) BeginBulk() error { return nil }
+
+func (s *Postgres) EndBulk() error { return nil }
+
+func (s *Postgres) AbortBulk() error { return nil }
+
+// rootPathForFolder returns the path of the nearest library-root ancestor of a
+// folder, or "" when the folder is not beneath any library root.
+func (s *Postgres) rootPathForFolder(ctx context.Context, folderID int) string {
+	query := `WITH RECURSIVE anc(id, parent_id, path) AS (
+		SELECT id, parent_id, path FROM media_folders WHERE id = $1
+		UNION ALL
+		SELECT f.id, f.parent_id, f.path FROM media_folders f JOIN anc ON f.id = anc.parent_id)
+	SELECT anc.path FROM anc JOIN library_roots lr ON lr.folder_id = anc.id
+	ORDER BY length(anc.path) DESC LIMIT 1`
+	var root string
+	if err := s.db.QueryRowContext(ctx, query, folderID).Scan(&root); err != nil {
+		return ""
+	}
+	return root
+}
+
+// relativePath returns the on-the-fly path of mediaPath relative to the nearest
+// library root, or "" when the media is not beneath a readable root.
+func (s *Postgres) relativePath(ctx context.Context, folderID int, mediaPath string) string {
+	if root := s.rootPathForFolder(ctx, folderID); root != "" {
+		return strings.TrimPrefix(strings.TrimPrefix(mediaPath, root), "/")
+	}
+	return ""
+}
+
+// attachRelativePaths fills in the computed relative path for each media item,
+// memoizing the nearest root lookup per folder.
+func (s *Postgres) attachRelativePaths(ctx context.Context, items []domain.Media) {
+	roots := map[int]string{}
+	for index := range items {
+		root, ok := roots[items[index].FolderID]
+		if !ok {
+			root = s.rootPathForFolder(ctx, items[index].FolderID)
+			roots[items[index].FolderID] = root
+		}
+		if root != "" {
+			items[index].RelativePath = strings.TrimPrefix(strings.TrimPrefix(items[index].Path, root), "/")
+		}
+	}
+}

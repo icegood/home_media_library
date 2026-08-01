@@ -1,0 +1,1529 @@
+openapi: 3.0.3
+info:
+  title: Media Library API
+  description: >
+    Self-hosted, multi-user photo and video library. Administrators map arbitrary
+    folders from disk into libraries and grant read access per user. The API is
+    stateless apart from the session cookie; all protected endpoints require
+    either the HttpOnly `media_session` cookie set by `POST /api/v1/auth/login`
+    or the same JWT sent as a `Bearer` token.
+  version: 1.0.0
+servers:
+  - url: /
+security:
+  - sessionCookie: []
+  - bearerAuth: []
+tags:
+  - name: System
+  - name: Auth
+  - name: Library
+  - name: Media
+  - name: Favorites
+  - name: Admin
+  - name: Swagger
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /swagger:
+    get:
+      tags: [Swagger]
+      summary: Interactive Swagger UI
+      security: []
+      responses:
+        "200":
+          description: Swagger UI HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+  /swagger/openapi.yaml:
+    get:
+      tags: [Swagger]
+      summary: OpenAPI specification of this API
+      security: []
+      responses:
+        "200":
+          description: This OpenAPI document
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /api/v1/setup:
+    get:
+      tags: [System]
+      summary: Check whether first-run administrator setup is required
+      security: []
+      responses:
+        "200":
+          description: Setup requirement status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [required]
+                properties:
+                  required:
+                    type: boolean
+                    example: true
+        "500":
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [System]
+      summary: Create the initial administrator (available only before any user exists)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "201":
+          description: Initial administrator created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Initial setup is already complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Create a session and set the media_session cookie
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "200":
+          description: Logged in; sets the HttpOnly media_session cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Clear the session cookie
+      security: []
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /api/v1/me:
+    get:
+      tags: [Auth]
+      summary: Current authenticated user
+      responses:
+        "200":
+          description: The authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/settings:
+    get:
+      tags: [Auth]
+      summary: Current user's settings
+      responses:
+        "200":
+          description: User-specific settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Auth]
+      summary: Update current user's settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserSettings"
+      responses:
+        "200":
+          description: Updated user-specific settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettings"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/libraries:
+    get:
+      tags: [Library]
+      summary: Libraries visible to the current user
+      responses:
+        "200":
+          description: Visible libraries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Library"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/libraries/{id}/entries:
+    get:
+      tags: [Library]
+      summary: Browse the library root
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      responses:
+        "200":
+          description: Folders and media entries at the library pseudo-root
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Entry"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/libraries/{id}/folders/{folderId}/entries:
+    get:
+      tags: [Library]
+      summary: Browse a real media folder by id
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+        - $ref: "#/components/parameters/FolderID"
+      responses:
+        "200":
+          description: Direct child folders and media in the folder
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Entry"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/libraries/{id}/media:
+    get:
+      tags: [Library]
+      summary: All media in a library (relative to its root(s))
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      responses:
+        "200":
+          description: All media in the library
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Media"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/favorite-views:
+    get:
+      tags: [Favorites]
+      summary: Favorite views of the current user
+      responses:
+        "200":
+          description: The user's favorite views
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FavoriteView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Favorites]
+      summary: Create a favorite view
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Display name of the view.
+      responses:
+        "201":
+          description: Favorite view created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FavoriteView"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/favorite-views/{viewId}:
+    put:
+      tags: [Favorites]
+      summary: Rename a favorite view
+      parameters:
+        - $ref: "#/components/parameters/ViewID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Updated favorite view
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FavoriteView"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Favorites]
+      summary: Delete a favorite view
+      parameters:
+        - $ref: "#/components/parameters/ViewID"
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/favorite-views/{viewId}/media:
+    get:
+      tags: [Favorites]
+      summary: Media in a favorite view (respects read access)
+      parameters:
+        - $ref: "#/components/parameters/ViewID"
+      responses:
+        "200":
+          description: Favorited media visible to the user
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Media"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/favorite-views/{viewId}/media/{id}:
+    put:
+      tags: [Favorites]
+      summary: Add a media item to a favorite view
+      parameters:
+        - $ref: "#/components/parameters/ViewID"
+        - $ref: "#/components/parameters/MediaID"
+      responses:
+        "200":
+          description: The media item with its updated favorite state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Media"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Favorites]
+      summary: Remove a media item from a favorite view
+      parameters:
+        - $ref: "#/components/parameters/ViewID"
+        - $ref: "#/components/parameters/MediaID"
+      responses:
+        "200":
+          description: The media item with its updated favorite state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Media"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}:
+    get:
+      tags: [Media]
+      summary: Media metadata
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      responses:
+        "200":
+          description: Media metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Media"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}/content:
+    get:
+      tags: [Media]
+      summary: Stream the original image or video file
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      responses:
+        "200":
+          description: Raw media bytes (supports Range requests)
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Media path is outside the readable library roots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}/play:
+    get:
+      tags: [Media]
+      summary: Direct-play or transcode a video for the browser
+      description: >
+        The browser advertises its supported codecs in the `codecs` query
+        parameter (comma-separated values from `h264`, `h265`, `vp9`). Matching
+        source video is served unchanged; otherwise FFmpeg transcodes to the
+        configured fallback codec. The `X-Media-Playback` response header is
+        `original` or `transcoded`.
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+        - name: codecs
+          in: query
+          required: false
+          description: Comma-separated codecs the browser supports.
+          schema:
+            type: string
+            example: h264,vp9
+      responses:
+        "200":
+          description: Video stream (original or transcoded)
+          headers:
+            X-Media-Playback:
+              schema:
+                type: string
+                enum: [original, transcoded]
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Media is not a video or path is outside readable roots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "406":
+          description: Browser supports neither the source nor the configured transcode codec
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Could not probe the source video
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/media/{id}/thumbnail:
+    get:
+      tags: [Media]
+      summary: Serve a media thumbnail (generates it on demand)
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+        - name: index
+          in: query
+          required: false
+          description: Thumbnail index (0-based). Images only have index 0.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: JPEG thumbnail
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          description: Thumbnail generation failed or was previously skipped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/media/{id}/thumbnails:
+    get:
+      tags: [Media]
+      summary: List the video thumbnail positions
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      responses:
+        "200":
+          description: Available thumbnail indices with their seek times and URLs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VideoThumbnail"
+        "400":
+          description: Media is not a video
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/folders/{id}/thumbnail:
+    get:
+      tags: [Media]
+      summary: Serve a folder cover (3-way montage of its best media)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Folder id.
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: JPEG folder thumbnail
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          description: Folder thumbnail could not be generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/media/{id}/gps:
+    patch:
+      tags: [Media]
+      summary: Set or clear a media item's canonical GPS coordinates
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GPSPatch"
+      responses:
+        "200":
+          description: Updated media item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Media"
+        "400":
+          description: Invalid GPS format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}/details:
+    patch:
+      tags: [Media]
+      summary: Update editable media details (name, GPS, takenAt)
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MediaDetailsPatch"
+      responses:
+        "200":
+          description: Updated media item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Media"
+        "400":
+          description: Invalid or missing value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/map:
+    get:
+      tags: [Media]
+      summary: Geotagged media visible to the current user
+      responses:
+        "200":
+          description: Map items with their library id
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MapMedia"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/admin/libraries:
+    post:
+      tags: [Admin]
+      summary: Create a library from disk folders
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LibraryInput"
+      responses:
+        "201":
+          description: Library created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Library"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/libraries/{id}:
+    put:
+      tags: [Admin]
+      summary: Update a library's name and roots
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LibraryInput"
+      responses:
+        "200":
+          description: Updated library
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Library"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Admin]
+      summary: Delete a library
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/libraries/{id}/scan:
+    post:
+      tags: [Admin]
+      summary: Start a background scan job for a library
+      description: >
+        Walks the library folders, upserts folders and media, extracts metadata,
+        then starts a thumbnail-creation job. Returns the running job.
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      responses:
+        "202":
+          description: Scan job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/libraries/{id}/metadata/renew:
+    post:
+      tags: [Admin]
+      summary: Re-extract metadata for a library
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      responses:
+        "202":
+          description: Metadata renew job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/libraries/{id}/thumbnails:
+    post:
+      tags: [Admin]
+      summary: Start a thumbnail-creation job for a library
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                recreateExisting:
+                  type: boolean
+                  description: Remove and regenerate thumbnails that already exist.
+      responses:
+        "202":
+          description: Thumbnail job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/jobs:
+    get:
+      tags: [Admin]
+      summary: List background jobs (newest first)
+      responses:
+        "200":
+          description: Jobs, including finished ones within the retention window
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/jobs/{id}/pause:
+    post:
+      tags: [Admin]
+      summary: Pause a running job
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: Paused job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Job is not in a pausable state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/jobs/{id}/resume:
+    post:
+      tags: [Admin]
+      summary: Resume a paused job
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: Resumed job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Job is not paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/jobs/{id}/cancel:
+    post:
+      tags: [Admin]
+      summary: Cancel a running or paused job
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: Cancelling job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Job cannot be cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/admin/shutdown:
+    post:
+      tags: [Admin]
+      summary: Stop the backend
+      parameters:
+        - in: query
+          name: mode
+          schema:
+            type: string
+            enum: [docker, signal]
+            default: docker
+          description: docker stops the container through Docker; signal stops only the server process.
+      responses:
+        "202":
+          description: Stop requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: stopping
+                  mode:
+                    type: string
+                    example: docker
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/libraries/{id}/access/{userId}:
+    put:
+      tags: [Admin]
+      summary: Grant or revoke a user's read access to a library
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+        - name: userId
+          in: path
+          required: true
+          description: User id.
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [allowed]
+              properties:
+                allowed:
+                  type: boolean
+      responses:
+        "204":
+          description: Access updated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/import/emby:
+    post:
+      tags: [Admin]
+      summary: Import libraries, users and read links from an Emby config root
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbyImportOptions"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: Emby database could not be read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/filesystem:
+    get:
+      tags: [Admin]
+      summary: Browse the filesystem to pick library roots
+      parameters:
+        - name: path
+          in: query
+          required: false
+          description: Absolute directory to list; defaults to the filesystem root.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Directory listing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilesystemResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/settings:
+    get:
+      tags: [Admin]
+      summary: Current settings
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      summary: Update settings
+      description: >
+        Updating transport settings regenerates the gateway configuration and
+        hot-reloads Caddy. The whole settings object is sent; omitted numeric
+        values fall back to their previous values.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Settings"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: media_session
+      description: HttpOnly JWT cookie set by POST /api/v1/auth/login.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The same JWT as a bearer token.
+  parameters:
+    LibraryID:
+      name: id
+      in: path
+      required: true
+      description: Library id.
+      schema:
+        type: integer
+    MediaID:
+      name: id
+      in: path
+      required: true
+      description: Media id.
+      schema:
+        type: integer
+    FolderID:
+      name: folderId
+      in: path
+      required: true
+      description: Folder id.
+      schema:
+        type: integer
+    ViewID:
+      name: viewId
+      in: path
+      required: true
+      description: Favorite view id.
+      schema:
+        type: integer
+    JobID:
+      name: id
+      in: path
+      required: true
+      description: Background job id.
+      schema:
+        type: string
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid session
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: The user lacks access to this resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Credentials:
+      type: object
+      required: [login, password]
+      properties:
+        login:
+          type: string
+          description: 3-64 letters, digits, dots, dashes or underscores (case-insensitive).
+          example: alice
+        password:
+          type: string
+          description: Setup requires 12-72 characters.
+          example: "hunter2hunter2"
+    Role:
+      type: string
+      enum: [admin, regular]
+    User:
+      type: object
+      required: [id, login, role]
+      properties:
+        id:
+          type: integer
+          example: 2
+        login:
+          type: string
+          example: alice
+        role:
+          $ref: "#/components/schemas/Role"
+    LibraryStats:
+      type: object
+      properties:
+        folders:
+          type: integer
+        files:
+          type: integer
+        images:
+          type: integer
+        videos:
+          type: integer
+    LibraryRoot:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: integer
+        path:
+          type: string
+          description: Hidden for non-admin users.
+    Library:
+      type: object
+      required: [id, name, roots]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        roots:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryRoot"
+        stats:
+          $ref: "#/components/schemas/LibraryStats"
+    FavoriteView:
+      type: object
+      required: [id, name, count]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        count:
+          type: integer
+          description: Number of media items in the view.
+    Kind:
+      type: string
+      enum: [image, video]
+    Media:
+      type: object
+      required: [id, folderId, relativePath, name, kind, mimeType, size, gps, takenAt]
+      properties:
+        id:
+          type: integer
+        folderId:
+          type: integer
+        relativePath:
+          type: string
+          description: Path relative to the library root.
+        name:
+          type: string
+        kind:
+          $ref: "#/components/schemas/Kind"
+        mimeType:
+          type: string
+          example: image/jpeg
+        size:
+          type: integer
+          format: int64
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Extracted metadata (ExifTool and FFprobe), free-form.
+        gps:
+          type: string
+          description: Canonical latitude,longitude, or empty.
+          example: "55.751244,37.618423"
+        takenAt:
+          type: string
+          description: ISO-8601 capture time, or empty.
+        metadataError:
+          type: string
+        thumbnailError:
+          type: string
+        favorite:
+          type: boolean
+          description: Whether the current user favorited this item.
+    MapMedia:
+      allOf:
+        - $ref: "#/components/schemas/Media"
+        - type: object
+          properties:
+            libraryId:
+              type: integer
+    MediaFolder:
+      type: object
+      required: [id, parentId, relativePath]
+      properties:
+        id:
+          type: integer
+        parentId:
+          type: integer
+        relativePath:
+          type: string
+    ThumbnailRef:
+      type: object
+      required: [mediaId, index]
+      properties:
+        mediaId:
+          type: integer
+        index:
+          type: integer
+    Entry:
+      type: object
+      required: [id, name, relativePath, type]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        relativePath:
+          type: string
+        type:
+          type: string
+          enum: [folder, media]
+        media:
+          $ref: "#/components/schemas/Media"
+        folder:
+          $ref: "#/components/schemas/MediaFolder"
+        folderThumbnails:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThumbnailRef"
+        folderThumbnail:
+          type: integer
+    GPSPatch:
+      type: object
+      properties:
+        gps:
+          type: string
+          nullable: true
+          description: Canonical latitude,longitude, or null/empty to clear.
+    MediaDetailsPatch:
+      type: object
+      properties:
+        name:
+          type: string
+        gps:
+          type: string
+          description: Canonical latitude,longitude, or empty to clear.
+        takenAt:
+          type: string
+          description: ISO-8601 date/time, or empty to clear.
+    VideoThumbnail:
+      type: object
+      required: [index, timeSeconds, url]
+      properties:
+        index:
+          type: integer
+        timeSeconds:
+          type: integer
+        url:
+          type: string
+    JobStatus:
+      type: object
+      required: [id, category, type, status, paused, cancelable, processed, total, startedAt]
+      properties:
+        id:
+          type: string
+        category:
+          type: string
+          enum: [scan, thumbnail-create]
+        type:
+          type: string
+        libraryId:
+          type: integer
+        libraryName:
+          type: string
+        rootPath:
+          type: string
+        status:
+          type: string
+          enum: [running, paused, cancelling, done, failed, cancelled]
+        paused:
+          type: boolean
+        cancelable:
+          type: boolean
+        currentPath:
+          type: string
+        processed:
+          type: integer
+        total:
+          type: integer
+        error:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+    LibraryInput:
+      type: object
+      required: [name, roots]
+      properties:
+        name:
+          type: string
+        roots:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [path]
+            properties:
+              path:
+                type: string
+                description: Absolute path of a folder to serve and index.
+    PathMapping:
+      type: object
+      required: [from, to]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+    EmbyImportOptions:
+      type: object
+      required: [configRoot]
+      properties:
+        configRoot:
+          type: string
+          description: Emby config root inside the container. The importer reads data/library.db, data/users.db and config/users below this root.
+        pathMappings:
+          type: array
+          items:
+            $ref: "#/components/schemas/PathMapping"
+    ImportedUser:
+      type: object
+      required: [user, existed]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        temporaryPassword:
+          type: string
+          description: Set only when the Emby user had no importable password.
+        existed:
+          type: boolean
+    ImportAccess:
+      type: object
+      required: [libraryId, userId]
+      properties:
+        libraryId:
+          type: integer
+        userId:
+          type: integer
+    ImportResult:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportedUser"
+        libraries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Library"
+        access:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportAccess"
+    FilesystemResponse:
+      type: object
+      properties:
+        root:
+          type: string
+        path:
+          type: string
+        parent:
+          type: string
+          nullable: true
+        directories:
+          type: array
+          items:
+            type: object
+            required: [name, path]
+            properties:
+              name:
+                type: string
+              path:
+                type: string
+    Settings:
+      type: object
+      properties:
+        transcodeCodec:
+          type: string
+          enum: [h264, h265, vp9]
+        httpEnabled:
+          type: boolean
+        httpsEnabled:
+          type: boolean
+        publicDns:
+          type: string
+        acmeEmail:
+          type: string
+        httpsCertificateExpiresAt:
+          type: string
+          nullable: true
+        thumbnailWidth:
+          type: integer
+        thumbnailHeight:
+          type: integer
+        workerPoolSize:
+          type: integer
+        videoThumbnailFirstSeconds:
+          type: integer
+        videoThumbnailMaxCount:
+          type: integer
+        videoThumbnailMinIntervalSeconds:
+          type: integer
+        sessionMaxAgeHours:
+          type: integer
+        finishedJobRetentionMinutes:
+          type: integer
+        logLevel:
+          type: string
+          description: D, I, W or E.
+        logRotateMaxSizeMB:
+          type: integer
+        logRotateMaxBackups:
+          type: integer
+        logRotateMaxAgeDays:
+          type: integer
+    UserSettings:
+      type: object
+      required: [theme]
+      properties:
+        theme:
+          type: string
+          enum: [light, dark]

@@ -1,0 +1,208 @@
+name: Publish Docker images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Image/project version. Defaults to VERSION file.
+        required: false
+        type: string
+      push_latest:
+        description: Also tag images as latest.
+        required: false
+        default: true
+        type: boolean
+      image_namespace:
+        description: GHCR namespace/name prefix, without registry.
+        required: false
+        default: ""
+        type: string
+      platforms:
+        description: Docker target platforms.
+        required: false
+        default: linux/amd64,linux/arm64
+        type: string
+  push:
+    tags:
+      - "v*"
+
+env:
+  IMAGE_REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.event.inputs.image_namespace || vars.IMAGE_NAMESPACE || format('{0}/home-media-library', github.repository_owner) }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          requested="${{ github.event.inputs.version || '' }}"
+          if [ -n "$requested" ]; then
+            version="$requested"
+          elif [ -f VERSION ]; then
+            version="$(sed -n '1p' VERSION)"
+          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.1.0"
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          push_latest="${{ github.event.inputs.push_latest || 'true' }}"
+          platforms="${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}"
+
+          api_image="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}-api"
+          web_image="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}-web"
+
+          {
+            printf 'build_date=%s\n' "$build_date"
+            printf 'platforms=%s\n' "$platforms"
+            printf 'api_image=%s\n' "$api_image"
+            printf 'web_image=%s\n' "$web_image"
+            printf 'api_tags<<EOF\n'
+            printf '%s:%s\n' "$api_image" "$version"
+            if [ "$push_latest" != "false" ]; then
+              printf '%s:latest\n' "$api_image"
+            fi
+            printf 'EOF\n'
+            printf 'web_tags<<EOF\n'
+            printf '%s:%s\n' "$web_image" "$version"
+            if [ "$push_latest" != "false" ]; then
+              printf '%s:latest\n' "$web_image"
+            fi
+            printf 'EOF\n'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create deployment artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+
+          mkdir -p "artifacts/media-library-${version}"
+          cp deploy/compose.yaml "artifacts/media-library-${version}/compose.yaml"
+          cp deploy/start.sh "artifacts/media-library-${version}/start.sh"
+
+          sed \
+            -e "s|^PROJECT_VERSION=.*|PROJECT_VERSION=${version}|" \
+            deploy/.env.default > "artifacts/media-library-${version}/.env.default"
+
+          cat > "artifacts/media-library-${version}/README.deploy.txt" <<EOF
+          Media Library ${version}
+
+          Files:
+          - compose.yaml
+          - .env.default
+          - start.sh
+
+          Install:
+          1. Copy .env.default to .env
+          2. Edit JWT_SECRET, MEDIA_ROOT, MEDIA_UID, MEDIA_GID, DOCKER_GID and ports
+          3. Run:
+             sh start.sh prod
+          EOF
+
+          chmod +x "artifacts/media-library-${version}/start.sh"
+          tar -C artifacts -czf "media-library-deploy-${version}.tar.gz" "media-library-${version}"
+
+      - name: Check deployment artifact has no local data
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          tar -tzf "media-library-deploy-${version}.tar.gz"
+          tar -xOzf "media-library-deploy-${version}.tar.gz" "media-library-${version}/.env.default" > /tmp/env.default
+          tar -xOzf "media-library-deploy-${version}.tar.gz" "media-library-${version}/compose.yaml" > /tmp/compose.yaml
+          tar -xOzf "media-library-deploy-${version}.tar.gz" "media-library-${version}/start.sh" > /tmp/start.sh
+
+          forbidden='(/home/ice|192\.168\.13\.1|backup_photos|\.github-token|PASTE_TOKEN|YOUR_TOKEN|media_session)'
+          if grep -E "$forbidden" /tmp/env.default /tmp/compose.yaml /tmp/start.sh; then
+            echo "Deployment artifact contains local/private data" >&2
+            exit 1
+          fi
+          if grep -F '__PROJECT_VERSION__' /tmp/env.default /tmp/compose.yaml /tmp/start.sh; then
+            echo "Deployment artifact contains unreplaced PROJECT_VERSION placeholder" >&2
+            exit 1
+          fi
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-library-deploy-${{ steps.version.outputs.version }}
+          path: media-library-deploy-${{ steps.version.outputs.version }}.tar.gz
+          if-no-files-found: error
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          platforms: ${{ steps.meta.outputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.api_tags }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+            SOURCE_URL=https://github.com/${{ github.repository }}
+            UID=1000
+            GID=1000
+            DOCKER_GID=998
+
+      - name: Build and publish Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          platforms: ${{ steps.meta.outputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.web_tags }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+            SOURCE_URL=https://github.com/${{ github.repository }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Media Library ${{ steps.version.outputs.version }}
+          files: media-library-deploy-${{ steps.version.outputs.version }}.tar.gz
+          generate_release_notes: true
+
+      - name: Print image names
+        shell: bash
+        run: |
+          echo "API: ${{ steps.meta.outputs.api_image }}:${{ steps.version.outputs.version }}"
+          echo "WEB: ${{ steps.meta.outputs.web_image }}:${{ steps.version.outputs.version }}"
+          echo "Platforms: ${{ steps.meta.outputs.platforms }}"
