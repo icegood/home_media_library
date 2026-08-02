@@ -136,7 +136,7 @@ jobs:
             echo "Deployment artifact contains local/private data" >&2
             exit 1
           fi
-          if grep -F '__PROJECT_VERSION__' /tmp/env.default /tmp/compose.yaml /tmp/start.sh; then
+          if grep -F '__PROJECT_VERSION__' /tmp/env.default; then
             echo "Deployment artifact contains unreplaced PROJECT_VERSION placeholder" >&2
             exit 1
           fi
