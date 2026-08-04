@@ -1,4 +1,4 @@
-import type { EmbyImportResult, Entry, FavoriteView, FilesystemListing, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, User, VideoThumbnail } from "./types";
+import type { EmbyImportResult, Entry, FavoriteView, FilesystemListing, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -46,10 +46,19 @@ export const api = {
   },
   logout: () => call<void>("/auth/logout", {method:"POST"}),
   me: () => call<User>("/me"),
+  updateEmail: (email:string) =>
+    call<{email:string}>("/me/email", {method:"PUT", body:JSON.stringify({email})}),
+  changePassword: (currentPassword:string, newPassword:string) =>
+    call<{ok:boolean}>("/me/password", {method:"PUT", body:JSON.stringify({currentPassword,newPassword})}),
+  forgotPassword: (email:string) =>
+    call<{sent:boolean; reason?:string}>("/auth/forgot-password", {method:"POST", body:JSON.stringify({email})}),
+  resetPassword: (token:string, password:string) =>
+    call<{ok:boolean}>("/auth/reset-password", {method:"POST", body:JSON.stringify({token,password})}),
   userSettings: () => call<UserSettings>("/settings"),
   updateUserSettings: (settings:UserSettings) =>
     call<UserSettings>("/settings", {method:"PUT", body:JSON.stringify(settings)}),
   libraries: () => call<Library[]>("/libraries"),
+  libraryStats: (id:ID) => call<LibraryStats>(`/libraries/${id}/stats`),
   createLibrary: (input:{name:string; roots:{path:string}[]}) =>
     call<Library>("/admin/libraries", {method:"POST", body:JSON.stringify(input)}),
   updateLibrary: (id:ID, input:{name:string; roots:{path:string}[]}) =>
@@ -67,6 +76,12 @@ export const api = {
   libraryAccess: (libraryId:ID) => call<LibraryUserAccess[]>(`/admin/libraries/${libraryId}/access`),
   setLibraryAccess: (libraryId:ID, userId:ID, allowed:boolean) =>
     call<void>(`/admin/libraries/${libraryId}/access/${userId}`, {method:"PUT", body:JSON.stringify({allowed})}),
+  scheduledTasks: () => call<ScheduledTask[]>("/admin/scheduled-tasks"),
+  createScheduledTask: (input:{name:string; taskType:"scan"|"thumbnail-create"|"vacuum"; libraryId:ID; cron:string; enabled:boolean}) =>
+    call<ScheduledTask>("/admin/scheduled-tasks", {method:"POST", body:JSON.stringify(input)}),
+  updateScheduledTask: (id:ID, input:{name:string; taskType:"scan"|"thumbnail-create"|"vacuum"; libraryId:ID; cron:string; enabled:boolean}) =>
+    call<ScheduledTask>(`/admin/scheduled-tasks/${id}`, {method:"PUT", body:JSON.stringify(input)}),
+  deleteScheduledTask: (id:ID) => call<void>(`/admin/scheduled-tasks/${id}`, {method:"DELETE"}),
   jobs: () => call<JobStatus[]>("/admin/jobs"),
   logs: (limit = 300) => call<LogTail>(`/admin/logs?limit=${encodeURIComponent(String(limit))}`),
   pauseJob: (id:string) => call<JobStatus>(`/admin/jobs/${id}/pause`, {method:"POST"}),
@@ -88,7 +103,13 @@ export const api = {
   media: (id:ID) => call<Media>(`/media/${id}`),
   favoriteMedia: (viewId:ID, id:ID) => call<Media>(`/favorite-views/${viewId}/media/${id}`, {method:"PUT"}),
   unfavoriteMedia: (viewId:ID, id:ID) => call<Media>(`/favorite-views/${viewId}/media/${id}`, {method:"DELETE"}),
-  map: () => call<MapMedia[]>("/map"),
+  map: (libraryId?:ID, folderId?:ID, bounds?:{west:number; south:number; east:number; north:number}) => {
+    const params:string[] = [];
+    if (libraryId != null) params.push(`library=${libraryId}`);
+    if (folderId != null) params.push(`folder=${folderId}`);
+    if (bounds != null) params.push(`bbox=${bounds.west},${bounds.south},${bounds.east},${bounds.north}`);
+    return call<MapMedia[]>(`/map${params.length > 0 ? `?${params.join("&")}` : ""}`);
+  },
   updateGPS: (id:ID, gps:string|null) =>
     call<Media>(`/media/${id}/gps`, {method:"PATCH", body:JSON.stringify({gps})}),
   updateMediaDetails: (id:ID, input:{name:string; gps:string|null; takenAt:string|null}) =>
@@ -105,7 +126,6 @@ export const api = {
 };
 
 export interface AdminSettings {
-  transcodeCodec:"h264"|"h265"|"vp9";
   httpEnabled:boolean;
   httpsEnabled:boolean;
   publicDns:string;
@@ -123,8 +143,15 @@ export interface AdminSettings {
   logRotateMaxSizeMB:number;
   logRotateMaxBackups:number;
   logRotateMaxAgeDays:number;
+  smtpHost:string;
+  smtpPort:number;
+  smtpUsername:string;
+  smtpPassword?:string;
+  smtpFrom:string;
 }
 
 export interface UserSettings {
-  theme:"light"|"dark";
+  theme:"light"|"dark"|"system";
+  codec:"h264"|"h265"|"vp9";
+  zoom:number;
 }

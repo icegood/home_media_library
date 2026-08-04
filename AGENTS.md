@@ -11,6 +11,8 @@ Workspace: self-hosted multi-user media library (`media_library`).
   issue until proven otherwise.
 - `media-library-architecture` (`.github/skills/media-library-architecture/SKILL.md`) —
   full architecture map: components, data model, flows, runtime layout, hygiene.
+- `short-answers` (`.github/skills/short-answers/SKILL.md`) — answer very short,
+  without describing thinking and without filler phrases like "user asked".
 
 ## Architecture
 
@@ -71,7 +73,7 @@ Ignore (generated/output): `.env` (secrets), `runtime/`, `thumbnails/`,
 
 ## Verification
 
-No host toolchain needed; compile/test in containers:
+All build/test is done via Docker; no host Go/Node toolchain is used:
 - `docker build -t media-library-api ./backend` (runs `go test ./...`)
 - `docker build -t media-library-web ./web` (runs `npm test && npm run build`)
 - Local frontend dev/test: `cd web && npm test -- --run src/App.test.tsx`

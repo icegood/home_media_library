@@ -268,7 +268,7 @@ func TestPostgresRegularLibraryListingDoesNotEraseStoredRootPaths(t *testing.T) 
 	}
 }
 
-func TestPostgresLibraryListingIncludesStatistics(t *testing.T) {
+func TestPostgresLibraryStats(t *testing.T) {
 	repository := openPostgres(t, true)
 	root := filepath.Join(t.TempDir(), "photos")
 	library := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
@@ -287,11 +287,10 @@ func TestPostgresLibraryListingIncludesStatistics(t *testing.T) {
 	if _, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folder.ID, Path: filepath.Join(root, "Camera", "two.mp4"), Name: "two.mp4", Kind: domain.KindVideo, MIMEType: "video/mp4"}); err != nil {
 		t.Fatal(err)
 	}
-	libraries, err := repository.LibrariesForUser(context.Background(), 0, true)
+	stats, err := repository.LibraryStats(context.Background(), library.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats := libraries[0].Stats
 	if stats.Folders != 1 || stats.Files != 2 || stats.Images != 1 || stats.Videos != 1 {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}

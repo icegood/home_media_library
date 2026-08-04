@@ -3,6 +3,8 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,7 @@ type fixture struct {
 	libraryID    int
 	folderID     int
 	photoID      int
+	aliceID      int
 }
 
 func openSQLite(t *testing.T) *store.SQLite {
@@ -82,7 +85,7 @@ func setup(t *testing.T) fixture {
 	return fixture{handler: (&api.API{
 		Store: repository, Scanner: scanner.Scanner{Store: repository},
 		JWTSecret: []byte(secret), ThumbnailDir: thumbnailDir,
-	}).Handler(), store: repository, mediaRoot: mediaRoot, thumbnailDir: thumbnailDir, libraryID: library.ID, folderID: folder.ID, photoID: photo.ID}
+	}).Handler(), store: repository, mediaRoot: mediaRoot, thumbnailDir: thumbnailDir, libraryID: library.ID, folderID: folder.ID, photoID: photo.ID, aliceID: aliceID}
 }
 
 func login(t *testing.T, h http.Handler, login string) string {
@@ -143,6 +146,59 @@ func TestDeleteLibraryRemovesOrphanThumbnailFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(thumbDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("thumbnail dir should be removed, stat err=%v", err)
+	}
+}
+
+func TestScheduledTasksLifecycle(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+
+	createBody := fmt.Sprintf(`{"name":"Nightly scan","taskType":"scan","libraryId":%d,"cron":"0 3 * * *","enabled":true}`, f.libraryID)
+	create := request(f.handler, http.MethodPost, "/api/v1/admin/scheduled-tasks", admin, []byte(createBody))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", create.Code, create.Body)
+	}
+	var task domain.ScheduledTask
+	if err := json.Unmarshal(create.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.ID == 0 || task.NextRunAt.IsZero() {
+		t.Fatalf("created task missing id or next run: %#v", task)
+	}
+
+	list := request(f.handler, http.MethodGet, "/api/v1/admin/scheduled-tasks", admin, nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status = %d: %s", list.Code, list.Body)
+	}
+
+	lastRun := time.Now().UTC().Add(-time.Hour)
+	if err := f.store.MarkScheduledTaskRun(context.Background(), task.ID, lastRun, task.NextRunAt); err != nil {
+		t.Fatal(err)
+	}
+	updateBody := fmt.Sprintf(`{"name":"Nightly scan","taskType":"scan","libraryId":%d,"cron":"0 4 * * *","enabled":true}`, f.libraryID)
+	update := request(f.handler, http.MethodPut, fmt.Sprintf("/api/v1/admin/scheduled-tasks/%d", task.ID), admin, []byte(updateBody))
+	if update.Code != http.StatusOK {
+		t.Fatalf("update status = %d: %s", update.Code, update.Body)
+	}
+	var updated domain.ScheduledTask
+	if err := json.Unmarshal(update.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Cron != "0 4 * * *" {
+		t.Fatalf("cron not updated: %#v", updated.Cron)
+	}
+	if updated.LastRunAt == nil || !updated.LastRunAt.UTC().Equal(lastRun.UTC()) {
+		t.Fatalf("last run was not preserved on edit: %#v", updated.LastRunAt)
+	}
+
+	if bad := request(f.handler, http.MethodPost, "/api/v1/admin/scheduled-tasks", admin, []byte(`{"name":"bad","taskType":"vacuum","cron":"not a cron"}`)); bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cron status = %d: %s", bad.Code, bad.Body)
+	}
+	if noLib := request(f.handler, http.MethodPost, "/api/v1/admin/scheduled-tasks", admin, []byte(`{"name":"n","taskType":"scan","cron":"0 3 * * *"}`)); noLib.Code != http.StatusBadRequest {
+		t.Fatalf("scan without library status = %d: %s", noLib.Code, noLib.Body)
+	}
+	if del := request(f.handler, http.MethodDelete, fmt.Sprintf("/api/v1/admin/scheduled-tasks/%d", task.ID), admin, nil); del.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d: %s", del.Code, del.Body)
 	}
 }
 
@@ -255,6 +311,142 @@ func TestMapShowsOnlyReadableGeotaggedMediaWithLibraryContext(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("bob should not see unreadable media: %#v", items)
+	}
+}
+
+func TestMapScopesToLibraryAndFolder(t *testing.T) {
+	f := setup(t)
+	photo, _ := f.store.Media(context.Background(), f.photoID)
+	photo.GPS = "50.45,30.52"
+	if _, err := f.store.UpsertMedia(context.Background(), photo); err != nil {
+		t.Fatal(err)
+	}
+	library, err := f.store.Library(context.Background(), f.libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFolder, err := f.store.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(f.mediaRoot, "family", "2026"), RelativePath: "2026"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPhoto, err := f.store.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: secondFolder.ID, Path: filepath.Join(f.mediaRoot, "family", "2026", "trip2.jpg"), RelativePath: "2026/trip2.jpg", Name: "trip2.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPhoto.GPS = "50.46,30.53"
+	if _, err := f.store.UpsertMedia(context.Background(), secondPhoto); err != nil {
+		t.Fatal(err)
+	}
+	alice := login(t, f.handler, "alice")
+	var items []domain.MapMedia
+	response := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d", f.libraryID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("library status = %d: %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("library-scoped map payload = %d items, want 2: %#v", len(items), items)
+	}
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("folder status = %d: %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != f.photoID {
+		t.Fatalf("folder-scoped map payload = %#v, want only %d", items, f.photoID)
+	}
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?folder=%d", f.folderID), alice, nil).Code; got != http.StatusBadRequest {
+		t.Fatalf("folder without library status = %d, want 400", got)
+	}
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=999999", f.libraryID), alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("missing folder status = %d, want 404", got)
+	}
+	bob := login(t, f.handler, "bob")
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d", f.libraryID), bob, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("bob library map status = %d, want 403", got)
+	}
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), bob, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("bob folder map status = %d, want 403", got)
+	}
+}
+
+func TestMapBBoxFiltersGeotaggedMedia(t *testing.T) {
+	f := setup(t)
+	item, _ := f.store.Media(context.Background(), f.photoID)
+	item.GPS = "50.45,30.52"
+	if _, err := f.store.UpsertMedia(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	alice := login(t, f.handler, "alice")
+	var items []domain.MapMedia
+	response := request(f.handler, http.MethodGet, "/api/v1/map?bbox=30.0,50.0,31.0,51.0", alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != f.photoID {
+		t.Fatalf("bbox payload = %#v, want only %d", items, f.photoID)
+	}
+	response = request(f.handler, http.MethodGet, "/api/v1/map?bbox=-50.0,-50.0,-40.0,-40.0", alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("empty bbox status = %d: %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("empty bbox payload = %#v, want none", items)
+	}
+	for _, query := range []string{
+		"/api/v1/map?bbox=30,50,31",
+		"/api/v1/map?bbox=a,50,31,51",
+		"/api/v1/map?bbox=31,50,30,51",
+		"/api/v1/map?bbox=30,51,31,50",
+		"/api/v1/map?bbox=30,50,200,51",
+	} {
+		if got := request(f.handler, http.MethodGet, query, alice, nil).Code; got != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want 400", query, got)
+		}
+	}
+}
+
+func TestLibraryStatsEndpoint(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	bob := login(t, f.handler, "bob")
+	var libraries []domain.Library
+	response := request(f.handler, http.MethodGet, "/api/v1/libraries", alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &libraries); err != nil {
+		t.Fatal(err)
+	}
+	if len(libraries) != 1 || libraries[0].Stats.Folders != 0 {
+		t.Fatalf("default listing should omit statistics: %#v", libraries)
+	}
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/stats", f.libraryID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("alice stats status = %d: %s", response.Code, response.Body)
+	}
+	var stats domain.LibraryStats
+	if err := json.Unmarshal(response.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Folders != 1 || stats.Files != 1 || stats.Images != 1 || stats.Videos != 0 {
+		t.Fatalf("unexpected stats: %#v", stats)
+	}
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/stats", f.libraryID), bob, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("bob stats status = %d, want 403", got)
+	}
+	if got := request(f.handler, http.MethodGet, "/api/v1/libraries/999999/stats", alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("missing library stats status = %d, want 404", got)
 	}
 }
 
@@ -435,6 +627,110 @@ func TestLoginCookieMaxAgeComesFromSettings(t *testing.T) {
 	}
 }
 
+func TestChangePasswordRequiresCurrentPassword(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	if got := request(f.handler, http.MethodPut, "/api/v1/me/password", alice, []byte(`{"currentPassword":"wrong","newPassword":"a-brand-new-password"}`)).Code; got != http.StatusForbidden {
+		t.Fatalf("wrong current password status = %d", got)
+	}
+	if got := request(f.handler, http.MethodPut, "/api/v1/me/password", alice, []byte(`{"currentPassword":"password","newPassword":"a-brand-new-password"}`)).Code; got != http.StatusOK {
+		t.Fatalf("valid change status = %d", got)
+	}
+	if _, err := f.store.Authenticate(context.Background(), "alice", "a-brand-new-password"); err != nil {
+		t.Fatalf("login with new password failed: %v", err)
+	}
+	if _, err := f.store.Authenticate(context.Background(), "alice", "password"); err == nil {
+		t.Fatal("old password still works")
+	}
+}
+
+func TestSetEmailAndConflict(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	if got := request(f.handler, http.MethodPut, "/api/v1/me/email", alice, []byte(`{"email":"ALICE@example.com"}`)).Code; got != http.StatusOK {
+		t.Fatalf("set email status = %d", got)
+	}
+	user, err := f.store.User(context.Background(), f.aliceID)
+	if err != nil || user.Email != "alice@example.com" {
+		t.Fatalf("stored email = %q, err=%v", user.Email, err)
+	}
+	bob := login(t, f.handler, "bob")
+	if got := request(f.handler, http.MethodPut, "/api/v1/me/email", bob, []byte(`{"email":"alice@example.com"}`)).Code; got != http.StatusConflict {
+		t.Fatalf("duplicate email status = %d", got)
+	}
+	if got := request(f.handler, http.MethodPut, "/api/v1/me/email", alice, []byte(`{"email":"not-an-email"}`)).Code; got != http.StatusBadRequest {
+		t.Fatalf("invalid email status = %d", got)
+	}
+}
+
+func TestForgotPasswordWithoutSMTP(t *testing.T) {
+	f := setup(t)
+	response := request(f.handler, http.MethodPost, "/api/v1/auth/forgot-password", "", []byte(`{"email":"alice@example.com"}`))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"smtpNotConfigured"`)) {
+		t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestForgotPasswordWithSMTPDoesNotRevealUnknownEmail(t *testing.T) {
+	f := setup(t)
+	settings, err := f.store.ServerSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.SMTPHost = "smtp.invalid"
+	settings.SMTPFrom = "media@example.com"
+	if err := f.store.SaveServerSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	response := request(f.handler, http.MethodPost, "/api/v1/auth/forgot-password", "", []byte(`{"email":"nobody@example.com"}`))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"sent":true`)) {
+		t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestResetPasswordFlow(t *testing.T) {
+	f := setup(t)
+	if err := f.store.SetUserEmail(context.Background(), f.aliceID, "alice@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	token := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	sum := sha256.Sum256([]byte(token))
+	expires := time.Now().UTC().Add(time.Hour)
+	if err := f.store.CreatePasswordResetToken(context.Background(), f.aliceID, hex.EncodeToString(sum[:]), expires); err != nil {
+		t.Fatal(err)
+	}
+	response := request(f.handler, http.MethodPost, "/api/v1/auth/reset-password", "", []byte(`{"token":"`+token+`","password":"a-brand-new-password"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("reset status = %d: %s", response.Code, response.Body)
+	}
+	if _, err := f.store.Authenticate(context.Background(), "alice", "a-brand-new-password"); err != nil {
+		t.Fatalf("login with reset password failed: %v", err)
+	}
+	replay := request(f.handler, http.MethodPost, "/api/v1/auth/reset-password", "", []byte(`{"token":"`+token+`","password":"another-new-password"}`))
+	if replay.Code != http.StatusBadRequest {
+		t.Fatalf("reused token status = %d", replay.Code)
+	}
+	if got := request(f.handler, http.MethodPost, "/api/v1/auth/reset-password", "", []byte(`{"token":"deadbeef","password":"a-brand-new-password"}`)).Code; got != http.StatusBadRequest {
+		t.Fatalf("invalid token status = %d", got)
+	}
+}
+
+func TestResetPasswordRejectsExpiredToken(t *testing.T) {
+	f := setup(t)
+	if err := f.store.SetUserEmail(context.Background(), f.aliceID, "alice@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	token := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	sum := sha256.Sum256([]byte(token))
+	if err := f.store.CreatePasswordResetToken(context.Background(), f.aliceID, hex.EncodeToString(sum[:]), time.Now().UTC().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	response := request(f.handler, http.MethodPost, "/api/v1/auth/reset-password", "", []byte(`{"token":"`+token+`","password":"a-brand-new-password"}`))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expired token status = %d: %s", response.Code, response.Body)
+	}
+}
+
 func TestFirstRunCreatesExactlyOneAdministrator(t *testing.T) {
 	repository := openSQLite(t)
 	handler := (&api.API{Store: repository, JWTSecret: []byte(secret)}).Handler()
@@ -478,30 +774,72 @@ func TestFirstRunRejectsWeakPassword(t *testing.T) {
 	}
 }
 
-func TestOnlyAdminCanChangeTranscodeCodec(t *testing.T) {
+func TestCodecIsUserSetting(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")
-	admin := login(t, f.handler, "admin")
-	payload := []byte(`{"transcodeCodec":"vp9","httpEnabled":true,"httpsEnabled":false,"finishedJobRetentionMinutes":15}`)
-	if got := request(f.handler, http.MethodPut, "/api/v1/admin/settings", alice, payload).Code; got != http.StatusForbidden {
-		t.Fatalf("regular user status = %d", got)
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"vp9"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("user codec status = %d", response.Code)
 	}
-	if got := request(f.handler, http.MethodPut, "/api/v1/admin/settings", admin, payload).Code; got != http.StatusOK {
-		t.Fatalf("admin status = %d", got)
+	settings, _ := f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.Codec != "vp9" {
+		t.Fatalf("stored codec = %q", settings.Codec)
 	}
-	settings, _ := f.store.ServerSettings(context.Background())
-	if settings.TranscodeCodec != "vp9" {
-		t.Fatalf("stored codec = %q", settings.TranscodeCodec)
+	if settings.Zoom != 100 {
+		t.Fatalf("missing zoom must default to 100, got %d", settings.Zoom)
 	}
-	if settings.FinishedJobRetentionMinutes != 15 {
-		t.Fatalf("stored finished job retention = %d", settings.FinishedJobRetentionMinutes)
+	adminSettings, _ := f.store.UserSettings(context.Background(), 1)
+	if adminSettings.Codec != "h264" {
+		t.Fatalf("default admin codec = %q", adminSettings.Codec)
+	}
+	if adminSettings.Zoom != 100 {
+		t.Fatalf("default admin zoom = %d", adminSettings.Zoom)
+	}
+}
+
+func TestUserZoomIsStoredPerUser(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"h264","zoom":125}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("user zoom status = %d", response.Code)
+	}
+	settings, _ := f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.Zoom != 125 {
+		t.Fatalf("stored zoom = %d", settings.Zoom)
+	}
+	adminSettings, _ := f.store.UserSettings(context.Background(), 1)
+	if adminSettings.Zoom != 100 {
+		t.Fatalf("zoom must not leak between users, admin = %d", adminSettings.Zoom)
+	}
+}
+
+func TestSettingsRejectInvalidZoom(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"h264","zoom":200}`))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid zoom status = %d", response.Code)
+	}
+}
+
+func TestSettingsAcceptSystemTheme(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"system","codec":"h264","zoom":100}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("system theme status = %d", response.Code)
+	}
+	settings, _ := f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.Theme != "system" {
+		t.Fatalf("stored theme = %q", settings.Theme)
 	}
 }
 
 func TestSettingsRejectCodecOutsideAllowList(t *testing.T) {
 	f := setup(t)
-	admin := login(t, f.handler, "admin")
-	response := request(f.handler, http.MethodPut, "/api/v1/admin/settings", admin, []byte(`{"transcodeCodec":"av1"}`))
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"av1"}`))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid codec status = %d", response.Code)
 	}

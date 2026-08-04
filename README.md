@@ -26,7 +26,7 @@ Why it is done like this right now:
 * I like maps from immich so much. I missed it in emby... But again, so many old images dont have gps as well... Added here as filed to db (with date above)
 * User would have own 'space' i.e. he/she can create own favorites over data as he/she wishes.
 * All modifications above don't touch original data. They simply mustn't. It is an axiom.
-* Video playing. Of course, you should avoid reencoding as much as you can while playing video. Therefore, lets user shafre information first what codec's browser supports. And if we fail then lets fallback to predefined one... Probably it should be user specific, since each user might have own codecs to support. But for now let it be common one and we will see in future.
+* Video playing. Of course, you should avoid reencoding as much as you can while playing video. Therefore, lets user shafre information first what codec's browser supports. And if we fail then we fall back to the user's own preference (per-account codec stored in user settings), since each user might have own codecs to support.
 
 ## Architecture
 
@@ -61,7 +61,7 @@ sh deploy/start.sh local-build
 ```
 
 HTTP is enabled by default and HTTPS is disabled. After creating the initial
-administrator, open **Settings → Network access** to enable or disable either
+administrator, open **Admin panel → System → Network** to enable or disable either
 protocol. At least one must remain enabled. Changes are persisted and Caddy
 reloads them automatically without Docker access or a container restart.
 
@@ -101,7 +101,7 @@ application data.
 
 Optional Emby import does not create a default runtime folder. If you need it,
 temporarily mount the folder that contains Emby's `data/library.db` and
-`data/users.db` into the API container, then open **Settings → Library → Emby
+`data/users.db` into the API container, then open **Admin panel → Import → Emby
 import** and enter the container paths. The importer copies:
 
 - Emby libraries (`MediaItems.Type=4` under `Media Folders`)
@@ -383,7 +383,25 @@ production roadmap.
 
 The browser advertises its H.264, H.265 and VP9 support to the playback
 endpoint. Matching source video is served unchanged with byte-range seeking.
-Otherwise FFmpeg transcodes as a fragmented stream to the fallback codec chosen
-in **Admin → Settings**. Its fixed accepted values are `h264`, `h265`, and
-`vp9`. H.264/H.265 use AAC audio in MP4; VP9 uses Opus audio in WebM. `h264` is
-the initial and safest default.
+Otherwise FFmpeg transcodes as a fragmented stream to the user's fallback
+codec, chosen per-account in **User menu → User settings**. Its fixed accepted
+values are `h264`, `h265`, and `vp9`. H.264/H.265 use AAC audio in MP4; VP9 uses
+Opus audio in WebM. `h264` is the initial and safest default. Because the codec
+is stored per user, each user can pick the codec their own devices play best
+(video is always transcoded with the requesting user's setting).
+
+## Accounts, email, and password reset
+
+Every account has its own preferences stored per user: the light/dark theme, a
+numeric UI zoom between 80% and 140% (default 100%, applied as a root font-size
+scale so folder and file names scale with it), and the video fallback codec.
+From the user menu, an account holder can also change their password and attach
+an email address.
+
+To send password-reset links, the administrator configures outbound SMTP under
+**Admin panel → System → Mail** (host, port, username, password, from address). The
+login screen then offers a "Forgot password?" flow that mails a single-use reset
+link valid for one hour. Reset tokens are stored as hashes, are consumed on
+first use, and never reveal whether a given address has an account. If no SMTP
+server is configured the flow explains that reset is unavailable and the
+account owner should contact an administrator.

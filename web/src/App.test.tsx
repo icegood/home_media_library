@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
@@ -8,7 +8,12 @@ const mockApi = vi.hoisted(() => ({
   me: vi.fn(),
   userSettings: vi.fn(),
   updateUserSettings: vi.fn(),
+  updateEmail: vi.fn(),
+  changePassword: vi.fn(),
+  forgotPassword: vi.fn(),
+  resetPassword: vi.fn(),
   libraries: vi.fn(),
+  libraryStats: vi.fn(),
   map: vi.fn(),
   settings: vi.fn(),
   updateSettings: vi.fn(),
@@ -54,26 +59,35 @@ vi.mock("./api", () => ({ api: mockApi }));
 
 beforeEach(() => {
   vi.resetAllMocks();
+  (window as any).matchMedia = undefined;
   localStorage.clear();
   delete document.documentElement.dataset.theme;
+  document.documentElement.style.fontSize = "";
   mockApi.setupStatus.mockResolvedValue({required:false});
   mockApi.me.mockRejectedValue(new Error("unauthorized"));
-  mockApi.userSettings.mockResolvedValue({theme:"light"});
-  mockApi.updateUserSettings.mockResolvedValue({theme:"dark"});
-  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", stats:{folders:3, files:12, images:10, videos:2}, roots:[
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264", zoom:100});
+  mockApi.updateUserSettings.mockResolvedValue({theme:"dark", codec:"h264", zoom:100});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
     {id:10, path:"/media/family/photos"}
   ]}]);
+  mockApi.libraryStats.mockResolvedValue({folders:3, files:12, images:10, videos:2});
   mockApi.map.mockResolvedValue([]);
   mockApi.settings.mockResolvedValue({
-    transcodeCodec:"h264", httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
+    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
     thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:10, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
-    sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30
+    sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
+    smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
   });
   mockApi.updateSettings.mockResolvedValue({
-    transcodeCodec:"h264", httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
+    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
     thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:10, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
-    sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30
+    sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
+    smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
   });
+  mockApi.updateEmail.mockResolvedValue({email:""});
+  mockApi.changePassword.mockResolvedValue({ok:true});
+  mockApi.forgotPassword.mockResolvedValue({sent:true});
+  mockApi.resetPassword.mockResolvedValue({ok:true});
   mockApi.createLibrary.mockResolvedValue({id:1, name:"Family"});
   mockApi.updateLibrary.mockResolvedValue({id:1, name:"Family"});
   mockApi.deleteLibrary.mockResolvedValue(undefined);
@@ -87,7 +101,7 @@ beforeEach(() => {
   mockApi.libraryAccess.mockResolvedValue([{user:{id:0, login:"admin", role:"admin"}, allowed:true}, {user:{id:2, login:"alice", role:"regular"}, allowed:false}]);
   mockApi.setLibraryAccess.mockResolvedValue(undefined);
   mockApi.entries.mockResolvedValue([]);
-  mockApi.folder.mockResolvedValue({id:20, parentId:-1, relativePath:"Photos"});
+  mockApi.folder.mockResolvedValue({id:20, parentId:-1, relativePath:"Photos", name:"Photos"});
   mockApi.folderEntries.mockResolvedValue([]);
   mockApi.libraryMedia.mockResolvedValue([]);
   mockApi.favoriteViews.mockResolvedValue([]);
@@ -135,28 +149,28 @@ test("unknown frontend route shows a 404 fallback", async () => {
 test("settings navigation opens thumbnail subsection and shows video thumbnail settings", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Settings menu"));
+  fireEvent.click(await screen.findByLabelText("Admin panel menu"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"Thumbnails"}));
-  expect(await screen.findByRole("heading", {name:"Settings"})).toBeInTheDocument();
+  expect(await screen.findByRole("heading", {name:"Admin panel"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"Thumbnails"})).toBeInTheDocument();
   expect(screen.getByText("Video thumbnails")).toBeInTheDocument();
   expect(screen.getByLabelText("Max thumbnails")).toHaveValue(10);
   expect(screen.getByLabelText("Minimum interval, seconds")).toHaveValue(120);
 });
 
-test("settings navigation exposes network encoding and timeout subsections", async () => {
+test("settings navigation exposes network mail and timeout subsections", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Settings menu"));
+  fireEvent.click(await screen.findByLabelText("Admin panel menu"));
   expect(await screen.findByRole("menuitem", {name:"Network"})).toBeInTheDocument();
-  expect(screen.getByRole("menuitem", {name:"Encoding"})).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", {name:"Mail"})).toBeInTheDocument();
   expect(screen.getByRole("menuitem", {name:"Timeouts"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("menuitem", {name:"Network"}));
   expect(await screen.findByRole("heading", {name:"Network"})).toBeInTheDocument();
   expect(screen.getByLabelText("Enable HTTP")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"Encoding"}));
-  expect(await screen.findByRole("heading", {name:"Encoding"})).toBeInTheDocument();
-  expect(screen.getByLabelText("Fallback video codec")).toHaveValue("h264");
+  fireEvent.click(screen.getByRole("button", {name:"Mail"}));
+  expect(await screen.findByRole("heading", {name:"Mail"})).toBeInTheDocument();
+  expect(screen.getByLabelText("SMTP host")).toHaveValue("");
   fireEvent.click(screen.getByRole("button", {name:"Timeouts"}));
   expect(await screen.findByRole("heading", {name:"Timeouts"})).toBeInTheDocument();
   expect(screen.getByLabelText("Remember login, hours")).toHaveValue(720);
@@ -172,8 +186,10 @@ test("all backend settings have visible admin controls", async () => {
   expect(screen.getByLabelText("Let’s Encrypt email")).toBeInTheDocument();
   expect(screen.getByLabelText("Certificate expires")).toHaveValue("Not installed yet");
 
-  fireEvent.click(screen.getByRole("button", {name:"Encoding"}));
-  expect(await screen.findByLabelText("Fallback video codec")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Mail"}));
+  expect(await screen.findByLabelText("SMTP host")).toBeInTheDocument();
+  expect(screen.getByLabelText("SMTP port")).toBeInTheDocument();
+  expect(screen.getByLabelText("From address")).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", {name:"Thumbnails"}));
   expect(await screen.findByLabelText("Width")).toBeInTheDocument();
@@ -199,22 +215,48 @@ test("all backend settings have visible admin controls", async () => {
 test("settings navigation opens libraries section", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Settings menu"));
+  fireEvent.click(await screen.findByLabelText("Admin panel menu"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"Libraries"}));
-  expect(await screen.findByRole("heading", {name:"Settings"})).toBeInTheDocument();
+  expect(await screen.findByRole("heading", {name:"Admin panel"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"Libraries"})).toBeInTheDocument();
   expect(screen.getByText("Family")).toBeInTheDocument();
 });
 
-test("libraries view permanently shows library statistics", async () => {
+test("libraries view shows statistics on name click with a calculating state", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  let resolveStats:(value:{folders:number; files:number; images:number; videos:number}) => void = () => {};
+  mockApi.libraryStats.mockReturnValueOnce(new Promise(resolve => { resolveStats = resolve; }));
+  render(<MemoryRouter><App/></MemoryRouter>);
+  expect(await screen.findByRole("button", {name:"Family"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Family"}));
+  const dialog = await screen.findByRole("dialog", {name:"Library statistics Family"});
+  expect(within(dialog).getByText("Calculating…")).toBeInTheDocument();
+  resolveStats({folders:3, files:12, images:10, videos:2});
+  expect(await within(dialog).findByText("Folders")).toBeInTheDocument();
+  expect(within(dialog).getByText("Files")).toBeInTheDocument();
+  expect(within(dialog).getByText("Images")).toBeInTheDocument();
+  expect(within(dialog).getByText("Videos")).toBeInTheDocument();
+  expect(within(dialog).getByText("12")).toBeInTheDocument();
+});
+
+test("library tile links into the library without a per-library map button", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
+  const openLink = await screen.findByRole("link", {name:"Open library Family"});
+  expect(openLink).toHaveAttribute("href", "/library/1");
+  expect(screen.queryByRole("link", {name:"Map of library Family"})).not.toBeInTheDocument();
+  expect(screen.queryByText(/folders ·/)).not.toBeInTheDocument();
+});
+
+test("admin library list hides statistics until the library name is clicked", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  await screen.findByRole("heading", {name:"Libraries"});
   expect(await screen.findByText("Family")).toBeInTheDocument();
-  expect(screen.getByText("Folders")).toBeInTheDocument();
-  expect(screen.getByText("Files")).toBeInTheDocument();
-  expect(screen.getByText("Images")).toBeInTheDocument();
-  expect(screen.getByText("Videos")).toBeInTheDocument();
-  expect(screen.getByText("12")).toBeInTheDocument();
+  expect(screen.queryByText(/folders ·/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:/photos/}));
+  expect(await screen.findByRole("dialog", {name:"Library statistics Family"})).toBeInTheDocument();
+  expect(await within(screen.getByRole("dialog", {name:"Library statistics Family"})).findByText("Folders")).toBeInTheDocument();
 });
 
 test("authenticated header renders user menu and clicking logout logs out", async () => {
@@ -235,7 +277,7 @@ test("authenticated header renders user menu and clicking logout logs out", asyn
 test("admin settings menu duplicates settings sections and opens selected section", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
-  const settingsMenu = await screen.findByLabelText("Settings menu");
+  const settingsMenu = await screen.findByLabelText("Admin panel menu");
   fireEvent.click(settingsMenu);
   const topMenu = settingsMenu.closest("details")?.querySelector('[role="menu"]');
   if (!(topMenu instanceof HTMLElement)) throw new Error("Settings submenu was not rendered");
@@ -244,17 +286,16 @@ test("admin settings menu duplicates settings sections and opens selected sectio
   expect(within(topMenu).getByText("Import")).toBeInTheDocument();
   expect(await screen.findByRole("menuitem", {name:"Libraries"})).toBeInTheDocument();
   expect(screen.getByRole("menuitem", {name:"Network"})).toBeInTheDocument();
-  expect(screen.getByRole("menuitem", {name:"Encoding"})).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", {name:"Mail"})).toBeInTheDocument();
   expect(screen.getByRole("menuitem", {name:"Timeouts"})).toBeInTheDocument();
   expect(screen.queryByRole("menuitem", {name:"Add library"})).not.toBeInTheDocument();
   expect(screen.getByRole("menuitem", {name:"Background jobs"})).toBeInTheDocument();
   expect(screen.getByRole("menuitem", {name:"Logs"})).toBeInTheDocument();
   expect(screen.getByRole("menuitem", {name:"Emby import"})).toBeInTheDocument();
-  expect(screen.getByRole("menuitem", {name:"Theme: light"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("menuitem", {name:"Background jobs"}));
-  expect(screen.getByLabelText("Settings menu").closest("details")).not.toHaveAttribute("open");
+  expect(screen.getByLabelText("Admin panel menu").closest("details")).not.toHaveAttribute("open");
   expect(await screen.findByRole("heading", {name:"Background jobs"})).toBeInTheDocument();
-  const sidebar = screen.getByLabelText("Settings sections");
+  const sidebar = screen.getByLabelText("Admin panel sections");
   expect(within(sidebar).getByText("Media")).toBeInTheDocument();
   expect(within(sidebar).getByText("Access")).toBeInTheDocument();
   expect(within(sidebar).getByText("System")).toBeInTheDocument();
@@ -262,11 +303,12 @@ test("admin settings menu duplicates settings sections and opens selected sectio
   expect(within(sidebar).getAllByRole("button").map(button => button.getAttribute("aria-label"))).toEqual([
     "Libraries",
     "Thumbnails",
-    "Encoding",
     "Users",
     "Network",
+    "Mail",
     "Timeouts",
     "Background jobs",
+    "Scheduled tasks",
     "Logs",
     "Emby import",
   ]);
@@ -275,7 +317,7 @@ test("admin settings menu duplicates settings sections and opens selected sectio
 test("top menus close when another menu or page content is clicked", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
-  const settingsMenu = await screen.findByLabelText("Settings menu");
+  const settingsMenu = await screen.findByLabelText("Admin panel menu");
   const userMenu = await screen.findByLabelText("User menu");
   fireEvent.click(settingsMenu);
   expect(settingsMenu.closest("details")).toHaveAttribute("open");
@@ -287,18 +329,160 @@ test("top menus close when another menu or page content is clicked", async () =>
   expect(userMenu.closest("details")).not.toHaveAttribute("open");
 });
 
-test("regular settings menu hides admin sections and can toggle theme", async () => {
+test("regular user has no settings menu and picks theme in user settings", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
   render(<MemoryRouter><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Settings menu"));
-  expect(screen.queryByRole("menuitem", {name:"Libraries"})).not.toBeInTheDocument();
-  expect(screen.queryByRole("menuitem", {name:"Background jobs"})).not.toBeInTheDocument();
-  expect(screen.queryByRole("menuitem", {name:"Logs"})).not.toBeInTheDocument();
-  const themeToggle = screen.getByRole("menuitem", {name:"Theme: light"});
-  fireEvent.click(themeToggle);
-  expect(screen.getByLabelText("Settings menu").closest("details")).not.toHaveAttribute("open");
+  expect(await screen.findByText("Your libraries")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Admin panel menu")).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"dark"}});
   expect(document.documentElement.dataset.theme).toBe("dark");
-  expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark"});
+  expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264", zoom:100}));
+});
+
+test("system theme resolves via prefers-color-scheme and updates on change", async () => {
+  let dark = false;
+  const listeners:Array<(event:{matches:boolean})=>void> = [];
+  const media:any = {
+    get matches() { return dark; },
+    addEventListener: (_:string, listener:any) => { listeners.push(listener); },
+    removeEventListener: () => undefined,
+  };
+  window.matchMedia = vi.fn().mockReturnValue(media);
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"system"}});
+  expect(document.documentElement.dataset.theme).toBe("light");
+  dark = true;
+  listeners.forEach(listener => listener({matches:true}));
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264", zoom:100}));
+});
+
+test("user settings modal changes codec email and password", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular", email:"ice@example.com"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  fireEvent.change(within(dialog).getByRole("combobox", {name:"Codec"}), {target:{value:"vp9"}});
+  expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9", zoom:100}));
+
+  fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
+  fireEvent.blur(within(dialog).getByLabelText("Email address"));
+  await waitFor(() => expect(mockApi.updateEmail).toHaveBeenCalledWith("new@example.com"));
+  expect(await within(dialog).findByText("Email saved.")).toBeInTheDocument();
+
+  fireEvent.click(within(dialog).getByRole("button", {name:/Change password/}));
+  const passwordDialog = await screen.findByRole("dialog", {name:"Change password"});
+  fireEvent.change(within(passwordDialog).getByLabelText("Current password"), {target:{value:"old-password"}});
+  fireEvent.change(within(passwordDialog).getByLabelText("New password"), {target:{value:"a-new-password"}});
+  fireEvent.change(within(passwordDialog).getByLabelText("Confirm new password"), {target:{value:"a-new-password"}});
+  fireEvent.click(within(passwordDialog).getByRole("button", {name:"Update password"}));
+  await waitFor(() => expect(mockApi.changePassword).toHaveBeenCalledWith("old-password", "a-new-password"));
+  expect(await within(passwordDialog).findByText("Password updated.")).toBeInTheDocument();
+});
+
+test("user settings modal changes zoom grade numerically", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  expect(within(dialog).getByRole("combobox", {name:"Zoom"})).toHaveValue("100");
+  fireEvent.change(within(dialog).getByRole("combobox", {name:"Zoom"}), {target:{value:"120"}});
+  expect(document.documentElement.style.fontSize).toBe("120%");
+  expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264", zoom:120}));
+  fireEvent.change(within(dialog).getByRole("combobox", {name:"Zoom"}), {target:{value:"80"}});
+  expect(document.documentElement.style.fontSize).toBe("80%");
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264", zoom:80}));
+});
+
+test("virtual grid mounts only the visible window of many entries first", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const many = Array.from({length:200}, (_, index) => {
+    const media = {
+      id:index + 1, folderId:20, relativePath:`img-${index + 1}.jpg`, name:`img-${index + 1}.jpg`,
+      kind:"image" as const, mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""
+    };
+    return {id:media.id, name:media.name, relativePath:media.relativePath, type:"media" as const, media};
+  });
+  mockApi.entries.mockResolvedValue(many);
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  await screen.findByText("img-1.jpg");
+  const mounted = document.querySelectorAll(".media");
+  expect(mounted.length).toBeGreaterThan(0);
+  expect(mounted.length).toBeLessThan(many.length);
+  expect(screen.queryByText("img-200.jpg")).not.toBeInTheDocument();
+});
+
+test("virtual grid shifts the mounted window while scrolling", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const many = Array.from({length:200}, (_, index) => {
+    const media = {
+      id:index + 1, folderId:20, relativePath:`img-${index + 1}.jpg`, name:`img-${index + 1}.jpg`,
+      kind:"image" as const, mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""
+    };
+    return {id:media.id, name:media.name, relativePath:media.relativePath, type:"media" as const, media};
+  });
+  mockApi.entries.mockResolvedValue(many);
+  const originalScrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  Object.defineProperty(window, "scrollY", {value:2000, writable:true, configurable:true});
+  try {
+    render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+    const firstItem = await screen.findByText("img-1.jpg");
+    const browser = document.querySelector(".virtual-browser");
+    expect(browser).not.toBeNull();
+    const rowStep = 292 + 18;
+    Object.defineProperty(browser!, "getBoundingClientRect", {value:() => ({
+      top: 400 - 2000, left:0, right:1024, bottom:400 - 2000 + rowStep * 6, width:1024, height:rowStep * 6, x:0, y:400 - 2000,
+    })});
+    fireEvent.scroll(window);
+    await waitFor(() => expect(screen.queryByText("img-1.jpg")).not.toBeInTheDocument());
+    expect(screen.getByText("img-50.jpg")).toBeInTheDocument();
+    expect(screen.queryByText("img-200.jpg")).not.toBeInTheDocument();
+    expect(firstItem).not.toBeInTheDocument();
+  } finally {
+    if (originalScrollY) Object.defineProperty(window, "scrollY", originalScrollY);
+    else delete (window as unknown as {scrollY?:number}).scrollY;
+  }
+});
+
+test("login forgot password flow requests a reset link", async () => {
+  mockApi.me.mockRejectedValue(new Error("unauthorized"));
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Forgot password?"}));
+  fireEvent.change(screen.getByLabelText("Email"), {target:{value:"ice@example.com"}});
+  fireEvent.click(screen.getByRole("button", {name:"Send reset link"}));
+  await waitFor(() => expect(mockApi.forgotPassword).toHaveBeenCalledWith("ice@example.com"));
+  expect(await screen.findByText("If an account exists for this email, a reset link has been sent.")).toBeInTheDocument();
+});
+
+test("reset page sets a new password from the token", async () => {
+  render(<MemoryRouter initialEntries={["/reset?token=abcdef123456"]}><App/></MemoryRouter>);
+  fireEvent.change(await screen.findByLabelText("New password"), {target:{value:"a-brand-new-password"}});
+  fireEvent.change(screen.getByLabelText("Confirm password"), {target:{value:"a-brand-new-password"}});
+  fireEvent.click(screen.getByRole("button", {name:"Reset password"}));
+  await waitFor(() => expect(mockApi.resetPassword).toHaveBeenCalledWith("abcdef123456", "a-brand-new-password"));
+  expect(await screen.findByText("Your password has been reset. You can now sign in.")).toBeInTheDocument();
 });
 
 test("admin user submenu does not contain settings sections", async () => {
@@ -312,6 +496,7 @@ test("admin user submenu does not contain settings sections", async () => {
   expect(userSubmenu).not.toHaveTextContent("Background jobs");
   expect(userSubmenu).not.toHaveTextContent("Logs");
   expect(userSubmenu).not.toHaveTextContent("Theme: light");
+  expect(userSubmenu).toHaveTextContent("User settings");
   expect(userSubmenu).toHaveTextContent("Logout");
 });
 
@@ -560,7 +745,7 @@ test("selected media items can receive the same gps in bulk", async () => {
   expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(101, {name:"two.jpg", gps:"50.45,30.52", takenAt:null});
 });
 
-test("library timeline groups media by editable date inside one library", async () => {
+test("library timeline groups media by date along a vertical ruler", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.libraryMedia.mockResolvedValue([
     {id:100, folderId:20, relativePath:"2020/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:00Z"},
@@ -568,10 +753,24 @@ test("library timeline groups media by editable date inside one library", async 
     {id:101, folderId:21, relativePath:"old.jpg", name:"old.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
   ]);
   render(<MemoryRouter initialEntries={["/library/1/timeline"]}><App/></MemoryRouter>);
-  expect(await screen.findByRole("heading", {name:"2020-08-21"})).toBeInTheDocument();
-  expect(screen.getByText("one.jpg")).toBeInTheDocument();
-  expect(screen.getByText("two.mp4")).toBeInTheDocument();
-  expect(screen.getByRole("heading", {name:"Unknown date"})).toBeInTheDocument();
+  await screen.findByText("two.mp4");
+  const cards = Array.from(document.querySelectorAll("article.card.media"));
+  expect(cards.map(card => card.textContent)).toEqual([
+    expect.stringContaining("two.mp4"),
+    expect.stringContaining("one.jpg"),
+    expect.stringContaining("old.jpg")
+  ]);
+  expect(screen.queryByRole("heading", {name:"2020-08-21"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", {name:"Unknown date"})).not.toBeInTheDocument();
+  const groups = Array.from(document.querySelectorAll(".timeline-grid .timeline-group"));
+  expect(groups.length).toBe(2);
+  expect(groups[0].querySelectorAll(".timeline-group-grid .media").length).toBe(2);
+  expect(groups[1].querySelectorAll(".timeline-group-grid .media").length).toBe(1);
+  const dateLabels = Array.from(document.querySelectorAll(".timeline-group .timeline-group-date"));
+  expect(dateLabels.map(label => label.textContent)).toEqual([
+    expect.stringContaining("2020"),
+    "Unknown date"
+  ]);
   fireEvent.click(screen.getByRole("button", {name:"Images"}));
   expect(screen.getByText("one.jpg")).toBeInTheDocument();
   expect(screen.queryByText("two.mp4")).not.toBeInTheDocument();
@@ -600,11 +799,27 @@ test("media name and gps are saved only after explicit save", async () => {
   fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"50.45,30.52"}});
   expect(mockApi.updateMediaDetails).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
-  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"renamed.jpg", gps:"50.45,30.52", takenAt:null}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"renamed.jpg", gps:"50.45,30.52", takenAt:""}));
   expect(await screen.findByText("Item saved.")).toBeInTheDocument();
   expect(screen.getByRole("link", {name:"GPS: 50.45,30.52"})).toHaveAttribute("href", "/map?item=100");
   fireEvent.click(screen.getByRole("button", {name:"Hide info panel"}));
   expect(screen.getByRole("button", {name:"Show info panel"})).toHaveTextContent("<<");
+});
+
+test("clearing gps in the info panel sends an empty string so the backend can NULL it", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraryMedia.mockResolvedValue([
+    {id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""}
+  ]);
+  mockApi.updateMediaDetails.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  const gps = await screen.findByLabelText("GPS");
+  expect(gps).toHaveValue("50.45,30.52");
+  fireEvent.change(gps, {target:{value:""}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:""}));
+  expect(await screen.findByText("Item saved.")).toBeInTheDocument();
 });
 
 test("media info shows full stored metadata as JSON under root nodes", async () => {
@@ -630,7 +845,7 @@ test("media viewer uses side arrows and keyboard shortcuts for previous and next
     {id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
   ]);
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
-  expect(await screen.findByRole("link", {name:"↑ Up"})).toHaveAttribute("href", "/library/1/folder/20");
+  expect(await screen.findByRole("link", {name:"Photos"})).toHaveAttribute("href", "/library/1/folder/20");
   expect(screen.getByRole("button", {name:"Show main menu"})).toHaveTextContent("vv");
   fireEvent.click(screen.getByRole("button", {name:"Show main menu"}));
   expect(screen.getByRole("button", {name:"Hide main menu"})).toHaveTextContent("^^");
@@ -664,15 +879,38 @@ test("media viewer up link goes to containing folder", async () => {
     {id:101, folderId:20, relativePath:"Trips/Day1/two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
   ]);
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByRole("link", {name:"↑ Up"}));
+  fireEvent.click(await screen.findByRole("link", {name:"Photos"}));
   await waitFor(() => expect(mockApi.folderEntries).toHaveBeenCalledWith(1, 20));
 });
 
-test("folder up link goes to parent folder or library root", async () => {
+test("folder breadcrumb links go through the folder chain to the library root", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.folder.mockResolvedValueOnce({id:21, parentId:20, relativePath:"Photos/Nested"});
+  mockApi.folder.mockResolvedValueOnce({id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"});
+  mockApi.folder.mockResolvedValueOnce({id:20, parentId:-1, relativePath:"Photos", name:"Photos"});
   render(<MemoryRouter initialEntries={["/library/1/folder/21"]}><App/></MemoryRouter>);
-  await waitFor(() => expect(screen.getByRole("link", {name:"↑ Up"})).toHaveAttribute("href", "/library/1/folder/20"));
+  await waitFor(() => expect(screen.getByText("Nested")).toBeInTheDocument());
+  expect(screen.getByRole("link", {name:"Photos"})).toHaveAttribute("href", "/library/1/folder/20");
+  expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1");
+  expect(screen.getByRole("link", {name:"Libraries"})).toHaveAttribute("href", "/");
+});
+
+test("breadcrumb uses the real folder name even when relativePath is empty", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folder.mockResolvedValueOnce({id:7, parentId:-1, relativePath:"", name:"Trip Photos"});
+  render(<MemoryRouter initialEntries={["/library/1/folder/7"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(screen.getByText("Trip Photos")).toBeInTheDocument());
+  expect(screen.queryByText("Folder 7")).not.toBeInTheDocument();
+});
+
+test("browser map button scopes to the library or current folder", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.entries.mockResolvedValue([]);
+  const first = render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(first.getAllByRole("link", {name:"Map"}).some(link => link.getAttribute("href") === "/map?library=1")).toBe(true));
+  first.unmount();
+  mockApi.folderEntries.mockResolvedValue([]);
+  const second = render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(second.getAllByRole("link", {name:"Map"}).some(link => link.getAttribute("href") === "/map?library=1&folder=20")).toBe(true));
 });
 
 test("media viewer without item query redirects to library root", async () => {
@@ -699,8 +937,87 @@ test("media info remounts metadata when navigating between neighboring files", a
   expect(screen.getByText(/"FileName": "DSC06361.JPG"/)).toBeInTheDocument();
 });
 
-test("old admin settings route redirects to the settings panel", async () => {
+test("old admin settings route redirects to the admin panel", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin/settings"]}><App/></MemoryRouter>);
-  await waitFor(() => expect(screen.getByRole("heading", {name:"Settings"})).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("heading", {name:"Admin panel"})).toBeInTheDocument());
+});
+
+test("map area selection fetches media inside the rectangle from the server and shows a right-side timeline panel", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const all = [
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""},
+    {id:102, libraryId:1, folderId:20, relativePath:"c.jpg", name:"c.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
+  ];
+  mockApi.map.mockImplementation(async (_libraryId, _folderId, bounds) => {
+    if (bounds) return [all[0]];
+    return all;
+  });
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  const button = await screen.findByRole("button", {name:"Select area"});
+  fireEvent.click(button);
+  const container = document.querySelector(".leaflet-container");
+  expect(container).not.toBeNull();
+  fireEvent.mouseDown(container!, {clientX:-200, clientY:-200});
+  fireEvent.mouseMove(container!, {clientX:200, clientY:200});
+  fireEvent.mouseUp(container!, {clientX:200, clientY:200});
+  expect(await screen.findByRole("complementary", {name:"Selected area"})).toBeInTheDocument();
+  expect(mockApi.map).toHaveBeenCalledWith(undefined, undefined, expect.objectContaining({
+    west: expect.any(Number), south: expect.any(Number), east: expect.any(Number), north: expect.any(Number)
+  }));
+  expect(screen.getByText("a.jpg")).toBeInTheDocument();
+  expect(screen.queryByText("b.jpg")).not.toBeInTheDocument();
+  expect(screen.queryByText("c.jpg")).not.toBeInTheDocument();
+  expect(document.querySelector(".map-timeline-panel .timeline-grid")).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", {name:"Clear"}));
+  expect(screen.queryByRole("complementary", {name:"Selected area"})).not.toBeInTheDocument();
+});
+
+test("map renders many markers progressively instead of all at once", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const many = Array.from({length:300}, (_, i) => ({
+    id:1000+i, libraryId:1, folderId:20, relativePath:`m${i}.jpg`, name:`m${i}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:`${i*5},${i*7}`, takenAt:"2020-08-21T12:34:00Z"
+  }));
+  mockApi.map.mockResolvedValue(many);
+  vi.useFakeTimers();
+  try {
+    render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+    await act(async () => { await Promise.resolve(); });
+    expect(document.querySelectorAll(".media-point-marker").length).toBe(200);
+    expect(screen.getByRole("status")).toHaveTextContent("Rendering markers…");
+    await act(async () => { vi.advanceTimersByTime(16); });
+    expect(document.querySelectorAll(".media-point-marker").length).toBe(many.length);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("clicking a map cluster opens the same timeline panel instead of a popup", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T13:00:00Z"}
+  ]);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  await screen.findByText("2");
+  await waitFor(() => {
+    const cluster = document.querySelector(".cluster-marker");
+    if (!cluster) throw new Error("cluster marker not rendered");
+    fireEvent.click(cluster);
+    expect(screen.getByRole("complementary", {name:"Selected area"})).toBeInTheDocument();
+  });
+  expect(screen.getByText("a.jpg")).toBeInTheDocument();
+  expect(screen.getByText("b.jpg")).toBeInTheDocument();
+  expect(document.querySelectorAll(".map-timeline-panel .timeline-group").length).toBe(1);
+  expect(document.querySelectorAll(".map-timeline-panel .timeline-group-date").length).toBe(1);
+  fireEvent.click(screen.getByRole("button", {name:"Clear"}));
+  expect(screen.queryByRole("complementary", {name:"Selected area"})).not.toBeInTheDocument();
 });

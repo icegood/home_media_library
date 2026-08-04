@@ -17,6 +17,7 @@ import (
 	"media-library/backend/internal/applog"
 	"media-library/backend/internal/gatewayconfig"
 	"media-library/backend/internal/scanner"
+	"media-library/backend/internal/scheduler"
 	"media-library/backend/internal/store"
 	"media-library/backend/internal/transcode"
 )
@@ -64,7 +65,7 @@ func main() {
 	}
 	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	handler := (&api.API{
+	apiInstance := &api.API{
 		Store:             repository,
 		Scanner:           scanner.Scanner{Store: repository},
 		Transcoder:        transcode.Service{},
@@ -75,7 +76,10 @@ func main() {
 		LogFile:           logPath,
 		Shutdown:          stop,
 		ContainerStop:     dockerStopSelf,
-	}).Handler()
+	}
+	handler := apiInstance.Handler()
+
+	go scheduler.Loop(stopCtx, repository, apiInstance)
 
 	server := &http.Server{
 		Addr:              addr,

@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"media-library/backend/internal/mail"
 )
 
 type Role string
@@ -19,6 +21,7 @@ type User struct {
 	ID           int    `json:"id"`
 	Login        string `json:"login"`
 	Role         Role   `json:"role"`
+	Email        string `json:"email"`
 	PasswordHash string `json:"-"`
 }
 
@@ -28,7 +31,6 @@ type LibraryUserAccess struct {
 }
 
 type ServerSettings struct {
-	TranscodeCodec                   string `json:"transcodeCodec"`
 	HTTPEnabled                      bool   `json:"httpEnabled"`
 	HTTPSEnabled                     bool   `json:"httpsEnabled"`
 	PublicDNS                        string `json:"publicDns"`
@@ -45,11 +47,26 @@ type ServerSettings struct {
 	LogRotateMaxSizeMB               int    `json:"logRotateMaxSizeMB"`
 	LogRotateMaxBackups              int    `json:"logRotateMaxBackups"`
 	LogRotateMaxAgeDays              int    `json:"logRotateMaxAgeDays"`
+	SMTPHost                         string `json:"smtpHost"`
+	SMTPPort                         int    `json:"smtpPort"`
+	SMTPUsername                     string `json:"smtpUsername"`
+	SMTPPassword                     string `json:"smtpPassword"`
+	SMTPFrom                         string `json:"smtpFrom"`
+}
+
+// SMTP returns the configured outbound mail settings.
+func (s ServerSettings) SMTP() mail.SMTPConfig {
+	return mail.SMTPConfig{
+		Host:     strings.TrimSpace(s.SMTPHost),
+		Port:     s.SMTPPort,
+		Username: s.SMTPUsername,
+		Password: s.SMTPPassword,
+		From:     strings.TrimSpace(s.SMTPFrom),
+	}
 }
 
 func DefaultServerSettings() ServerSettings {
 	return ServerSettings{
-		TranscodeCodec:                   "h264",
 		HTTPEnabled:                      true,
 		HTTPSEnabled:                     false,
 		PublicDNS:                        "",
@@ -66,15 +83,29 @@ func DefaultServerSettings() ServerSettings {
 		LogRotateMaxSizeMB:               10,
 		LogRotateMaxBackups:              5,
 		LogRotateMaxAgeDays:              30,
+		SMTPPort:                         587,
 	}
 }
 
 type UserSettings struct {
 	Theme string `json:"theme"`
+	Codec string `json:"codec"`
+	Zoom  int    `json:"zoom"`
 }
 
 func DefaultUserSettings() UserSettings {
-	return UserSettings{Theme: "light"}
+	return UserSettings{Theme: "light", Codec: "h264", Zoom: 100}
+}
+
+type ScheduledTask struct {
+	ID        int        `json:"id"`
+	Name      string     `json:"name"`
+	TaskType  string     `json:"taskType"`
+	LibraryID int        `json:"libraryId"`
+	Cron      string     `json:"cron"`
+	Enabled   bool       `json:"enabled"`
+	LastRunAt *time.Time `json:"lastRunAt,omitempty"`
+	NextRunAt time.Time  `json:"nextRunAt"`
 }
 
 type BackgroundJob struct {
@@ -186,6 +217,7 @@ type MediaFolder struct {
 	ParentID     int    `json:"parentId"`
 	Path         string `json:"-"`
 	RelativePath string `json:"relativePath"`
+	Name         string `json:"name"`
 }
 
 type Thumbnail struct {
@@ -225,6 +257,12 @@ type Entry struct {
 
 type GPSPatch struct {
 	GPS *string `json:"gps"`
+}
+
+// Bounds is a geographic rectangle in WGS84 degrees: west/east longitudes and
+// south/north latitudes, in the same order as the GeoJSON bbox array.
+type Bounds struct {
+	West, South, East, North float64
 }
 
 type MediaDetailsPatch struct {

@@ -1,6 +1,6 @@
 export type Role = "admin" | "regular";
 export type ID = number;
-export interface User { id:ID; login:string; role:Role }
+export interface User { id:ID; login:string; role:Role; email?:string }
 export interface LibraryUserAccess { user:User; allowed:boolean }
 export interface LibraryRoot { id:ID; path?:string }
 export interface LibraryStats { folders:number; files:number; images:number; videos:number }
@@ -17,7 +17,7 @@ export interface MapMedia extends Media {
   libraryId:ID;
 }
 export interface MediaFolder {
-  id:ID; parentId:ID; relativePath:string;
+  id:ID; parentId:ID; relativePath:string; name:string;
 }
 export interface ThumbnailRef { mediaId:ID; index:number }
 export interface Entry {
@@ -34,5 +34,9 @@ export interface JobStatus {
   status:"running"|"paused"|"cancelling"|"cancelled"|"done"|"failed"|string; paused:boolean; cancelable:boolean;
   currentPath:string; processed:number; total:number;
   error:string; startedAt:string; finishedAt?:string;
+}
+export interface ScheduledTask {
+  id:ID; name:string; taskType:"scan"|"thumbnail-create"|"vacuum"; libraryId:ID;
+  cron:string; enabled:boolean; lastRunAt?:string; nextRunAt:string;
 }
 export interface LogTail { path:string; lines:string[] }

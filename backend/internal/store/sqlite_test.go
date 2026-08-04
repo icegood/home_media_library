@@ -61,7 +61,7 @@ func TestSQLiteApplicationSettingsPersistAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.TranscodeCodec = "vp9"
+	settings.SMTPHost = "smtp.example.com"
 	if err := repository.SaveServerSettings(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +74,8 @@ func TestSQLiteApplicationSettingsPersistAcrossRestart(t *testing.T) {
 	}
 	defer restarted.Close()
 	settings, err = restarted.ServerSettings(context.Background())
-	if err != nil || settings.TranscodeCodec != "vp9" {
-		t.Fatalf("persisted codec = %q, err=%v", settings.TranscodeCodec, err)
+	if err != nil || settings.SMTPHost != "smtp.example.com" {
+		t.Fatalf("persisted smtpHost = %q, err=%v", settings.SMTPHost, err)
 	}
 }
 
@@ -295,7 +295,7 @@ func TestSQLiteRegularLibraryListingDoesNotEraseStoredRootPaths(t *testing.T) {
 	}
 }
 
-func TestSQLiteLibraryListingIncludesStatistics(t *testing.T) {
+func TestSQLiteLibraryStats(t *testing.T) {
 	repository, _ := openSQLite(t)
 	root := filepath.Join(t.TempDir(), "photos")
 	library := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
@@ -314,11 +314,10 @@ func TestSQLiteLibraryListingIncludesStatistics(t *testing.T) {
 	if _, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folder.ID, Path: filepath.Join(root, "Camera", "two.mp4"), Name: "two.mp4", Kind: domain.KindVideo, MIMEType: "video/mp4"}); err != nil {
 		t.Fatal(err)
 	}
-	libraries, err := repository.LibrariesForUser(context.Background(), 0, true)
+	stats, err := repository.LibraryStats(context.Background(), library.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats := libraries[0].Stats
 	if stats.Folders != 1 || stats.Files != 2 || stats.Images != 1 || stats.Videos != 1 {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
@@ -535,5 +534,116 @@ func TestSQLitePruneFolderKeepsRoot(t *testing.T) {
 	}
 	if _, err := repository.Folder(context.Background(), library.Roots[0].ID); err != nil {
 		t.Fatalf("root folder should survive prune: %v", err)
+	}
+}
+
+func TestSQLiteScheduledTasksLifecycle(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	library, err := repository.CreateLibrary(ctx, domain.Library{Name: "Family"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().UTC().Add(-time.Hour)
+	future := time.Now().UTC().Add(24 * time.Hour)
+	created, err := repository.CreateScheduledTask(ctx, domain.ScheduledTask{
+		Name: "Nightly scan", TaskType: "scan", LibraryID: library.ID,
+		Cron: "0 3 * * *", Enabled: true, NextRunAt: past,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == 0 {
+		t.Fatal("created task should have an id")
+	}
+	stored, err := repository.ScheduledTask(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Name != "Nightly scan" || stored.TaskType != "scan" || !stored.Enabled {
+		t.Fatalf("unexpected stored task: %#v", stored)
+	}
+	due, err := repository.DueScheduledTasks(ctx, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 || due[0].ID != created.ID {
+		t.Fatalf("expected one due task: %#v", due)
+	}
+	if err := repository.MarkScheduledTaskRun(ctx, created.ID, past, future); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ = repository.ScheduledTask(ctx, created.ID)
+	if stored.LastRunAt == nil || !stored.LastRunAt.UTC().Equal(past.UTC()) {
+		t.Fatalf("last run not recorded: %#v", stored.LastRunAt)
+	}
+	if !stored.NextRunAt.UTC().Equal(future.UTC()) {
+		t.Fatalf("next run not updated: %v", stored.NextRunAt)
+	}
+	if err := repository.DisableScheduledTask(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	due, err = repository.DueScheduledTasks(ctx, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("disabled task should not be due: %#v", due)
+	}
+	if err := repository.DeleteScheduledTask(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ScheduledTask(ctx, created.ID); err != store.ErrNotFound {
+		t.Fatalf("deleted task should be not found: %v", err)
+	}
+}
+
+func TestSQLiteScheduledTasksRemovedWithLibrary(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	library, err := repository.CreateLibrary(ctx, domain.Library{Name: "Family"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	libraryTask, err := repository.CreateScheduledTask(ctx, domain.ScheduledTask{
+		Name: "Scan", TaskType: "scan", LibraryID: library.ID, Cron: "0 3 * * *",
+		Enabled: true, NextRunAt: time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.CreateScheduledTask(ctx, domain.ScheduledTask{
+		Name: "Vacuum", TaskType: "vacuum", LibraryID: 0, Cron: "0 4 * * *",
+		Enabled: true, NextRunAt: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.DeleteScheduledTasksForLibrary(ctx, library.ID); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := repository.ScheduledTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID == libraryTask.ID {
+		t.Fatalf("library tasks should be removed, remaining: %#v", tasks)
+	}
+}
+
+func TestSQLiteVacuumJobCategoryPersists(t *testing.T) {
+	repository, _ := openSQLite(t)
+	job := domain.BackgroundJob{
+		ID: "vacuum-1", Category: "vacuum", Type: "vacuum", LibraryName: "Database maintenance",
+		Status: "done", StartedAt: time.Now().UTC(),
+	}
+	if err := repository.SaveJob(context.Background(), job); err != nil {
+		t.Fatalf("vacuum job category must be allowed by the schema: %v", err)
+	}
+	jobs, err := repository.Jobs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Category != "vacuum" {
+		t.Fatalf("vacuum job not persisted: %#v", jobs)
 	}
 }

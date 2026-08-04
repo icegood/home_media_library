@@ -2,11 +2,15 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,12 +22,14 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 
 	"media-library/backend/internal/applog"
 	"media-library/backend/internal/domain"
 	"media-library/backend/internal/embyimport"
 	"media-library/backend/internal/gatewayconfig"
 	"media-library/backend/internal/scanner"
+	"media-library/backend/internal/scheduler"
 	"media-library/backend/internal/store"
 	"media-library/backend/internal/transcode"
 )
@@ -70,10 +76,15 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup", a.setup)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
+	mux.HandleFunc("POST /api/v1/auth/forgot-password", a.forgotPassword)
+	mux.HandleFunc("POST /api/v1/auth/reset-password", a.resetPassword)
 	mux.Handle("GET /api/v1/me", a.auth(http.HandlerFunc(a.me)))
+	mux.Handle("PUT /api/v1/me/password", a.auth(http.HandlerFunc(a.changePassword)))
+	mux.Handle("PUT /api/v1/me/email", a.auth(http.HandlerFunc(a.setEmail)))
 	mux.Handle("GET /api/v1/settings", a.auth(http.HandlerFunc(a.userSettings)))
 	mux.Handle("PUT /api/v1/settings", a.auth(http.HandlerFunc(a.updateUserSettings)))
 	mux.Handle("GET /api/v1/libraries", a.auth(http.HandlerFunc(a.libraries)))
+	mux.Handle("GET /api/v1/libraries/{id}/stats", a.auth(http.HandlerFunc(a.libraryStats)))
 	mux.Handle("GET /api/v1/libraries/{id}/entries", a.auth(http.HandlerFunc(a.entries)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}", a.auth(http.HandlerFunc(a.folder)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}/entries", a.auth(http.HandlerFunc(a.folderEntries)))
@@ -100,6 +111,10 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/libraries/{id}/scan", a.auth(a.admin(http.HandlerFunc(a.scanLibrary))))
 	mux.Handle("POST /api/v1/admin/libraries/{id}/metadata/renew", a.auth(a.admin(http.HandlerFunc(a.scanLibrary))))
 	mux.Handle("POST /api/v1/admin/libraries/{id}/thumbnails", a.auth(a.admin(http.HandlerFunc(a.thumbnailLibrary))))
+	mux.Handle("GET /api/v1/admin/scheduled-tasks", a.auth(a.admin(http.HandlerFunc(a.scheduledTasks))))
+	mux.Handle("POST /api/v1/admin/scheduled-tasks", a.auth(a.admin(http.HandlerFunc(a.createScheduledTask))))
+	mux.Handle("PUT /api/v1/admin/scheduled-tasks/{id}", a.auth(a.admin(http.HandlerFunc(a.updateScheduledTask))))
+	mux.Handle("DELETE /api/v1/admin/scheduled-tasks/{id}", a.auth(a.admin(http.HandlerFunc(a.deleteScheduledTask))))
 	mux.Handle("GET /api/v1/admin/jobs", a.auth(a.admin(http.HandlerFunc(a.jobsList))))
 	mux.Handle("GET /api/v1/admin/logs", a.auth(a.admin(http.HandlerFunc(a.logs))))
 	mux.Handle("POST /api/v1/admin/jobs/{id}/pause", a.auth(a.admin(http.HandlerFunc(a.pauseJob))))
@@ -204,6 +219,184 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, user)
 }
 
+func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	var input struct {
+		Current string `json:"currentPassword"`
+		New     string `json:"newPassword"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil {
+		problem(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if len(input.New) < 12 || len(input.New) > 72 {
+		problem(w, http.StatusBadRequest, "password must contain between 12 and 72 characters")
+		return
+	}
+	user, err := a.Store.User(r.Context(), p.ID)
+	if err != nil {
+		problem(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Current)) != nil {
+		problem(w, http.StatusForbidden, "current password is incorrect")
+		return
+	}
+	if err := a.Store.UpdatePassword(r.Context(), p.ID, input.New); err != nil {
+		problem(w, http.StatusInternalServerError, "could not update password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *API) setEmail(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	var input struct {
+		Email string `json:"email"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil {
+		problem(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	if email != "" && !validEmail(email) {
+		problem(w, http.StatusBadRequest, "enter a valid email address")
+		return
+	}
+	if err := a.Store.SetUserEmail(r.Context(), p.ID, email); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			problem(w, http.StatusConflict, "this email is already in use by another account")
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "user not found")
+			return
+		}
+		problem(w, http.StatusInternalServerError, "could not save email")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"email": email})
+}
+
+func (a *API) forgotPassword(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil {
+		problem(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	if !validEmail(email) {
+		problem(w, http.StatusBadRequest, "enter a valid email address")
+		return
+	}
+	settings := a.serverSettings(r.Context())
+	smtp := settings.SMTP()
+	if !smtp.Enabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"sent": false, "reason": "smtpNotConfigured"})
+		return
+	}
+	user, err := a.Store.UserByEmail(r.Context(), email)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+		return
+	}
+	token := passwordResetToken()
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	if err := a.Store.CreatePasswordResetToken(r.Context(), user.ID, hashToken(token), expiresAt); err != nil {
+		problem(w, http.StatusInternalServerError, "could not create a reset link")
+		return
+	}
+	link := a.appBaseURL(r, settings) + "/reset?token=" + url.QueryEscape(token)
+	body := "A password reset was requested for your " + a.appName() + " account.\n\n" +
+		"Open this link to choose a new password (valid for one hour):\n\n" + link + "\n\n" +
+		"If you did not request this, you can safely ignore this email."
+	if err := smtp.Send(user.Email, "Password reset for "+a.appName(), body); err != nil {
+		applog.Printf(applog.Error, "password reset email to %q failed: %v", user.Email, err)
+		writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+}
+
+func (a *API) resetPassword(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil {
+		problem(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if len(input.Password) < 12 || len(input.Password) > 72 {
+		problem(w, http.StatusBadRequest, "password must contain between 12 and 72 characters")
+		return
+	}
+	if strings.TrimSpace(input.Token) == "" {
+		problem(w, http.StatusBadRequest, "reset token is missing")
+		return
+	}
+	userID, err := a.Store.ConsumePasswordResetToken(r.Context(), hashToken(input.Token))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusBadRequest, "this reset link is invalid or has expired")
+			return
+		}
+		problem(w, http.StatusInternalServerError, "could not use the reset link")
+		return
+	}
+	if err := a.Store.UpdatePassword(r.Context(), userID, input.Password); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusBadRequest, "this reset link is invalid or has expired")
+			return
+		}
+		problem(w, http.StatusInternalServerError, "could not update password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func passwordResetToken() string {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(raw)
+}
+
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *API) appBaseURL(r *http.Request, settings domain.ServerSettings) string {
+	host := strings.TrimSpace(settings.PublicDNS)
+	if host == "" {
+		host = r.Host
+	}
+	if settings.HTTPSEnabled {
+		return "https://" + host
+	}
+	return "http://" + host
+}
+
+func (a *API) appName() string {
+	return "Media Library"
+}
+
+func validEmail(value string) bool {
+	if len(value) < 3 || len(value) > 254 || !strings.Contains(value, "@") {
+		return false
+	}
+	at := strings.LastIndex(value, "@")
+	domainPart := value[at+1:]
+	if at == 0 || domainPart == "" || !strings.Contains(domainPart, ".") {
+		return false
+	}
+	return true
+}
+
 func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	settings, err := a.Store.UserSettings(r.Context(), p.ID)
@@ -218,17 +411,32 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	var input struct {
 		Theme string `json:"theme"`
+		Codec string `json:"codec"`
+		Zoom  int    `json:"zoom"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		problem(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	input.Theme = strings.TrimSpace(input.Theme)
-	if input.Theme != "light" && input.Theme != "dark" {
-		problem(w, http.StatusBadRequest, "theme must be light or dark")
+	if input.Theme != "light" && input.Theme != "dark" && input.Theme != "system" {
+		problem(w, http.StatusBadRequest, "theme must be light, dark, or system")
 		return
 	}
-	settings := domain.UserSettings{Theme: input.Theme}
+	input.Codec = strings.TrimSpace(input.Codec)
+	if _, err := transcode.ParseCodec(input.Codec); err != nil {
+		problem(w, http.StatusBadRequest, "codec must be one of: h264, h265, vp9")
+		return
+	}
+	zoom := input.Zoom
+	if zoom == 0 {
+		zoom = 100
+	}
+	if zoom < 80 || zoom > 140 {
+		problem(w, http.StatusBadRequest, "zoom must be between 80 and 140")
+		return
+	}
+	settings := domain.UserSettings{Theme: input.Theme, Codec: input.Codec, Zoom: zoom}
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {
 		problem(w, http.StatusInternalServerError, "could not save user settings")
 		return
@@ -244,6 +452,27 @@ func (a *API) libraries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+func (a *API) libraryStats(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if !a.requireRead(w, r, p, id) {
+		return
+	}
+	stats, err := a.Store.LibraryStats(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "library not found")
+			return
+		}
+		problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func (a *API) entries(w http.ResponseWriter, r *http.Request) {
@@ -640,7 +869,12 @@ func (a *API) play(w http.ResponseWriter, r *http.Request) {
 		http.ServeContent(w, r, item.Name, info.ModTime(), file)
 		return
 	}
-	target, err := transcode.ParseCodec(a.serverSettings(r.Context()).TranscodeCodec)
+	settings, err := a.Store.UserSettings(r.Context(), current(r).ID)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not read user settings")
+		return
+	}
+	target, err := transcode.ParseCodec(settings.Codec)
 	if err != nil {
 		problem(w, http.StatusInternalServerError, "invalid stored transcode codec")
 		return
@@ -1134,7 +1368,68 @@ func (a *API) openMedia(w http.ResponseWriter, r *http.Request) (domain.Media, *
 
 func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
-	items, err := a.Store.GeotaggedMedia(r.Context(), p.ID, p.Role == domain.RoleAdmin)
+	libraryID, folderID := 0, 0
+	if raw := r.URL.Query().Get("library"); raw != "" {
+		id, err := strconv.Atoi(raw)
+		if err != nil || id <= 0 {
+			problem(w, http.StatusBadRequest, "invalid library")
+			return
+		}
+		if !a.requireRead(w, r, p, id) {
+			return
+		}
+		libraryID = id
+	}
+	if raw := r.URL.Query().Get("folder"); raw != "" {
+		fid, err := strconv.Atoi(raw)
+		if err != nil || fid <= 0 {
+			problem(w, http.StatusBadRequest, "invalid folder")
+			return
+		}
+		if libraryID <= 0 {
+			problem(w, http.StatusBadRequest, "folder requires library")
+			return
+		}
+		if _, err := a.Store.EntriesForFolder(r.Context(), libraryID, fid); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				problem(w, http.StatusNotFound, "folder not found in library")
+				return
+			}
+			problem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		folderID = fid
+	}
+	items, err := func() ([]domain.MapMedia, error) {
+		raw := r.URL.Query().Get("bbox")
+		if raw == "" {
+			return a.Store.GeotaggedMedia(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID)
+		}
+		parts := strings.Split(raw, ",")
+		if len(parts) != 4 {
+			problem(w, http.StatusBadRequest, "invalid bbox, want west,south,east,north")
+			return nil, errSkip
+		}
+		values := make([]float64, 4)
+		for i, part := range parts {
+			value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+			if err != nil {
+				problem(w, http.StatusBadRequest, "invalid bbox")
+				return nil, errSkip
+			}
+			values[i] = value
+		}
+		if values[0] < -180 || values[2] > 180 || values[1] < -90 || values[3] > 90 || values[0] >= values[2] || values[1] >= values[3] {
+			problem(w, http.StatusBadRequest, "invalid bbox")
+			return nil, errSkip
+		}
+		return a.Store.MediaInArea(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, domain.Bounds{
+			West: values[0], South: values[1], East: values[2], North: values[3],
+		})
+	}()
+	if errors.Is(err, errSkip) {
+		return
+	}
 	if err != nil {
 		problem(w, 500, err.Error())
 		return
@@ -1203,6 +1498,9 @@ func (a *API) deleteLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.cleanupThumbnailRefs(r.Context(), thumbnailRefs)
+	if err := a.Store.DeleteScheduledTasksForLibrary(r.Context(), id); err != nil {
+		applog.Printf(applog.Error, "could not remove scheduled tasks for deleted library %d: %v", id, err)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1666,6 +1964,14 @@ func (a *API) recoverJobs() {
 			a.startJob(job, func(job *JobStatus) error { return a.runThumbnailJob(job, library, recreate) })
 		case "orphan-thumbnail-cleanup":
 			a.startJob(job, func(job *JobStatus) error { return a.runOrphanThumbnailCleanupJob(job) })
+		case "vacuum":
+			now := time.Now()
+			job.Status = "failed"
+			job.Error = "vacuum interrupted by restart"
+			job.Paused = false
+			job.Cancelable = false
+			job.FinishedAt = &now
+			_ = a.Store.SaveJob(context.Background(), job)
 		}
 	}
 }
@@ -1764,6 +2070,160 @@ func (a *API) jobsList(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].StartedAt.After(items[j].StartedAt) })
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (a *API) scheduledTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := a.Store.ScheduledTasks(r.Context())
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not read scheduled tasks")
+		return
+	}
+	writeJSON(w, http.StatusOK, tasks)
+}
+
+func (a *API) createScheduledTask(w http.ResponseWriter, r *http.Request) {
+	task, ok := a.scheduledTaskInput(w, r, false)
+	if !ok {
+		return
+	}
+	created, err := a.Store.CreateScheduledTask(r.Context(), task)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not create scheduled task")
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (a *API) updateScheduledTask(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	task, ok := a.scheduledTaskInput(w, r, true)
+	if !ok {
+		return
+	}
+	task.ID = id
+	existing, err := a.Store.ScheduledTask(r.Context(), id)
+	if err != nil {
+		problem(w, statusFor(err), "scheduled task not found")
+		return
+	}
+	task.LastRunAt = existing.LastRunAt
+	if err := a.Store.UpdateScheduledTask(r.Context(), task); err != nil {
+		problem(w, statusFor(err), "scheduled task not found")
+		return
+	}
+	tasks, err := a.Store.ScheduledTasks(r.Context())
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not read scheduled tasks")
+		return
+	}
+	for _, item := range tasks {
+		if item.ID == id {
+			writeJSON(w, http.StatusOK, item)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (a *API) deleteScheduledTask(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.Store.DeleteScheduledTask(r.Context(), id); err != nil {
+		problem(w, statusFor(err), "scheduled task not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) scheduledTaskInput(w http.ResponseWriter, r *http.Request, editing bool) (domain.ScheduledTask, bool) {
+	var input struct {
+		Name      string `json:"name"`
+		TaskType  string `json:"taskType"`
+		LibraryID int    `json:"libraryId"`
+		Cron      string `json:"cron"`
+		Enabled   *bool  `json:"enabled"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil {
+		problem(w, http.StatusBadRequest, "invalid JSON")
+		return domain.ScheduledTask{}, false
+	}
+	task := domain.ScheduledTask{
+		Name:      strings.TrimSpace(input.Name),
+		TaskType:  strings.TrimSpace(input.TaskType),
+		LibraryID: input.LibraryID,
+		Cron:      strings.TrimSpace(input.Cron),
+		Enabled:   true,
+	}
+	if input.Enabled != nil {
+		task.Enabled = *input.Enabled
+	}
+	if task.Name == "" {
+		problem(w, http.StatusBadRequest, "name is required")
+		return domain.ScheduledTask{}, false
+	}
+	switch task.TaskType {
+	case "scan", "thumbnail-create":
+		if task.LibraryID == 0 {
+			problem(w, http.StatusBadRequest, "libraryId is required for scan and thumbnail tasks")
+			return domain.ScheduledTask{}, false
+		}
+	case "vacuum":
+		if !editing {
+			task.LibraryID = 0
+		}
+	default:
+		problem(w, http.StatusBadRequest, "taskType must be one of: scan, thumbnail-create, vacuum")
+		return domain.ScheduledTask{}, false
+	}
+	now := task.NextRunAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	next, err := scheduler.Next(task.Cron, now)
+	if err != nil {
+		problem(w, http.StatusBadRequest, "invalid cron expression: "+err.Error())
+		return domain.ScheduledTask{}, false
+	}
+	task.NextRunAt = next
+	return task, true
+}
+
+func (a *API) StartScan(library domain.Library) error {
+	a.startScanJob(library)
+	return nil
+}
+
+func (a *API) StartThumbnails(library domain.Library) error {
+	a.startThumbnailJob(library)
+	return nil
+}
+
+func (a *API) StartVacuum() error {
+	return a.startVacuumJob()
+}
+
+func (a *API) startVacuumJob() error {
+	provider, ok := a.Store.(interface {
+		Vacuum(context.Context) error
+	})
+	if !ok {
+		applog.Printf(applog.Warn, "vacuum is not supported by the configured database store; skipping scheduled vacuum")
+		return nil
+	}
+	a.startJob(a.newJob("vacuum", domain.Library{ID: 0, Name: "Database maintenance"}, nil), func(job *JobStatus) error {
+		job.Total = 1
+		if err := provider.Vacuum(context.Background()); err != nil {
+			return err
+		}
+		job.Processed = 1
+		return nil
+	})
+	return nil
 }
 
 func (a *API) logs(w http.ResponseWriter, r *http.Request) {
@@ -1926,7 +2386,12 @@ func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
-var ErrInvalidJobState = errors.New("invalid job state")
+var (
+	ErrInvalidJobState = errors.New("invalid job state")
+	// errSkip unwinds the map handler closure after a response has already been
+	// written (e.g. a 400 for a malformed bbox).
+	errSkip = errors.New("skip")
+)
 
 func (a *API) controlJob(id string, update func(*JobStatus) error) (JobStatus, bool) {
 	var copy JobStatus
@@ -2107,7 +2572,6 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 		certificateExpiresAt = expires.Format("2006-01-02")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"transcodeCodec":                   settings.TranscodeCodec,
 		"httpEnabled":                      settings.HTTPEnabled,
 		"httpsEnabled":                     settings.HTTPSEnabled,
 		"publicDns":                        settings.PublicDNS,
@@ -2125,6 +2589,10 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 		"logRotateMaxSizeMB":               settings.LogRotateMaxSizeMB,
 		"logRotateMaxBackups":              settings.LogRotateMaxBackups,
 		"logRotateMaxAgeDays":              settings.LogRotateMaxAgeDays,
+		"smtpHost":                         settings.SMTPHost,
+		"smtpPort":                         settings.SMTPPort,
+		"smtpUsername":                     settings.SMTPUsername,
+		"smtpFrom":                         settings.SMTPFrom,
 	})
 }
 
@@ -2134,10 +2602,14 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	codec, err := transcode.ParseCodec(input.TranscodeCodec)
-	if err != nil {
-		problem(w, http.StatusBadRequest, "transcodeCodec must be one of: h264, h265, vp9")
+	input.SMTPHost = strings.TrimSpace(input.SMTPHost)
+	input.SMTPFrom = strings.TrimSpace(input.SMTPFrom)
+	if input.SMTPHost != "" && (input.SMTPPort < 1 || input.SMTPPort > 65535) {
+		problem(w, http.StatusBadRequest, "smtpPort must be between 1 and 65535")
 		return
+	}
+	if input.SMTPPort == 0 {
+		input.SMTPPort = 587
 	}
 	transport := gatewayconfig.Settings{
 		HTTPEnabled: input.HTTPEnabled, HTTPSEnabled: input.HTTPSEnabled,
@@ -2176,7 +2648,6 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "log rotate size must be 1..1024 MB, backups 1..100, age 1..3650 days")
 		return
 	}
-	input.TranscodeCodec = string(codec)
 	input.HTTPEnabled = transport.HTTPEnabled
 	input.HTTPSEnabled = transport.HTTPSEnabled
 	input.PublicDNS = transport.PublicDNS
@@ -2198,7 +2669,7 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		certificateExpiresAt = expires.Format("2006-01-02")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"transcodeCodec": string(codec), "httpEnabled": transport.HTTPEnabled,
+		"httpEnabled": transport.HTTPEnabled,
 		"httpsEnabled": transport.HTTPSEnabled, "publicDns": transport.PublicDNS,
 		"acmeEmail":                 transport.ACMEEmail,
 		"httpsCertificateExpiresAt": certificateExpiresAt,
@@ -2213,6 +2684,10 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		"logRotateMaxSizeMB":               input.LogRotateMaxSizeMB,
 		"logRotateMaxBackups":              input.LogRotateMaxBackups,
 		"logRotateMaxAgeDays":              input.LogRotateMaxAgeDays,
+		"smtpHost":                         input.SMTPHost,
+		"smtpPort":                         input.SMTPPort,
+		"smtpUsername":                     input.SMTPUsername,
+		"smtpFrom":                         input.SMTPFrom,
 	})
 }
 

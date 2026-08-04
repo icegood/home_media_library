@@ -79,12 +79,14 @@ case "$mode" in
     API_IMAGE="media-library-api:${PROJECT_VERSION}"
     WEB_IMAGE="media-library-web:${PROJECT_VERSION}"
     VCS_REF="${VCS_REF:-$(git -C .. rev-parse --short HEAD 2>/dev/null || printf local)}"
-    BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    if [ -z "${BUILD_DATE:-}" ] && [ "$VCS_REF" != "local" ]; then
+      BUILD_DATE="$(git -C .. show -s --format=%cI "$VCS_REF" 2>/dev/null || printf unknown)"
+    fi
+    BUILD_DATE="${BUILD_DATE:-unknown}"
     ENV_FILE="${ENV_FILE:-../.env}"
     export PROJECT_VERSION API_IMAGE WEB_IMAGE VCS_REF BUILD_DATE ENV_FILE RUNTIME_DIR MEDIA_ROOT
 
     docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml build
-    docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml rm -sf
     docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml up -d --remove-orphans
     ;;
 

@@ -27,9 +27,15 @@ type Store interface {
 	Users(ctx context.Context) ([]domain.User, error)
 	CreateUser(ctx context.Context, user domain.User, password string) (domain.User, error)
 	UpdateUser(ctx context.Context, user domain.User, password string) (domain.User, error)
+	SetUserEmail(ctx context.Context, userID int, email string) error
+	UserByEmail(ctx context.Context, email string) (domain.User, error)
+	UpdatePassword(ctx context.Context, userID int, password string) error
+	CreatePasswordResetToken(ctx context.Context, userID int, tokenHash string, expiresAt time.Time) error
+	ConsumePasswordResetToken(ctx context.Context, tokenHash string) (int, error)
 	ImportSnapshot(ctx context.Context, snapshot domain.ImportSnapshot) (domain.ImportResult, error)
 	LibrariesForUser(ctx context.Context, userID int, admin bool) ([]domain.Library, error)
 	Library(ctx context.Context, id int) (domain.Library, error)
+	LibraryStats(ctx context.Context, libraryID int) (domain.LibraryStats, error)
 	Folder(ctx context.Context, id int) (domain.MediaFolder, error)
 	CanRead(ctx context.Context, userID, libraryID int, admin bool) (bool, error)
 	CanReadMedia(ctx context.Context, userID, mediaID int, admin bool) (bool, error)
@@ -46,7 +52,8 @@ type Store interface {
 	IsFavorite(ctx context.Context, userID, mediaID int) (bool, error)
 	UpdateGPS(ctx context.Context, id int, patch domain.GPSPatch) (domain.Media, error)
 	UpdateMediaDetails(ctx context.Context, id int, patch domain.MediaDetailsPatch) (domain.Media, error)
-	GeotaggedMedia(ctx context.Context, userID int, admin bool) ([]domain.MapMedia, error)
+	GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error)
+	MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID int, bounds domain.Bounds) ([]domain.MapMedia, error)
 	MediaForLibrary(ctx context.Context, libraryID int) ([]domain.Media, error)
 	FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error)
 	ThumbnailCleanupRefsForLibrary(ctx context.Context, libraryID int) (domain.ThumbnailCleanupRefs, error)
@@ -68,4 +75,13 @@ type Store interface {
 	Jobs(ctx context.Context) ([]domain.BackgroundJob, error)
 	UnfinishedJobs(ctx context.Context) ([]domain.BackgroundJob, error)
 	DeleteFinishedJobsBefore(ctx context.Context, before time.Time) error
+	ScheduledTasks(ctx context.Context) ([]domain.ScheduledTask, error)
+	ScheduledTask(ctx context.Context, id int) (domain.ScheduledTask, error)
+	CreateScheduledTask(ctx context.Context, task domain.ScheduledTask) (domain.ScheduledTask, error)
+	UpdateScheduledTask(ctx context.Context, task domain.ScheduledTask) error
+	DeleteScheduledTask(ctx context.Context, id int) error
+	DeleteScheduledTasksForLibrary(ctx context.Context, libraryID int) error
+	DisableScheduledTask(ctx context.Context, id int) error
+	DueScheduledTasks(ctx context.Context, now time.Time) ([]domain.ScheduledTask, error)
+	MarkScheduledTaskRun(ctx context.Context, id int, lastRunAt, nextRunAt time.Time) error
 }

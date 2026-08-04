@@ -53,6 +53,13 @@ func (s *Postgres) Close() error {
 	return s.db.Close()
 }
 
+// Vacuum runs PostgreSQL's VACUUM (ANALYZE). It is safe to run outside a
+// transaction; Exec runs in autocommit so no transaction block is opened.
+func (s *Postgres) Vacuum(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `VACUUM (ANALYZE)`)
+	return err
+}
+
 func (s *Postgres) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY,
@@ -229,8 +236,8 @@ func (s *Postgres) SaveUserSettings(ctx context.Context, userID int, settings do
 func (s *Postgres) Authenticate(ctx context.Context, login, password string) (domain.User, error) {
 	login = strings.ToLower(strings.TrimSpace(login))
 	var user domain.User
-	err := s.db.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE login = $1`, login).
-		Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role)
+	err := s.db.QueryRowContext(ctx, `SELECT id, login, password_hash, role, COALESCE(email, '') FROM users WHERE login = $1`, login).
+		Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role, &user.Email)
 	if err != nil {
 		return user, translateErr(err)
 	}
@@ -253,8 +260,8 @@ func (s *Postgres) Authenticate(ctx context.Context, login, password string) (do
 
 func (s *Postgres) User(ctx context.Context, id int) (domain.User, error) {
 	var user domain.User
-	err := s.db.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE id = $1`, id).
-		Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role)
+	err := s.db.QueryRowContext(ctx, `SELECT id, login, password_hash, role, COALESCE(email, '') FROM users WHERE id = $1`, id).
+		Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role, &user.Email)
 	if err != nil {
 		return user, translateErr(err)
 	}
@@ -262,7 +269,7 @@ func (s *Postgres) User(ctx context.Context, id int) (domain.User, error) {
 }
 
 func (s *Postgres) Users(ctx context.Context) ([]domain.User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, login, password_hash, role FROM users ORDER BY role, login`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, login, password_hash, role, COALESCE(email, '') FROM users ORDER BY role, login`)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +277,7 @@ func (s *Postgres) Users(ctx context.Context) ([]domain.User, error) {
 	var users []domain.User
 	for rows.Next() {
 		var user domain.User
-		if err := rows.Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role); err != nil {
+		if err := rows.Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role, &user.Email); err != nil {
 			return nil, err
 		}
 		users = append(users, user)
@@ -328,6 +335,78 @@ func (s *Postgres) UpdateUser(ctx context.Context, user domain.User, password st
 		return domain.User{}, ErrNotFound
 	}
 	return s.User(ctx, user.ID)
+}
+
+func (s *Postgres) SetUserEmail(ctx context.Context, userID int, email string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET email = $1 WHERE id = $2`, email, userID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
+		return err
+	}
+	return rowsAffectedErr(res)
+}
+
+func (s *Postgres) UserByEmail(ctx context.Context, email string) (domain.User, error) {
+	var user domain.User
+	err := s.db.QueryRowContext(ctx, `SELECT id, login, password_hash, role, COALESCE(email, '') FROM users WHERE email = $1`, email).
+		Scan(&user.ID, &user.Login, &user.PasswordHash, &user.Role, &user.Email)
+	if err != nil {
+		return user, translateErr(err)
+	}
+	return user, nil
+}
+
+func (s *Postgres) UpdatePassword(ctx context.Context, userID int, password string) error {
+	if len(password) < 12 {
+		return ErrNotFound
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = $1 WHERE id = $2`, string(hash), userID)
+	if err != nil {
+		return err
+	}
+	return rowsAffectedErr(res)
+}
+
+func (s *Postgres) CreatePasswordResetToken(ctx context.Context, userID int, tokenHash string, expiresAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO password_reset_tokens(token_hash, user_id, created_at, expires_at) VALUES($1,$2,$3,$4)`,
+		tokenHash, userID, time.Now().UTC().Format(time.RFC3339), expiresAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *Postgres) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var userID int
+	var expiresAt string
+	err = tx.QueryRowContext(ctx, `SELECT user_id, expires_at FROM password_reset_tokens WHERE token_hash = $1`, tokenHash).
+		Scan(&userID, &expiresAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if expires, parseErr := time.Parse(time.RFC3339, expiresAt); parseErr != nil || time.Now().After(expires) {
+		_, _ = tx.ExecContext(ctx, `DELETE FROM password_reset_tokens WHERE token_hash = $1`, tokenHash)
+		_ = tx.Commit()
+		return 0, ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM password_reset_tokens WHERE token_hash = $1`, tokenHash); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return userID, nil
 }
 
 func (s *Postgres) ImportSnapshot(ctx context.Context, snapshot domain.ImportSnapshot) (domain.ImportResult, error) {
@@ -493,7 +572,7 @@ func (s *Postgres) loadRoots(ctx context.Context, libraryID int) []domain.Librar
 	return roots
 }
 
-func (s *Postgres) libraryStats(ctx context.Context, libraryID int) domain.LibraryStats {
+func (s *Postgres) LibraryStats(ctx context.Context, libraryID int) (domain.LibraryStats, error) {
 	var stats domain.LibraryStats
 	query := `WITH RECURSIVE sub(id) AS (
 		SELECT lr.folder_id FROM library_roots lr WHERE lr.library_id = $1
@@ -508,9 +587,9 @@ func (s *Postgres) libraryStats(ctx context.Context, libraryID int) domain.Libra
 	err := s.db.QueryRowContext(ctx, query, libraryID, libraryID).
 		Scan(&stats.Folders, &stats.Files, &stats.Videos, &stats.Images)
 	if err != nil {
-		return domain.LibraryStats{}
+		return domain.LibraryStats{}, translateErr(err)
 	}
-	return stats
+	return stats, nil
 }
 
 func (s *Postgres) loadLibrary(ctx context.Context, id int) (domain.Library, error) {
@@ -521,7 +600,6 @@ func (s *Postgres) loadLibrary(ctx context.Context, id int) (domain.Library, err
 		return library, translateErr(err)
 	}
 	library.Roots = s.loadRoots(ctx, id)
-	library.Stats = s.libraryStats(ctx, id)
 	return library, nil
 }
 
@@ -581,6 +659,7 @@ func (s *Postgres) Folder(ctx context.Context, id int) (domain.MediaFolder, erro
 	} else {
 		folder.ParentID = domain.InvalidID
 	}
+	folder.Name = folderLabel(folder)
 	return folder, nil
 }
 
@@ -1050,16 +1129,129 @@ func (s *Postgres) UpdateMediaDetails(ctx context.Context, id int, patch domain.
 	return s.Media(ctx, id)
 }
 
-func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool) ([]domain.MapMedia, error) {
-	query := `WITH RECURSIVE covers(folder_id, library_id) AS (
-		SELECT lr.folder_id, lr.library_id FROM library_roots lr
-		UNION ALL
-		SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-	SELECT ` + mediaColumns + `, MIN(covers.library_id)
-	FROM media m JOIN covers ON covers.folder_id = m.folder_id
-	WHERE m.gps <> '' AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
-	GROUP BY m.id`
+func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error) {
+	var query string
+	switch {
+	case folderID > 0:
+		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT $1::int, $2::int
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		FROM media m JOIN covers ON covers.folder_id = m.folder_id
+		WHERE m.gps <> '' AND ($3 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $4))
+		GROUP BY m.id`
+	case libraryID > 0:
+		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = $1::int
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		FROM media m JOIN covers ON covers.folder_id = m.folder_id
+		WHERE m.gps <> '' AND ($2 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $3))
+		GROUP BY m.id`
+	default:
+		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		FROM media m JOIN covers ON covers.folder_id = m.folder_id
+		WHERE m.gps <> '' AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
+		GROUP BY m.id`
+	}
 	args := []any{}
+	switch {
+	case folderID > 0:
+		if admin {
+			args = append(args, folderID, libraryID, 1, 0)
+		} else {
+			args = append(args, folderID, libraryID, 0, userID)
+		}
+	case libraryID > 0:
+		if admin {
+			args = append(args, libraryID, 1, 0)
+		} else {
+			args = append(args, libraryID, 0, userID)
+		}
+	default:
+		if admin {
+			args = append(args, 1, 0)
+		} else {
+			args = append(args, 0, userID)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MapMedia{}
+	roots := map[int]string{}
+	for rows.Next() {
+		var libraryID int
+		item, err := scanMedia(rows, &libraryID)
+		if err != nil {
+			return nil, err
+		}
+		root, ok := roots[item.FolderID]
+		if !ok {
+			root = s.rootPathForFolder(ctx, item.FolderID)
+			roots[item.FolderID] = root
+		}
+		if root != "" {
+			item.RelativePath = strings.TrimPrefix(strings.TrimPrefix(item.Path, root), "/")
+		}
+		out = append(out, domain.MapMedia{Media: item, LibraryID: libraryID})
+	}
+	return out, rows.Err()
+}
+
+// MediaInArea returns geotagged media the user may read whose point falls inside
+// bounds. The rectangle test uses PostGIS's && operator on the generated geom
+// column; the GiST index media_geom_idx serves the lookup.
+func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID int, bounds domain.Bounds) ([]domain.MapMedia, error) {
+	var query string
+	switch {
+	case folderID > 0:
+		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT $1::int, $2::int
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		FROM media m JOIN covers ON covers.folder_id = m.folder_id
+		WHERE m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
+			AND ($7 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $8))
+		GROUP BY m.id`
+	case libraryID > 0:
+		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = $1::int
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		FROM media m JOIN covers ON covers.folder_id = m.folder_id
+		WHERE m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
+			AND ($6 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $7))
+		GROUP BY m.id`
+	default:
+		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		FROM media m JOIN covers ON covers.folder_id = m.folder_id
+		WHERE m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+			AND ($5 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $6))
+		GROUP BY m.id`
+	}
+	args := []any{}
+	switch {
+	case folderID > 0:
+		args = append(args, folderID, libraryID)
+	case libraryID > 0:
+		args = append(args, libraryID)
+	}
+	args = append(args, bounds.West, bounds.South, bounds.East, bounds.North)
 	if admin {
 		args = append(args, 1, 0)
 	} else {
@@ -1627,6 +1819,114 @@ func (s *Postgres) UnfinishedJobs(ctx context.Context) ([]domain.BackgroundJob, 
 func (s *Postgres) DeleteFinishedJobsBefore(ctx context.Context, before time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM background_jobs WHERE finished_at IS NOT NULL AND finished_at < $1`, before.UTC())
 	return err
+}
+
+func (s *Postgres) ScheduledTasks(ctx context.Context) ([]domain.ScheduledTask, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, task_type, library_id, cron, enabled, last_run_at, next_run_at
+		FROM scheduled_tasks ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tasks := []domain.ScheduledTask{}
+	for rows.Next() {
+		task, err := scanPostgresScheduledTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
+func (s *Postgres) ScheduledTask(ctx context.Context, id int) (domain.ScheduledTask, error) {
+	task, err := scanPostgresScheduledTask(s.db.QueryRowContext(ctx, `SELECT id, name, task_type, library_id, cron, enabled, last_run_at, next_run_at
+		FROM scheduled_tasks WHERE id = $1`, id))
+	if err != nil {
+		return domain.ScheduledTask{}, translateErr(err)
+	}
+	return task, nil
+}
+
+func (s *Postgres) CreateScheduledTask(ctx context.Context, task domain.ScheduledTask) (domain.ScheduledTask, error) {
+	err := s.db.QueryRowContext(ctx, `INSERT INTO scheduled_tasks(name, task_type, library_id, cron, enabled, last_run_at, next_run_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		task.Name, task.TaskType, task.LibraryID, task.Cron, task.Enabled, task.LastRunAt, task.NextRunAt.UTC()).Scan(&task.ID)
+	return task, err
+}
+
+func (s *Postgres) UpdateScheduledTask(ctx context.Context, task domain.ScheduledTask) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE scheduled_tasks SET name = $1, task_type = $2, library_id = $3, cron = $4, enabled = $5, last_run_at = $6, next_run_at = $7
+		WHERE id = $8`,
+		task.Name, task.TaskType, task.LibraryID, task.Cron, task.Enabled, task.LastRunAt, task.NextRunAt.UTC(), task.ID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Postgres) DeleteScheduledTask(ctx context.Context, id int) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM scheduled_tasks WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Postgres) DeleteScheduledTasksForLibrary(ctx context.Context, libraryID int) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM scheduled_tasks WHERE library_id = $1`, libraryID)
+	return err
+}
+
+func (s *Postgres) DisableScheduledTask(ctx context.Context, id int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE scheduled_tasks SET enabled = false WHERE id = $1`, id)
+	return err
+}
+
+func (s *Postgres) DueScheduledTasks(ctx context.Context, now time.Time) ([]domain.ScheduledTask, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, task_type, library_id, cron, enabled, last_run_at, next_run_at
+		FROM scheduled_tasks WHERE enabled = true AND next_run_at <= $1 ORDER BY next_run_at`, now.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tasks := []domain.ScheduledTask{}
+	for rows.Next() {
+		task, err := scanPostgresScheduledTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
+func (s *Postgres) MarkScheduledTaskRun(ctx context.Context, id int, lastRunAt, nextRunAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE scheduled_tasks SET last_run_at = $1, next_run_at = $2 WHERE id = $3`,
+		lastRunAt.UTC(), nextRunAt.UTC(), id)
+	return err
+}
+
+func scanPostgresScheduledTask(row interface{ Scan(...any) error }) (domain.ScheduledTask, error) {
+	var task domain.ScheduledTask
+	if err := row.Scan(&task.ID, &task.Name, &task.TaskType, &task.LibraryID, &task.Cron, &task.Enabled, &task.LastRunAt, &task.NextRunAt); err != nil {
+		return task, err
+	}
+	return task, nil
 }
 
 func (s *Postgres) jobsWhere(ctx context.Context, where string) ([]domain.BackgroundJob, error) {

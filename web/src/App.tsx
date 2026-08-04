@@ -1,15 +1,18 @@
-import { FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import { api } from "./api";
-import type { EmbyImportResult, Entry, FavoriteView, FilesystemListing, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, User, VideoThumbnail } from "./types";
+import { api, type UserSettings as UserSettingsPayload } from "./api";
+import type { EmbyImportResult, Entry, FavoriteView, FilesystemListing, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export function App() {
   const [user, setUser] = useState<User|null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
   const [ready, setReady] = useState(false);
-  const [theme, setTheme] = useState<"light"|"dark">("light");
+  const [theme, setTheme] = useState<"light"|"dark"|"system">("light");
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
+  const [zoom, setZoom] = useState(100);
+  const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const shellRef = useRef<HTMLDivElement|null>(null);
   useEffect(() => {
     api.setupStatus()
@@ -20,11 +23,22 @@ export function App() {
       .finally(() => setReady(true));
   }, []);
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!media) return;
+    const onChange = (event:MediaQueryListEvent) => setSystemDark(event.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+  const resolvedTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+  }, [resolvedTheme]);
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${zoom}%`;
+  }, [zoom]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => setTheme(settings.theme)).catch(() => undefined);
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); }).catch(() => undefined);
   }, [user?.id]);
   useEffect(() => {
     function closeTopMenus(event:PointerEvent) {
@@ -36,7 +50,7 @@ export function App() {
     document.addEventListener("pointerdown", closeTopMenus);
     return () => document.removeEventListener("pointerdown", closeTopMenus);
   }, []);
-  const upTarget = useUpTarget();
+  const crumbs = useBreadcrumb();
   const location = useLocation();
   const viewerMode = /^\/library\/[^/]+\/view\/[^/]+$/.test(location.pathname) || /^\/favorites\/view\/[^/]+$/.test(location.pathname);
   const [topMenuOpen, setTopMenuOpen] = useState(false);
@@ -45,14 +59,7 @@ export function App() {
   }, [viewerMode, location.pathname]);
   if (!ready) return <main className="center">Loading…</main>;
   if (setupRequired) return <FirstSetup onComplete={user => { setSetupRequired(false); setUser(user); }}/>;
-  if (!user) return <Login onLogin={setUser}/>;
-  function toggleTheme() {
-    setTheme(current => {
-      const next = current === "dark" ? "light" : "dark";
-      if (user) void api.updateUserSettings({theme: next}).catch(() => undefined);
-      return next;
-    });
-  }
+  if (!user) return location.pathname.startsWith("/reset") ? <ResetPassword/> : <Login onLogin={setUser}/>;
   async function handleLogout() {
     await api.logout().catch(() => undefined);
     setUser(null);
@@ -66,24 +73,23 @@ export function App() {
   }
   return <div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     {viewerMode && <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>}
-    <header>{upTarget ? <Link to={upTarget} className="brand">↑ Up</Link> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link><Link to="/map">Map</Link>
-      <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
-        <summary className="menu-trigger" aria-label="Settings menu">Settings</summary>
+    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link><Link to="/map">Map</Link>
+      {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
+        <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
         <div className="nav-submenu" role="menu" onClick={closeParentDetails}>
-          {user.role === "admin" && <>
-            {settingsGroups.map(group => <div className="nav-submenu-group" key={group.label}>
-              <span className="submenu-group-label">{group.label}</span>
-              {group.items.map(item => <Link key={item.id} role="menuitem" to={`/admin${item.id === "libraries" ? "" : `?section=${item.id}`}`}>{item.label}</Link>)}
-            </div>)}
-          </>}
-          <button type="button" className="submenu-button" role="menuitem" onClick={toggleTheme}>Theme: {theme === "dark" ? "dark" : "light"}</button>
+          {settingsGroups.map(group => <div className="nav-submenu-group" key={group.label}>
+            <span className="submenu-group-label">{group.label}</span>
+            {group.items.map(item => <Link key={item.id} role="menuitem" to={`/admin${item.id === "libraries" ? "" : `?section=${item.id}`}`}>{item.label}</Link>)}
+          </div>)}
         </div>
-      </details></nav><details className="user-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
+      </details>}</nav><details className="user-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="User menu">{user.login}</summary>
         <div className="user-submenu" role="menu" onClick={closeParentDetails}>
+          <button type="button" className="submenu-button" role="menuitem" onClick={() => setUserSettingsOpen(true)}>User settings</button>
           <button type="button" className="logout-button" role="menuitem" onClick={handleLogout}>Logout</button>
         </div>
       </details></header>
+    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} resolvedTheme={resolvedTheme} systemDark={systemDark} onThemeChange={setTheme} onZoomChange={setZoom} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
     <Routes>
       <Route path="/" element={<Libraries/>}/>
       <Route path="/library/:id" element={<Browser/>}/>
@@ -93,7 +99,8 @@ export function App() {
       <Route path="/favorites" element={<Favorites/>}/>
       <Route path="/favorites/:viewId" element={<FavoriteViewPage/>}/>
       <Route path="/favorites/view/:mediaId" element={<FavoriteMediaViewerPage/>}/>
-      <Route path="/map" element={<GeoMap/>}/>
+      <Route path="/map" element={<GeoMap theme={resolvedTheme}/>}/>
+      <Route path="/reset" element={<ResetPassword/>}/>
       <Route path="/admin" element={user.role === "admin" ? <AdminPanel/> : <Navigate to="/"/>}/>
       <Route path="/admin/settings" element={<Navigate to="/admin"/>}/>
       <Route path="*" element={<NotFound/>}/>
@@ -115,26 +122,62 @@ function NotFound() {
   </main>;
 }
 
-function useUpTarget() {
+interface Crumb { label:string; to:string|null; current?:boolean }
+
+function folderCrumbName(folder:MediaFolder) {
+  if (folder.name) return folder.name;
+  const parts = folder.relativePath.split("/").filter(Boolean);
+  return parts[parts.length - 1] || folder.relativePath || `Folder ${folder.id}`;
+}
+
+function useBreadcrumb(): Crumb[] | null {
   const location = useLocation();
-  const folderMatch = location.pathname.match(/^\/library\/([^/]+)\/folder\/([^/]+)$/);
-  const viewerMatch = location.pathname.match(/^\/library\/([^/]+)\/view\/([^/]+)$/);
-  const [folder, setFolder] = useState<MediaFolder|null>(null);
+  const [crumbs, setCrumbs] = useState<Crumb[]|null>(null);
+  const pathname = location.pathname;
   useEffect(() => {
-    setFolder(null);
-    if (!folderMatch) return;
-    const libraryID = Number(folderMatch[1]);
-    const folderID = Number(folderMatch[2]);
-    if (!Number.isFinite(libraryID) || !Number.isFinite(folderID)) return;
-    api.folder(libraryID, folderID).then(setFolder).catch(() => undefined);
-  }, [folderMatch?.[1], folderMatch?.[2]]);
-  if (location.pathname.match(/^\/favorites\/view\/[^/]+$/)) return "/favorites";
-  if (viewerMatch) return `/library/${viewerMatch[1]}/folder/${viewerMatch[2]}`;
-  if (folderMatch) {
-    const parentID = folder?.parentId ?? -1;
-    return parentID >= 0 ? `/library/${folderMatch[1]}/folder/${parentID}` : `/library/${folderMatch[1]}`;
-  }
-  return null;
+    let cancelled = false;
+    setCrumbs(null);
+    const favoritesMatch = pathname.match(/^\/favorites\/view\/[^/]+$/);
+    if (favoritesMatch) {
+      setCrumbs([{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}]);
+      return;
+    }
+    const rootMatch = pathname.match(/^\/library\/([^/]+)$/);
+    const folderMatch = pathname.match(/^\/library\/([^/]+)\/folder\/([^/]+)$/);
+    const viewerMatch = pathname.match(/^\/library\/([^/]+)\/view\/([^/]+)$/);
+    const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : NaN;
+    if (!Number.isFinite(libraryID)) return;
+    const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : null;
+    (async () => {
+      try {
+        const libraries = await api.libraries();
+        if (cancelled) return;
+        const library = libraries.find(item => item.id === libraryID);
+        const base: Crumb[] = [{label:"Libraries", to:"/"}];
+        if (library) base.push({label:library.name, to:`/library/${libraryID}`});
+        if (folderID != null && Number.isFinite(folderID)) {
+          const chain: MediaFolder[] = [];
+          const seen = new Set<number>();
+          let currentID: number = folderID;
+          while (currentID >= 0 && !seen.has(currentID)) {
+            seen.add(currentID);
+            const folder = await api.folder(libraryID, currentID);
+            if (cancelled) return;
+            chain.unshift(folder);
+            currentID = folder.parentId;
+          }
+          base.push(...chain.map(folder => ({label:folderCrumbName(folder), to:`/library/${libraryID}/folder/${folder.id}`})));
+        }
+        if (cancelled) return;
+        if ((rootMatch || folderMatch) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
+        setCrumbs(base);
+      } catch {
+        // Leave null so the header falls back to the home brand.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pathname]);
+  return crumbs;
 }
 
 function closeParentDetails(event:MouseEvent<HTMLElement>) {
@@ -145,24 +188,25 @@ function closeOnBackdropClick(event:MouseEvent<HTMLElement>, close:()=>void) {
   if (event.target === event.currentTarget) close();
 }
 
-type SettingsSection = "network" | "encoding" | "timeouts" | "thumbnails" | "libraries" | "users" | "jobs" | "logs" | "emby";
+type SettingsSection = "network" | "mail" | "timeouts" | "thumbnails" | "libraries" | "users" | "jobs" | "scheduled" | "logs" | "emby";
 
 const settingsSections: Record<SettingsSection, {label:string; description:string}> = {
   libraries: {label:"Libraries", description:"Add, rename, delete, scan, and refresh thumbnails"},
   users: {label:"Users", description:"Create users and manage roles"},
   thumbnails: {label:"Thumbnails", description:"Image and video thumbnail settings"},
-  encoding: {label:"Encoding", description:"Video fallback codec and format"},
+  mail: {label:"Mail", description:"Outbound email for password resets"},
   network: {label:"Network", description:"HTTP, HTTPS, DNS, and certificates"},
   timeouts: {label:"Timeouts", description:"Login and background job retention timeouts"},
   jobs: {label:"Background jobs", description:"Track scans and thumbnail work"},
+  scheduled: {label:"Scheduled tasks", description:"Automate scans, thumbnails, and maintenance"},
   logs: {label:"Logs", description:"Configure and view application logs"},
   emby: {label:"Emby import", description:"Import Emby data into the library"},
 };
 
 const settingsGroups: Array<{label:string; items:Array<{id:SettingsSection; label:string; description:string}>}> = [
-  {label:"Media", items:(["libraries", "thumbnails", "encoding"] as SettingsSection[]).map(settingsItem)},
+  {label:"Media", items:(["libraries", "thumbnails"] as SettingsSection[]).map(settingsItem)},
   {label:"Access", items:(["users"] as SettingsSection[]).map(settingsItem)},
-  {label:"System", items:(["network", "timeouts", "jobs", "logs"] as SettingsSection[]).map(settingsItem)},
+  {label:"System", items:(["network", "mail", "timeouts", "jobs", "scheduled", "logs"] as SettingsSection[]).map(settingsItem)},
   {label:"Import", items:(["emby"] as SettingsSection[]).map(settingsItem)},
 ];
 
@@ -184,8 +228,8 @@ function AdminPanel() {
     setSection(next);
     setSearchParams(next === "libraries" ? {} : {section: next});
   }
-  return <main><h1>Settings</h1><div className="settings-layout">
-    <aside className="settings-menu" aria-label="Settings sections">
+  return <main><h1>Admin panel</h1><div className="settings-layout">
+    <aside className="settings-menu" aria-label="Admin panel sections">
       <div className="settings-menu-header">
         <h2>Sections</h2>
         <p>Grouped by media, system, and import tasks</p>
@@ -200,9 +244,11 @@ function AdminPanel() {
     </aside>
     <section className="settings-content">
       <StopServerButton/>
-      {section === "network" || section === "encoding" || section === "timeouts" || section === "thumbnails" || section === "jobs"
-        ? <AdminSettings section={section}/>
-        : <LibraryManagement activeSection={section}/>}
+      {section === "scheduled"
+        ? <ScheduledTaskManager/>
+        : section === "network" || section === "mail" || section === "timeouts" || section === "thumbnails" || section === "jobs"
+          ? <AdminSettings section={section}/>
+          : <LibraryManagement activeSection={section}/>}
     </section>
   </div></main>;
 }
@@ -232,7 +278,7 @@ function StopServerButton() {
 }
 
 function isSettingsSection(value:string|null): value is SettingsSection {
-  return value === "network" || value === "encoding" || value === "timeouts" || value === "thumbnails" || value === "libraries" || value === "users" || value === "jobs" || value === "logs" || value === "emby";
+  return value === "network" || value === "mail" || value === "timeouts" || value === "thumbnails" || value === "libraries" || value === "users" || value === "jobs" || value === "scheduled" || value === "logs" || value === "emby";
 }
 
 function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
@@ -250,6 +296,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [deleting, setDeleting] = useState<Library|null>(null);
+  const [statsLibrary, setStatsLibrary] = useState<Library|null>(null);
   const [refreshingThumbnails, setRefreshingThumbnails] = useState<{id:ID; name:string}|null>(null);
   useEffect(() => { loadLibraries(); }, []);
   async function loadLibraries() {
@@ -333,8 +380,8 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
         : await api.createLibrary({name:name.trim(), roots:cleanedRoots});
       if (scanNow) void api.scanLibrary(library.id).catch(cause => setError((cause as Error).message));
       await loadLibraries();
-      setNotice(scanNow ? "Library saved. Scan started in background; thumbnails will start after scan." : editing ? "Library saved." : "Library added.");
       closeModal();
+      setNotice(scanNow ? "Library saved. Scan started in background; thumbnails will start after scan." : editing ? "Library saved." : "Library added.");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -346,9 +393,11 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
       <div className="panel-title"><div><h2>Libraries</h2><p>Review your collections and open a library directly.</p></div><button onClick={startAdd}>Add</button></div>
       {notice && <p className="success">{notice}</p>}
       <div className="library-table">{libraries.map(library =>
-        <div className="library-row" key={library.id}>
-          <button className="library-main" onClick={() => navigate(`/library/${library.id}`)}>
-            <span className="folder">▰</span><span><strong>{library.name}</strong><small>{(library.roots ?? []).map(root => rootLabel(root.path)).join(", ") || "No roots"}</small><LibraryStatsInline stats={library.stats}/></span>
+        <div className="library-row admin-library" key={library.id}>
+          <button className="library-glyph" aria-label={`Open library ${library.name}`} onClick={() => navigate(`/library/${library.id}`)}><span className="folder">▰</span></button>
+          <button type="button" className="library-name-button" onClick={() => setStatsLibrary(library)}>
+            <strong>{library.name}</strong>
+            <small>{(library.roots ?? []).map(root => rootLabel(root.path)).join(", ") || "No roots"}</small>
           </button>
           <details className="item-menu">
             <summary aria-label={`Library menu ${library.name}`}>⋮</summary>
@@ -367,6 +416,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     {activeSection === "logs" && <><AdminSettings section="logs"/><LogViewer/></>}
     {activeSection === "emby" && <EmbyImportPanel onImported={loadLibraries}/>} 
     {refreshingThumbnails && <ThumbnailRefreshModal title={refreshingThumbnails.name} busy={busy} error={error} onClose={() => setRefreshingThumbnails(null)} onRefresh={recreateExisting => libraryAction("thumbs", {id:refreshingThumbnails.id, name:refreshingThumbnails.name, roots:[]}, {recreateExisting})}/>}
+    {statsLibrary && <LibraryStatsModal library={statsLibrary} onClose={() => setStatsLibrary(null)}/>}
     {deleting && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Delete library ${deleting.name}`}>
       <div className="card settings modal">
         <div className="panel-title"><h2>Delete library</h2><button type="button" className="secondary" onClick={() => setDeleting(null)}>Close</button></div>
@@ -434,6 +484,7 @@ function UserManagement() {
   const [editLogin, setEditLogin] = useState("");
   const [editRole, setEditRole] = useState<Role>("regular");
   const [editPassword, setEditPassword] = useState("");
+  const [accessUser, setAccessUser] = useState<User|null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   function load() {
@@ -481,8 +532,10 @@ function UserManagement() {
     {error && <p className="error">{error}</p>}
     <div className="library-table">{users.map(user => <div className="library-row" key={user.id}>
       <div className="library-main"><span className="folder">👤</span><span><strong>{user.login}</strong><small>{user.role}{user.role === "admin" ? " · reads every library" : ""}</small></span></div>
+      <button type="button" className="secondary" disabled={busy || user.role === "admin"} onClick={() => setAccessUser(user)}>Manage access</button>
       <button type="button" className="secondary" disabled={busy} onClick={() => startEdit(user)}>Edit</button>
     </div>)}</div>
+    {accessUser && <UserAccessEditor user={accessUser} onClose={() => setAccessUser(null)}/>}
     {editing && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Edit user ${editing.login}`} onClick={event => closeOnBackdropClick(event, () => setEditing(null))}>
       <form className="card settings modal" onSubmit={saveEdit}>
         <div className="panel-title"><h2>Edit user</h2><button type="button" className="secondary" onClick={() => setEditing(null)}>Close</button></div>
@@ -492,6 +545,50 @@ function UserManagement() {
         <button disabled={busy}>{busy ? "Saving…" : "Save user"}</button>
       </form>
     </div>}
+  </div>;
+}
+
+function UserAccessEditor({user,onClose}:{user:User; onClose:()=>void}) {
+  const [libraries, setLibraries] = useState<Library[]>([]);
+  const [access, setAccess] = useState<Record<ID,boolean>>({});
+  const [busyLibrary, setBusyLibrary] = useState<ID|null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api.libraries().then(setLibraries).catch(cause => setError((cause as Error).message));
+  }, []);
+  useEffect(() => {
+    if (libraries.length === 0) return;
+    let cancelled = false;
+    Promise.all(libraries.map(library => api.libraryAccess(library.id).then(rows => ({id:library.id, allowed: rows.find(row => row.user.id === user.id)?.allowed ?? false}))))
+      .then(results => { if (!cancelled) setAccess(Object.fromEntries(results.map(result => [result.id, result.allowed]))); })
+      .catch(cause => { if (!cancelled) setError((cause as Error).message); });
+    return () => { cancelled = true; };
+  }, [libraries, user.id]);
+  async function toggle(libraryId:ID, allowed:boolean) {
+    setBusyLibrary(libraryId); setError("");
+    setAccess(current => ({...current, [libraryId]:allowed}));
+    try {
+      await api.setLibraryAccess(libraryId, user.id, allowed);
+    } catch (cause) {
+      setError((cause as Error).message);
+      setAccess(current => ({...current, [libraryId]:!allowed}));
+    } finally {
+      setBusyLibrary(null);
+    }
+  }
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Manage access for ${user.login}`} onClick={event => closeOnBackdropClick(event, onClose)}>
+    <div className="card settings modal">
+      <div className="panel-title"><h2>Library access</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <p>Grant <strong>{user.login}</strong> read access to libraries.</p>
+      {error && <p className="error">{error}</p>}
+      {libraries.length === 0 ? <p className="muted">No libraries yet.</p> :
+        <fieldset className="library-access"><legend>Read access</legend>
+          {libraries.map(library => <label className="check" key={library.id}>
+            <input type="checkbox" checked={access[library.id] ?? false} disabled={busyLibrary === library.id} onChange={event => void toggle(library.id, event.target.checked)}/>
+            {library.name}
+          </label>)}
+        </fieldset>}
+    </div>
   </div>;
 }
 
@@ -608,6 +705,112 @@ function categoryLabel(category:string) {
   return category;
 }
 
+function ScheduledTaskManager() {
+  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const [libraries, setLibraries] = useState<Library[]>([]);
+  const [editing, setEditing] = useState<ScheduledTask|null>(null);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [taskType, setTaskType] = useState<"scan"|"thumbnail-create"|"vacuum">("scan");
+  const [libraryId, setLibraryId] = useState<ID>(0);
+  const [cron, setCron] = useState("0 3 * * *");
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  function load() {
+    api.scheduledTasks().then(setTasks).catch(cause => setError((cause as Error).message));
+  }
+  useEffect(() => {
+    load();
+    api.libraries().then(setLibraries).catch(() => undefined);
+  }, []);
+  function startAdd() {
+    setAdding(true); setEditing(null); setName(""); setTaskType("scan"); setLibraryId(libraries[0]?.id ?? 0); setCron("0 3 * * *"); setEnabled(true); setError(""); setNotice("");
+  }
+  function startEdit(task:ScheduledTask) {
+    setEditing(task); setAdding(false); setName(task.name); setTaskType(task.taskType); setLibraryId(task.libraryId); setCron(task.cron); setEnabled(task.enabled); setError(""); setNotice("");
+  }
+  function closeModal() {
+    setAdding(false); setEditing(null); setError(""); setNotice("");
+  }
+  async function submit(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const input = {name:name.trim(), taskType, libraryId: taskType === "vacuum" ? 0 : libraryId, cron:cron.trim(), enabled};
+      if (editing) {
+        await api.updateScheduledTask(editing.id, input);
+      } else {
+        await api.createScheduledTask(input);
+      }
+      closeModal();
+      load();
+      setNotice(editing ? "Scheduled task updated." : "Scheduled task created.");
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function remove(task:ScheduledTask) {
+    if (!window.confirm(`Delete scheduled task "${task.name}"?`)) return;
+    setBusy(true); setError("");
+    try {
+      await api.deleteScheduledTask(task.id);
+      load();
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function toggleEnabled(task:ScheduledTask) {
+    setBusy(true); setError("");
+    try {
+      await api.updateScheduledTask(task.id, {name:task.name, taskType:task.taskType, libraryId:task.libraryId, cron:task.cron, enabled:!task.enabled});
+      load();
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const libraryName = (id:ID) => libraries.find(library => library.id === id)?.name ?? `Library ${id}`;
+  return <div className="card settings scheduled-tasks">
+    <div className="panel-title"><div><h2>Scheduled tasks</h2><p>Automate library scans, thumbnail creation, and database maintenance.</p></div><button onClick={startAdd}>Add</button></div>
+    {notice && <p className="success">{notice}</p>}
+    {error && <p className="error">{error}</p>}
+    {tasks.length === 0 ? <div className="empty-state"><p>No scheduled tasks yet. Use the Add button to create one.</p></div> :
+      <div className="library-table">{tasks.map(task =>
+        <div className="library-row" key={task.id}>
+          <div className="library-main"><span className="folder">⏰</span><span><strong>{task.name}</strong><small>{task.taskType}{task.taskType !== "vacuum" ? ` · ${libraryName(task.libraryId)}` : ""} · {task.cron} · next {task.nextRunAt ? new Date(task.nextRunAt).toLocaleString() : "—"}</small></span></div>
+          <label className="check"><input type="checkbox" checked={task.enabled} disabled={busy} onChange={() => void toggleEnabled(task)}/> Enabled</label>
+          <button type="button" className="secondary" disabled={busy} onClick={() => startEdit(task)}>Edit</button>
+          <button type="button" className="secondary danger" disabled={busy} onClick={() => void remove(task)}>Delete</button>
+        </div>)}</div>}
+    {(adding || editing) && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editing ? "Edit scheduled task" : "Add scheduled task"} onClick={event => closeOnBackdropClick(event, closeModal)}>
+      <form className="card settings modal" onSubmit={submit}>
+        <div className="panel-title"><h2>{editing ? "Edit scheduled task" : "Add scheduled task"}</h2><button type="button" className="secondary" onClick={closeModal}>Close</button></div>
+        <label>Name<input value={name} onChange={event => setName(event.target.value)} placeholder="Nightly scan" required/></label>
+        <label>Task type<select value={taskType} onChange={event => { setTaskType(event.target.value as typeof taskType); if (event.target.value === "vacuum") setLibraryId(0); }}>
+          <option value="scan">Scan / refresh content</option>
+          <option value="thumbnail-create">Create thumbnails</option>
+          <option value="vacuum">Vacuum database</option>
+        </select></label>
+        {taskType !== "vacuum" && <label>Library<select value={libraryId} onChange={event => setLibraryId(Number(event.target.value))} required>
+          {libraries.map(library => <option key={library.id} value={library.id}>{library.name}</option>)}
+        </select></label>}
+        <label>Cron expression<input value={cron} onChange={event => setCron(event.target.value)} placeholder="0 3 * * *" required/></label>
+        <small>Format: minute hour day-of-month month day-of-week. Example: <code>0 3 * * *</code> runs daily at 03:00.</small>
+        <label className="check"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)}/> Enabled</label>
+        {error && <p className="error">{error}</p>}
+        <button disabled={busy}>{busy ? "Saving…" : editing ? "Save task" : "Create task"}</button>
+      </form>
+    </div>}
+  </div>;
+}
+
 function LogViewer() {
   const [tail, setTail] = useState<LogTail>({path:"", lines:[]});
   const [limit, setLimit] = useState(300);
@@ -719,8 +922,7 @@ function rootLabel(value = "") {
   return cleaned.split("/").pop() ?? cleaned;
 }
 
-function AdminSettings({section}:{section:"network"|"encoding"|"timeouts"|"thumbnails"|"jobs"|"logs"}) {
-  const [codec, setCodec] = useState<"h264"|"h265"|"vp9">("h264");
+function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnails"|"jobs"|"logs"}) {
   const [httpEnabled, setHTTPEnabled] = useState(true);
   const [httpsEnabled, setHTTPSEnabled] = useState(false);
   const [publicDns, setPublicDns] = useState("");
@@ -738,12 +940,17 @@ function AdminSettings({section}:{section:"network"|"encoding"|"timeouts"|"thumb
   const [logRotateMaxSizeMB, setLogRotateMaxSizeMB] = useState(10);
   const [logRotateMaxBackups, setLogRotateMaxBackups] = useState(5);
   const [logRotateMaxAgeDays, setLogRotateMaxAgeDays] = useState(30);
+  const [smtpHost, setSMTPHost] = useState("");
+  const [smtpPort, setSMTPPort] = useState(587);
+  const [smtpUsername, setSMTPUsername] = useState("");
+  const [smtpPassword, setSMTPPassword] = useState("");
+  const [smtpFrom, setSMTPFrom] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { api.settings().then(value => {
-    setCodec(value.transcodeCodec); setHTTPEnabled(value.httpEnabled); setHTTPSEnabled(value.httpsEnabled);
+    setHTTPEnabled(value.httpEnabled); setHTTPSEnabled(value.httpsEnabled);
     setPublicDns(value.publicDns); setAcmeEmail(value.acmeEmail);
     setHTTPSCertificateExpiresAt(value.httpsCertificateExpiresAt);
     setThumbnailWidth(value.thumbnailWidth); setThumbnailHeight(value.thumbnailHeight);
@@ -757,6 +964,8 @@ function AdminSettings({section}:{section:"network"|"encoding"|"timeouts"|"thumb
     setLogRotateMaxSizeMB(value.logRotateMaxSizeMB);
     setLogRotateMaxBackups(value.logRotateMaxBackups);
     setLogRotateMaxAgeDays(value.logRotateMaxAgeDays);
+    setSMTPHost(value.smtpHost); setSMTPPort(value.smtpPort);
+    setSMTPUsername(value.smtpUsername); setSMTPFrom(value.smtpFrom);
     setLoaded(true);
   }).catch(cause => setError((cause as Error).message)); }, []);
   useEffect(() => {
@@ -764,13 +973,13 @@ function AdminSettings({section}:{section:"network"|"encoding"|"timeouts"|"thumb
     let cancelled = false;
     setSaving(true); setSaved(false); setError("");
     const timeout = window.setTimeout(() => {
-      api.updateSettings({transcodeCodec:codec,httpEnabled,httpsEnabled,publicDns,acmeEmail,httpsCertificateExpiresAt,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays})
+      api.updateSettings({httpEnabled,httpsEnabled,publicDns,acmeEmail,httpsCertificateExpiresAt,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpFrom,smtpPassword:smtpPassword || undefined})
         .then(value => { if (!cancelled) { setHTTPSCertificateExpiresAt(value.httpsCertificateExpiresAt); setSaved(true); } })
         .catch(cause => { if (!cancelled) setError((cause as Error).message); })
         .finally(() => { if (!cancelled) setSaving(false); });
     }, 600);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [loaded,codec,httpEnabled,httpsEnabled,publicDns,acmeEmail,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays]);
+  }, [loaded,httpEnabled,httpsEnabled,publicDns,acmeEmail,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpPassword,smtpFrom]);
   return <div className="card settings">
     <h2>{settingsSectionTitle(section)}</h2>
     {!loaded ? <p className="muted">Loading settings…</p> : <>
@@ -784,13 +993,13 @@ function AdminSettings({section}:{section:"network"|"encoding"|"timeouts"|"thumb
       </>}
       <small>At least one protocol must remain enabled. HTTPS changes are applied automatically.</small>
     </fieldset>}
-    {section === "encoding" && <fieldset><legend>Encoding format</legend>
-      <label>Fallback video codec<select value={codec} onChange={event => setCodec(event.target.value as typeof codec)}>
-        <option value="h264">H.264 — widest compatibility</option>
-        <option value="h265">H.265 / HEVC — smaller files, limited browser support</option>
-        <option value="vp9">VP9 — WebM with Opus audio</option>
-      </select></label>
-      <small>Used only when the browser reports that the original video/audio codecs are not playable.</small>
+    {section === "mail" && <fieldset><legend>Outbound email</legend>
+      <label>SMTP host<input value={smtpHost} onChange={event => setSMTPHost(event.target.value)} placeholder="smtp.example.com"/></label>
+      <label>SMTP port<input type="number" min="1" max="65535" value={smtpPort} onChange={event => setSMTPPort(Number(event.target.value))} required/></label>
+      <label>SMTP username<input value={smtpUsername} onChange={event => setSMTPUsername(event.target.value)} autoComplete="off"/></label>
+      <label>SMTP password<input type="password" value={smtpPassword} onChange={event => setSMTPPassword(event.target.value)} autoComplete="new-password" placeholder={smtpPassword ? "" : "Unchanged"} onFocus={event => { if (!smtpPassword) event.currentTarget.value = ""; }}/></label>
+      <label>From address<input type="email" value={smtpFrom} onChange={event => setSMTPFrom(event.target.value)} placeholder="media@example.com"/></label>
+      <small>Used to send password reset links. Leave the host empty to disable outbound email. Port 465 uses implicit TLS; other ports use STARTTLS.</small>
     </fieldset>}
     {section === "thumbnails" && <><fieldset><legend>Image thumbnails</legend>
       <label>Width<input type="number" min="64" max="4096" value={thumbnailWidth} onChange={event => setThumbnailWidth(Number(event.target.value))} required/></label>
@@ -832,9 +1041,9 @@ function AdminSettings({section}:{section:"network"|"encoding"|"timeouts"|"thumb
   </div>;
 }
 
-function settingsSectionTitle(section:"network"|"encoding"|"timeouts"|"thumbnails"|"jobs"|"logs") {
+function settingsSectionTitle(section:"network"|"mail"|"timeouts"|"thumbnails"|"jobs"|"logs") {
   if (section === "network") return "Network";
-  if (section === "encoding") return "Encoding";
+  if (section === "mail") return "Mail";
   if (section === "timeouts") return "Timeouts";
   if (section === "thumbnails") return "Thumbnails";
   if (section === "jobs") return "Background jobs";
@@ -871,40 +1080,250 @@ function FirstSetup({onComplete}:{onComplete:(user:User)=>void}) {
 
 function Login({onLogin}:{onLogin:(user:User)=>void}) {
   const [error, setError] = useState("");
+  const [forgot, setForgot] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotMessage, setForgotMessage] = useState("");
+  const [forgotBusy, setForgotBusy] = useState(false);
   async function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
     try { onLogin(await api.login(String(data.get("login")), String(data.get("password")))); }
     catch (e) { setError(loginErrorMessage(e)); }
   }
+  async function requestReset(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setForgotBusy(true); setForgotMessage(""); setError("");
+    try {
+      const result = await api.forgotPassword(forgotEmail);
+      if (result.sent) setForgotMessage("If an account exists for this email, a reset link has been sent.");
+      else if (result.reason === "smtpNotConfigured") setForgotMessage("Password reset is not available because outbound email is not configured. Contact an administrator.");
+      else setForgotMessage("If an account exists for this email, a reset link has been sent.");
+      setForgot(false);
+    } catch (cause) {
+      setError(loginErrorMessage(cause));
+    } finally {
+      setForgotBusy(false);
+    }
+  }
   return <main className="center"><form className="card login" onSubmit={submit}><h1>Media Library</h1>
     <label>Login<input name="login" autoComplete="username" required/></label>
     <label>Password<input name="password" type="password" required/></label>
-    {error && <p className="error">{error}</p>}<button type="submit">Sign in</button></form></main>;
+    {error && <p className="error">{error}</p>}<button type="submit">Sign in</button>
+    <p className="muted"><button type="button" className="link-button" onClick={() => { setForgot(value => !value); setError(""); }}>Forgot password?</button></p>
+    {forgot && <fieldset><legend>Password reset</legend>
+      <label>Email<input type="email" value={forgotEmail} onChange={event => setForgotEmail(event.target.value)} autoComplete="email" required/></label>
+      <button type="button" className="secondary" disabled={forgotBusy} onClick={event => void requestReset(event as unknown as FormEvent<HTMLFormElement>)}>Send reset link</button>
+    </fieldset>}
+    {forgotMessage && <p className="success">{forgotMessage}</p>}
+  </form></main>;
+}
+
+function ResetPassword() {
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get("token") ?? "";
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(""); setMessage("");
+    if (password !== confirm) { setError("Passwords do not match"); return; }
+    setBusy(true);
+    try {
+      await api.resetPassword(token, password);
+      setMessage("Your password has been reset. You can now sign in.");
+    } catch (cause) {
+      setError(loginErrorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <main className="center"><form className="card login" onSubmit={submit}><h1>Reset password</h1>
+    {!token ? <p className="error">This reset link is missing its token.</p> : <>
+      <label>New password<input type="password" value={password} onChange={event => setPassword(event.target.value)} minLength={12} autoComplete="new-password" required/></label>
+      <label>Confirm password<input type="password" value={confirm} onChange={event => setConfirm(event.target.value)} minLength={12} autoComplete="new-password" required/></label>
+      {error && <p className="error">{error}</p>}
+      <button type="submit" disabled={busy}>Reset password</button>
+    </>}
+    {message && <p className="success">{message}</p>}
+    {message && <p className="muted"><Link to="/">Sign in</Link></p>}
+  </form></main>;
+}
+
+function UserSettingsModal({user, theme, zoom, resolvedTheme, systemDark, onThemeChange, onZoomChange, onUserChanged, onClose}:{
+  user:User; theme:"light"|"dark"|"system"; zoom:number; resolvedTheme:"light"|"dark"; systemDark:boolean;
+  onThemeChange:(theme:"light"|"dark"|"system")=>void;
+  onZoomChange:(zoom:number)=>void;
+  onUserChanged:(user:User)=>void; onClose:()=>void;
+}) {
+  const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"system">(theme);
+  const [draftZoom, setDraftZoom] = useState(zoom);
+  const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const [email, setEmail] = useState(user.email ?? "");
+  const [emailError, setEmailError] = useState("");
+  const [emailSaved, setEmailSaved] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  useEffect(() => {
+    api.userSettings().then(settings => { setCodec(settings.codec); setLoaded(true); }).catch(() => undefined);
+  }, [user.id]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = draftTheme === "system" ? (systemDark ? "dark" : "light") : draftTheme;
+  }, [draftTheme, systemDark]);
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${draftZoom}%`;
+  }, [draftZoom]);
+  function close() {
+    document.documentElement.dataset.theme = resolvedTheme;
+    document.documentElement.style.fontSize = `${zoom}%`;
+    onClose();
+  }
+  function notify(cause:unknown) { return (cause as Error).message; }
+  async function saveSettings() {
+    setSaving(true); setError(""); setSaved(false);
+    try {
+      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom});
+      onThemeChange(draftTheme);
+      onZoomChange(draftZoom);
+      setSaved(true);
+    } catch (cause) { setError(notify(cause)); } finally { setSaving(false); }
+  }
+  async function saveEmail() {
+    const trimmed = email.trim();
+    if (trimmed === (user.email ?? "").trim()) return;
+    setEmailError(""); setEmailSaved(false);
+    try {
+      await api.updateEmail(trimmed);
+      onUserChanged({...user, email: trimmed});
+      setEmailSaved(true);
+    } catch (cause) { setEmailError(notify(cause)); }
+  }
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="User settings" onClick={event => closeOnBackdropClick(event, close)}>
+    <div className="card settings modal user-settings-modal">
+      <div className="panel-title"><h2>User settings</h2><button type="button" className="secondary" onClick={close}>Close</button></div>
+      <p className="muted">Preferences for {user.login}. These apply only to your account.</p>
+      <fieldset><legend>Appearance</legend>
+        <label>Theme<select value={draftTheme} onChange={event => { setDraftTheme(event.target.value as "light"|"dark"|"system"); setSaved(false); }}>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="system">System — match device</option>
+        </select></label>
+        <small>System follows your browser or operating system setting.</small>
+      </fieldset>
+      <fieldset><legend>Zoom</legend>
+        <label>Zoom<select value={draftZoom} onChange={event => { setDraftZoom(Number(event.target.value)); setSaved(false); }}>
+          {[80, 90, 100, 110, 120, 130, 140].map(step =>
+            <option key={step} value={step}>{step}%</option>
+          )}
+        </select></label>
+        <small>Scales the whole interface, including folder and file names.</small>
+      </fieldset>
+      <fieldset><legend>Video fallback codec</legend>
+        <label>Codec<select value={codec} disabled={!loaded} onChange={event => { setCodec(event.target.value as UserSettingsPayload["codec"]); setSaved(false); }}>
+          <option value="h264">H.264 — widest compatibility</option>
+          <option value="h265">H.265 / HEVC — smaller files, limited browser support</option>
+          <option value="vp9">VP9 — WebM with Opus audio</option>
+        </select></label>
+        <small>Used when your browser cannot play the original video. Choose the codec your devices support best.</small>
+        {error && <p className="error">{error}</p>}
+        {saved && <p className="success">Settings saved.</p>}
+        <button type="button" onClick={() => void saveSettings()} disabled={saving || !loaded}>{saving ? "Saving…" : "Save settings"}</button>
+      </fieldset>
+      <fieldset><legend>Email</legend>
+        <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} onBlur={() => void saveEmail()} autoComplete="email" placeholder="you@example.com"/></label>
+        <small>Required to receive password reset links when you forget your password. Saved automatically when you leave the field.</small>
+        {emailError && <p className="error">{emailError}</p>}
+        {emailSaved && <p className="success">Email saved.</p>}
+      </fieldset>
+      <fieldset><legend>Security</legend>
+        <button type="button" className="secondary" onClick={() => setPasswordModalOpen(true)}>Change password…</button>
+        <small>Requires your current password. Use a separate strong password.</small>
+      </fieldset>
+    </div>
+    {passwordModalOpen && <ChangePasswordModal onClose={() => setPasswordModalOpen(false)}/>}
+  </div>;
+}
+
+function ChangePasswordModal({onClose}:{onClose:()=>void}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  async function submit(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(""); setSaved(false);
+    if (newPassword !== confirmPassword) { setError("Passwords do not match"); return; }
+    setBusy(true);
+    try {
+      await api.changePassword(currentPassword, newPassword);
+      setSaved(true);
+      setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+    } catch (cause) { setError((cause as Error).message); } finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop nested" role="dialog" aria-modal="true" aria-label="Change password" onClick={event => closeOnBackdropClick(event, onClose)}>
+    <div className="card settings modal user-settings-modal">
+      <div className="panel-title"><h2>Change password</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <form onSubmit={submit}>
+        <label>Current password<input type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} autoComplete="current-password" required/></label>
+        <label>New password<input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} minLength={12} autoComplete="new-password" required/></label>
+        <label>Confirm new password<input type="password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} minLength={12} autoComplete="new-password" required/></label>
+        {error && <p className="error">{error}</p>}
+        {saved && <p className="success">Password updated.</p>}
+        <button type="submit" disabled={busy}>{busy ? "Saving…" : "Update password"}</button>
+      </form>
+    </div>
+  </div>;
 }
 
 function Libraries() {
   const [items, setItems] = useState<Library[]>([]);
   useEffect(() => { api.libraries().then(setItems); }, []);
-  return <main><h1>Your libraries</h1><div className="grid">{items.map(item =>
-    <Link className="card library" key={item.id} to={`/library/${item.id}`}>
-      <span className="folder">▰</span><h2>{item.name}</h2><LibraryStatsView stats={item.stats}/>
-    </Link>
+  return <main className="browser-page"><h1>Your libraries</h1><div className="grid">{items.map(item =>
+    <LibraryTile key={item.id} item={item}/>
   )}</div></main>;
 }
 
-function LibraryStatsView({stats}:{stats?:Library["stats"]}) {
-  if (!stats) return <small className="library-stats">No statistics yet</small>;
-  return <dl className="library-stats" aria-label="Library statistics">
-    <div><dt>Folders</dt><dd>{stats.folders}</dd></div>
-    <div><dt>Files</dt><dd>{stats.files}</dd></div>
-    <div><dt>Images</dt><dd>{stats.images}</dd></div>
-    <div><dt>Videos</dt><dd>{stats.videos}</dd></div>
-  </dl>;
+function LibraryTile({item}:{item:Library}) {
+  const [showStats, setShowStats] = useState(false);
+  return <div className="card library library-tile">
+    <Link className="folder-thumb-button" aria-label={`Open library ${item.name}`} to={`/library/${item.id}`}><span className="folder">▰</span></Link>
+    <button type="button" className="folder-title-button" onClick={() => setShowStats(true)}><h2>{item.name}</h2></button>
+    {showStats && <LibraryStatsModal library={item} onClose={() => setShowStats(false)}/>}
+  </div>;
 }
 
-function LibraryStatsInline({stats}:{stats?:Library["stats"]}) {
-  if (!stats) return <small>No statistics yet</small>;
-  return <small>{stats.folders} folders · {stats.files} files · {stats.images} images · {stats.videos} videos</small>;
+function LibraryStatsModal({library, onClose}:{library:{id:ID; name:string}; onClose:()=>void}) {
+  const [stats, setStats] = useState<Library["stats"]|null>(null);
+  const [statsError, setStatsError] = useState("");
+  const [calculating, setCalculating] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setCalculating(true); setStatsError("");
+    api.libraryStats(library.id)
+      .then(result => { if (!cancelled) setStats(result); })
+      .catch(cause => { if (!cancelled) setStatsError((cause as Error).message); })
+      .finally(() => { if (!cancelled) setCalculating(false); });
+    return () => { cancelled = true; };
+  }, [library.id]);
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Library statistics ${library.name}`} onClick={event => closeOnBackdropClick(event, onClose)}>
+    <div className="card settings modal folder-stats">
+      <div className="panel-title"><h2>{library.name}</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      {calculating && <p className="muted">Calculating…</p>}
+      {statsError && <p className="error">{statsError}</p>}
+      {stats && <div className="stats-grid">
+        <div><strong>{stats.folders}</strong><span>Folders</span></div>
+        <div><strong>{stats.files}</strong><span>Files</span></div>
+        <div><strong>{stats.images}</strong><span>Images</span></div>
+        <div><strong>{stats.videos}</strong><span>Videos</span></div>
+      </div>}
+    </div>
+  </div>;
 }
 
 function ThumbnailRefreshModal({title,busy,error,onClose,onRefresh}:{title:string; busy:boolean; error:string; onClose:()=>void; onRefresh:(recreateExisting:boolean)=>void}) {
@@ -923,12 +1342,10 @@ function ThumbnailRefreshModal({title,busy,error,onClose,onRefresh}:{title:strin
 }
 
 function Browser() {
-  const {id="", folderId} = useParams(); const navigate = useNavigate(); const location = useLocation();
+  const {id="", folderId} = useParams(); const navigate = useNavigate();
   const libraryId = Number(id);
   const currentFolderId = folderId == null ? null : Number(folderId);
-  const folderLabel = typeof location.state === "object" && location.state && "folderLabel" in location.state ? String((location.state as {folderLabel?:unknown}).folderLabel ?? "") : "";
   const [entries, setEntries] = useState<Entry[]>([]);
-  const [libraryName, setLibraryName] = useState("");
   const [view, setView] = useState<"tile"|"list">("tile");
   const [selected, setSelected] = useState<ID[]>([]);
   useEffect(() => {
@@ -936,10 +1353,6 @@ function Browser() {
     const load = currentFolderId == null ? api.entries(libraryId) : api.folderEntries(libraryId, currentFolderId);
     load.then(setEntries);
   }, [libraryId,currentFolderId]);
-  useEffect(() => {
-    if (!Number.isFinite(libraryId)) return;
-    api.libraries().then(libraries => setLibraryName(libraries.find(library => library.id === libraryId)?.name ?? `Library ${libraryId}`)).catch(() => setLibraryName(`Library ${libraryId}`));
-  }, [libraryId]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
   function applyBulkGPS(updated:Media[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
@@ -949,10 +1362,10 @@ function Browser() {
     }));
     setSelected([]);
   }
-  return <main><div className="browser-bar"><div className="crumbs" aria-label="Breadcrumb"><Link to="/">Libraries</Link> / {libraryName || `Library ${libraryId}`}{currentFolderId != null ? <> / {folderLabel || `Folder ${currentFolderId}`}</> : null}</div>
-    <div className="view-toggle"><Link className="button-like active" to={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}>Folders</Link><Link className="button-like" to={`/library/${id}/timeline`}>Timeline</Link><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div></div>
+  return <main className="browser-page"><div className="browser-bar">
+    <div className="view-toggle"><Link className="button-like active" to={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}>Folders</Link><Link className="button-like" to={`/library/${id}/timeline`}>Timeline</Link><Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div></div>
     <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
-    <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} onToggleSelected={toggleSelected(setSelected)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`, {state:{folderLabel: entry.relativePath || entry.name}})}/></main>;
+    <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} onToggleSelected={toggleSelected(setSelected)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
 }
 
 function LibraryTimeline() {
@@ -963,13 +1376,13 @@ function LibraryTimeline() {
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   useEffect(() => { if (Number.isFinite(libraryId)) api.libraryMedia(libraryId).then(setItems); }, [libraryId]);
   const filtered = items.filter(item => kind === "all" || item.kind === kind);
-  const groups = timelineGroups(filtered, sort);
+  const sorted = sortMedia(filtered, sort);
   const [selected, setSelected] = useState<ID[]>([]);
   function applyBulkGPS(updated:Media[]) {
     setItems(current => current.map(item => updated.find(media => media.id === item.id) ?? item));
     setSelected([]);
   }
-  return <main>
+  return <main className="browser-page">
     <div className="browser-bar"><div className="crumbs"><Link to="/">Libraries</Link> / Timeline</div>
       <div className="view-toggle"><Link className="button-like" to={`/library/${id}`}>Folders</Link><Link className="button-like active" to={`/library/${id}/timeline`}>Timeline</Link>
         <button className={kind === "all" ? "active" : ""} onClick={() => setKind("all")}>All</button>
@@ -978,13 +1391,16 @@ function LibraryTimeline() {
         <button onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
       </div></div>
     <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
-    {groups.length === 0 ? <div className="empty-state"><p>No dated items in this library yet.</p></div> :
-      <div className="timeline-groups">{groups.map(group => <section className="timeline-group" key={group.key}>
-        <h2>{group.label}</h2>
-        <div className="grid">{group.items.map(item =>
-          <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)}/>
-        )}</div>
-      </section>)}</div>}
+    {sorted.length === 0 ? <div className="empty-state"><p>No dated items in this library yet.</p></div> :
+      <div className="timeline-grid">{groupByDate(sorted).map(group =>
+        <div className="timeline-group" key={group.label}>
+          <span className="timeline-group-date">{group.label}</span>
+          <span className="timeline-group-dot" aria-hidden="true"/>
+          <div className="timeline-group-grid">{group.items.map(item =>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)}/>
+          )}</div>
+        </div>
+      )}</div>}
   </main>;
 }
 
@@ -1008,7 +1424,7 @@ function Favorites() {
       setError((cause as Error).message);
     }
   }
-  return <main>
+  return <main className="browser-page">
     <h1>Favorite views</h1>
     <form className="inline-create" onSubmit={create}>
       <label>New view<input value={name} onChange={event => setName(event.target.value)} placeholder="Best photos"/></label>
@@ -1073,7 +1489,7 @@ function FavoriteViewPage() {
   useEffect(load, [favoriteViewId]);
   useEffect(() => { api.favoriteViews().then(setViews).catch(() => undefined); }, []);
   const selected = views.find(view => view.id === Number(viewId));
-  return <main>
+  return <main className="browser-page">
     <h1>{selected?.name ?? "Favorite view"}</h1>
     <div className="browser-bar"><div className="crumbs"><Link to="/">Libraries</Link> / <Link to="/favorites">Favorite views</Link> / {selected?.name ?? "View"}</div>
       <div className="view-toggle"><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div></div>
@@ -1171,22 +1587,13 @@ function toggleSelected(setSelected:(update:(current:ID[])=>ID[])=>void) {
   return (id:ID) => setSelected(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
 }
 
-function timelineGroups(items:Media[], sort:"desc"|"asc") {
-  const sorted = [...items].sort((left, right) => {
+function sortMedia<T extends Media>(items:readonly T[], sort:"desc"|"asc") {
+  return [...items].sort((left, right) => {
     const leftTime = mediaTime(left);
     const rightTime = mediaTime(right);
     if (leftTime !== rightTime) return sort === "desc" ? rightTime - leftTime : leftTime - rightTime;
     return left.name.localeCompare(right.name);
   });
-  const groups = new Map<string, {key:string; label:string; items:Media[]}>();
-  for (const item of sorted) {
-    const key = dateGroupKey(item.takenAt);
-    const label = key === "unknown" ? "Unknown date" : key;
-    const group = groups.get(key) ?? {key, label, items:[]};
-    group.items.push(item);
-    groups.set(key, group);
-  }
-  return [...groups.values()];
 }
 
 function mediaTime(item:Media) {
@@ -1194,23 +1601,36 @@ function mediaTime(item:Media) {
   return Number.isFinite(value) ? value : 0;
 }
 
-function dateGroupKey(value:string) {
+function formatShortDate(value:string) {
   const date = value ? new Date(value) : null;
-  if (!date || Number.isNaN(date.getTime())) return "unknown";
-  return date.toISOString().slice(0, 10);
+  if (!date || Number.isNaN(date.getTime())) return "Unknown date";
+  return date.toLocaleDateString(undefined, {year:"numeric", month:"short", day:"numeric"});
+}
+
+function groupByDate<T extends {takenAt:string}>(items:readonly T[]): {label:string; items:T[]}[] {
+  const groups: {label:string; items:T[]}[] = [];
+  for (const item of items) {
+    const label = formatShortDate(item.takenAt);
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.items.push(item);
+    else groups.push({label, items:[item]});
+  }
+  return groups;
 }
 
 function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onOpenFolder}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; selectedIds:ID[]; onToggleSelected:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void}) {
   const ref = useRef<HTMLDivElement|null>(null);
-  const [viewport, setViewport] = useState({scrollY:window.scrollY, height:window.innerHeight, width:0, top:0});
+  const [viewport, setViewport] = useState({scrollY:window.scrollY, height:window.innerHeight, width:window.innerWidth, top:0});
   const gap = view === "tile" ? 18 : 6;
   const rowHeight = view === "tile" ? 292 : 78;
   const columns = view === "tile" ? Math.max(1, Math.floor((viewport.width + gap) / (190 + gap))) : 1;
   const totalRows = Math.ceil(entries.length / columns);
   const viewportTop = Math.max(0, viewport.scrollY - viewport.top);
-  const firstRow = Math.max(0, Math.floor(viewportTop / (rowHeight + gap)) - 3);
-  const visibleRows = Math.ceil(viewport.height / (rowHeight + gap)) + 6;
-  const lastRow = Math.min(totalRows, firstRow + visibleRows);
+  const firstVisibleRow = Math.floor(viewportTop / (rowHeight + gap));
+  const visibleRows = Math.ceil(viewport.height / (rowHeight + gap));
+  const overscan = 3;
+  const firstRow = Math.max(0, firstVisibleRow - overscan);
+  const lastRow = Math.min(totalRows, firstVisibleRow + visibleRows + overscan);
   const start = firstRow * columns;
   const end = Math.min(entries.length, lastRow * columns);
   const offsetY = firstRow * (rowHeight + gap);
@@ -1221,7 +1641,7 @@ function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onO
       setViewport({
         scrollY: window.scrollY,
         height: window.innerHeight,
-        width: rect?.width ?? 0,
+        width: rect?.width || window.innerWidth,
         top: (rect?.top ?? 0) + window.scrollY,
       });
     }
@@ -1239,21 +1659,26 @@ function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onO
   if (entries.length === 0) return <div className="empty-state"><p>No items here.</p></div>;
   return <div ref={ref} className={`virtual-browser ${view === "tile" ? "virtual-tile" : "virtual-list"}`} style={{height:totalHeight}}>
     <div className={view === "tile" ? "grid virtual-window" : "list-view virtual-window"} style={{transform:`translateY(${offsetY}px)`}}>
-      {entries.slice(start, end).map(entry => entry.type === "folder" ?
-        <FolderEntry key={`folder-${entry.relativePath}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder}/> :
-        <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected}/>) }
+      {entries.slice(start, end).map((entry, index) => {
+        const row = Math.floor((start + index) / columns);
+        const priority = row >= firstVisibleRow && row < firstVisibleRow + visibleRows;
+        return entry.type === "folder" ?
+          <FolderEntry key={`folder-${entry.relativePath}`} entry={entry} view={view} libraryId={libraryId} priority={priority} onOpenFolder={onOpenFolder}/> :
+          <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} priority={priority} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected}/>;
+      })}
     </div>
   </div>;
 }
 
-function FolderEntry({entry, view, libraryId, onOpenFolder}:{entry:Entry; view:"tile"|"list"; libraryId:ID; onOpenFolder:(entry:Entry)=>void}) {
+function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void}) {
   const [stats, setStats] = useState<{folders:number; media:number; images:number; videos:number}|null>(null);
   const [statsError, setStatsError] = useState("");
+  const [calculating, setCalculating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [thumbnailOptionsOpen, setThumbnailOptionsOpen] = useState(false);
   const [thumbnailError, setThumbnailError] = useState("");
   async function openStats() {
-    setStats(null); setStatsError("");
+    setStats(null); setStatsError(""); setCalculating(true);
     try {
       const children = await api.folderEntries(libraryId, entry.id);
       setStats({
@@ -1264,6 +1689,8 @@ function FolderEntry({entry, view, libraryId, onOpenFolder}:{entry:Entry; view:"
       });
     } catch (cause) {
       setStatsError((cause as Error).message);
+    } finally {
+      setCalculating(false);
     }
   }
   async function refreshFolder() {
@@ -1287,7 +1714,7 @@ function FolderEntry({entry, view, libraryId, onOpenFolder}:{entry:Entry; view:"
   }
   return <div className={`card library folder-entry ${view === "list" ? "folder-entry-list" : ""}`}>
     <button type="button" className="folder-thumb-button" aria-label={`Open folder ${entry.name}`} onClick={() => onOpenFolder(entry)}>
-      {view === "tile" && <FolderCover folderId={entry.folderThumbnail}/>}
+      {view === "tile" && <FolderCover folderId={entry.folderThumbnail} priority={priority}/>}
       {view === "list" && <span className="folder">▰</span>}
     </button>
     <button type="button" className="folder-title-button" onClick={openStats}><h2>{entry.name}</h2></button>
@@ -1299,9 +1726,10 @@ function FolderEntry({entry, view, libraryId, onOpenFolder}:{entry:Entry; view:"
       </div>
     </details>
     {thumbnailOptionsOpen && <ThumbnailRefreshModal title={entry.name} busy={refreshing} error={thumbnailError} onClose={() => setThumbnailOptionsOpen(false)} onRefresh={refreshFolderThumbnails}/>}
-    {(stats || statsError) && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Folder statistics ${entry.name}`} onClick={event => closeOnBackdropClick(event, () => { setStats(null); setStatsError(""); })}>
+    {(stats || statsError || calculating) && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Folder statistics ${entry.name}`} onClick={event => closeOnBackdropClick(event, () => { setStats(null); setStatsError(""); })}>
       <div className="card settings modal folder-stats">
         <div className="panel-title"><h2>{entry.name}</h2><button type="button" className="secondary" onClick={() => { setStats(null); setStatsError(""); }}>Close</button></div>
+        {calculating && <p className="muted">Calculating…</p>}
         {statsError && <p className="error">{statsError}</p>}
         {stats && <div className="stats-grid">
           <div><strong>{stats.folders}</strong><span>Folders</span></div>
@@ -1314,12 +1742,12 @@ function FolderEntry({entry, view, libraryId, onOpenFolder}:{entry:Entry; view:"
   </div>;
 }
 
-function FolderCover({folderId}:{folderId?:ID}) {
+function FolderCover({folderId, priority}:{folderId?:ID; priority?:boolean}) {
   if (folderId == null) return <span className="folder">▰</span>;
-  return <div className="folder-cover"><img loading="lazy" src={api.folderThumbnailUrl(folderId)} alt=""/></div>;
+  return <div className="folder-cover"><img loading="lazy" fetchPriority={priority ? "high" : "auto"} src={api.folderThumbnailUrl(folderId)} alt=""/></div>;
 }
 
-function MediaCard({item,view,libraryId,favoriteViewId,selected=false,onToggleSelected,onFavoriteChange}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void}) {
+function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void}) {
   const navigate = useNavigate();
   const open = () => favoriteViewId != null || libraryId == null ? navigate(`/favorites/view/${item.id}?viewId=${encodeURIComponent(String(favoriteViewId ?? ""))}`) : navigate(libraryItemURL(libraryId, item));
   return <article className="card media" onClick={open} role="button" tabIndex={0}
@@ -1328,7 +1756,7 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,onToggleSe
       <input type="checkbox" checked={selected} onChange={() => onToggleSelected(item.id)}/>
     </label>}
     {view === "tile" && <div className="thumb-wrap">
-      <img loading="lazy" src={api.thumbnailUrl(item.id)} alt=""/>
+      <img loading="lazy" fetchPriority={priority ? "high" : "auto"} src={api.thumbnailUrl(item.id)} alt=""/>
       {item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}
     </div>}
     <div><strong>{item.name}</strong><small>{item.kind} · {formatBytes(item.size)}</small></div>
@@ -1578,7 +2006,7 @@ function MediaInfo({item}:{item:Media}) {
     }
     setSaving(true); setSaved(false); setError("");
     try {
-      const updated = await api.updateMediaDetails(item.id, {name:trimmedName, gps:trimmedGPS || null, takenAt:takenAt || null});
+      const updated = await api.updateMediaDetails(item.id, {name:trimmedName, gps:trimmedGPS, takenAt:takenAt});
       setCurrent(updated); setName(updated.name); setGPSValue(updated.gps ?? ""); setTakenAt(toDateTimeLocal(updated.takenAt)); setSaved(true);
     } catch (cause) {
       setError((cause as Error).message);
@@ -1722,27 +2150,170 @@ function loginErrorMessage(cause:unknown) {
   return message;
 }
 
-function GeoMap() {
+function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] {
+  const [count, setCount] = useState(() => Math.min(batch, items.length));
+  const currentRef = useRef(count);
+  useEffect(() => {
+    let alive = true;
+    let frame = 0;
+    currentRef.current = Math.min(batch, items.length);
+    setCount(currentRef.current);
+    const step = () => {
+      if (!alive) return;
+      currentRef.current = Math.min(currentRef.current + batch, items.length);
+      setCount(currentRef.current);
+      if (currentRef.current < items.length) frame = requestAnimationFrame(step);
+    };
+    if (currentRef.current < items.length) frame = requestAnimationFrame(step);
+    return () => { alive = false; cancelAnimationFrame(frame); };
+  }, [items, batch]);
+  return items.slice(0, count);
+}
+
+function GeoMap({theme}:{theme:"light"|"dark"}) {
   const [items, setItems] = useState<MapMedia[]>([]);
   const [pickedGPS, setPickedGPS] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
+  const [selectMode, setSelectMode] = useState(false);
+  const [area, setArea] = useState<{bounds:L.LatLngBounds; items:MapMedia[]}|null>(null);
+  const [rendering, setRendering] = useState(false);
   const [query] = useSearchParams();
-  useEffect(() => { api.map().then(setItems); }, []);
+  const libraryParam = query.get("library");
+  const folderParam = query.get("folder");
+  useEffect(() => {
+    api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined).then(setItems);
+  }, [libraryParam, folderParam]);
   const focused = items.find(item => item.id === Number(query.get("item")));
   const focusedGPS = focused ? parseGPS(focused.gps) : null;
-  return <main className="map-page" aria-label="Media map">
-    <MapContainer center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className="map">
-      <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"/>
-      <ScaleControl position="bottomleft" imperial={false}/>
-      <MapItems items={items} focused={focused} pickedGPS={pickedGPS} copyStatus={copyStatus} onCopyStatus={setCopyStatus} onPick={value => { setPickedGPS(value); setCopyStatus(""); }}/>
-    </MapContainer></main>;
+  function selectArea(start:L.LatLng, end:L.LatLng) {
+    const bounds = L.latLngBounds(start, end);
+    const southWest = bounds.getSouthWest();
+    const northEast = bounds.getNorthEast();
+    api.map(
+      libraryParam ? Number(libraryParam) : undefined,
+      folderParam ? Number(folderParam) : undefined,
+      {west:southWest.lng, south:southWest.lat, east:northEast.lng, north:northEast.lat}
+    ).then(selected => setArea({bounds, items: sortMedia(selected, "desc")}));
+  }
+  function selectCluster(cluster:MapMedia[]) {
+    const points = cluster.map(item => parseGPS(item.gps)).filter((point): point is [number,number] => point !== null);
+    setArea({bounds: points.length > 0 ? L.latLngBounds(points) : L.latLngBounds([0,0],[0,0]), items: sortMedia(cluster, "desc")});
+  }
+  return <main className={`map-page ${area ? "panel-open" : ""}`} aria-label="Media map">
+    <div className="map-stage">
+      <MapContainer center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className="map">
+        <TileLayer key={theme} attribution='&copy; OpenStreetMap contributors' url={theme === "dark" ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png" : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}/>
+        <ScaleControl position="bottomleft" imperial={false}/>
+        <MapItems items={items} focused={focused} pickedGPS={pickedGPS} copyStatus={copyStatus} selectMode={selectMode} onCopyStatus={setCopyStatus} onPick={value => { setPickedGPS(value); setCopyStatus(""); }} onSelectCluster={selectCluster} onRenderProgress={setRendering}/>
+        <AreaSelector enabled={selectMode} onArea={selectArea}/>
+        {area && <SelectionRectangle bounds={area.bounds}/>}
+      </MapContainer>
+      <div className="map-toolbar">
+        <button className={`select-area-button ${selectMode ? "active" : ""}`} onClick={() => setSelectMode(value => !value)}>{selectMode ? "Cancel area selection" : "Select area"}</button>
+        {area && <button className="secondary" onClick={() => setArea(null)}>Clear selection</button>}
+        {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
+      </div>
+    </div>
+    {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
+  </main>;
 }
 
-function MapItems({items,focused,pickedGPS,copyStatus,onCopyStatus,onPick}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; copyStatus:string; onCopyStatus:(status:string)=>void; onPick:(gps:string)=>void}) {
+function AreaSelector({enabled,onArea}:{enabled:boolean; onArea:(start:L.LatLng,end:L.LatLng)=>void}) {
+  const map = useMap();
+  const rectangleRef = useRef<L.Rectangle|null>(null);
+  const dragRef = useRef<{start:L.LatLng; current:L.LatLng}|null>(null);
+  function clearRectangle() {
+    if (rectangleRef.current) {
+      map.removeLayer(rectangleRef.current);
+      rectangleRef.current = null;
+    }
+  }
+  function finishDrag() {
+    const drag = dragRef.current;
+    if (!drag) return;
+    onArea(drag.start, drag.current);
+    dragRef.current = null;
+    clearRectangle();
+  }
+  useEffect(() => {
+    if (enabled) {
+      map.dragging.disable();
+      map.boxZoom.disable();
+    } else {
+      map.dragging.enable();
+      map.boxZoom.enable();
+      dragRef.current = null;
+      clearRectangle();
+    }
+  }, [enabled, map]);
+  useEffect(() => {
+    window.addEventListener("mouseup", finishDrag);
+    return () => window.removeEventListener("mouseup", finishDrag);
+  });
+  useMapEvents({
+    mousedown: event => {
+      if (!enabled) return;
+      dragRef.current = {start:event.latlng, current:event.latlng};
+      if (!rectangleRef.current) {
+        rectangleRef.current = L.rectangle(L.latLngBounds(event.latlng, event.latlng), {color:"#1769e0", weight:2, dashArray:"6 6", fillOpacity:0.12}).addTo(map);
+      }
+    },
+    mousemove: event => {
+      if (!enabled || !dragRef.current) return;
+      dragRef.current = {...dragRef.current, current:event.latlng};
+      rectangleRef.current?.setBounds(L.latLngBounds(dragRef.current.start, event.latlng));
+    },
+    mouseup: finishDrag
+  });
+  return null;
+}
+
+function SelectionRectangle({bounds}:{bounds:L.LatLngBounds}) {
+  const map = useMap();
+  useEffect(() => {
+    const layer = L.rectangle(bounds, {color:"#1769e0", weight:2, dashArray:"6 6", fillOpacity:0.1}).addTo(map);
+    return () => { map.removeLayer(layer); };
+  }, [bounds, map]);
+  return null;
+}
+
+function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
+  const [sort, setSort] = useState<"desc"|"asc">("desc");
+  const sorted = useMemo(() => sortMedia(items, sort), [items, sort]);
+  const visible = useProgressiveReveal(sorted, 100);
+  const groups = groupByDate(visible);
+  return <aside className="map-timeline-panel" aria-label="Selected area">
+    <div className="map-timeline-head">
+      <strong>{sorted.length} {sorted.length === 1 ? "item" : "items"}</strong>
+      <button className="secondary" onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
+      <button className="secondary" onClick={onClear}>Clear</button>
+    </div>
+    {visible.length < sorted.length && <p className="map-render-status inline">Loading {visible.length} of {sorted.length}…</p>}
+    {sorted.length === 0 ? <div className="empty-state"><p>No media with GPS inside the selected area.</p></div> :
+      <div className="timeline-grid map-area-grid">{groups.map(group =>
+        <div className="timeline-group" key={group.label}>
+          <span className="timeline-group-date">{group.label}</span>
+          <span className="timeline-group-dot" aria-hidden="true"/>
+          <div className="timeline-group-grid">{group.items.map(item =>
+            <MapAreaItem key={item.id} item={item}/>
+          )}</div>
+        </div>
+      )}</div>}
+  </aside>;
+}
+
+function MapAreaItem({item}:{item:MapMedia}) {
+  return <Link className="map-area-item" to={libraryItemURL(item.libraryId, item)} aria-label={`Open ${item.name} in folder`}>
+    <span className="thumb-wrap"><img loading="lazy" src={api.thumbnailUrl(item.id)} alt=""/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
+    <small>{item.name}</small>
+  </Link>;
+}
+
+function MapItems({items,focused,pickedGPS,copyStatus,selectMode,onCopyStatus,onPick,onSelectCluster,onRenderProgress}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; copyStatus:string; selectMode:boolean; onCopyStatus:(status:string)=>void; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
-    click: event => onPick(formatGPS(event.latlng.lat, event.latlng.lng)),
+    click: event => { if (!selectMode) onPick(formatGPS(event.latlng.lat, event.latlng.lng)); },
     zoomend: event => setZoom(event.target.getZoom())
   });
   useEffect(() => {
@@ -1758,12 +2329,13 @@ function MapItems({items,focused,pickedGPS,copyStatus,onCopyStatus,onPick}:{item
       map.fitBounds(points, {padding:[36,36], maxZoom:13});
     }
   }, [focused,items,map]);
-  const clusters = clusterMedia(items, zoom);
-  return <>{clusters.map(cluster =>
-    <Marker key={cluster.id} position={[cluster.lat, cluster.lng]} icon={cluster.items.length === 1 ? mediaPointIcon() : clusterIcon(cluster.items.length)}>
-      <Popup>{cluster.items.length === 1 ? <MapItem item={cluster.items[0]}/> :
-        <div className="map-cluster-popup"><strong>{cluster.items.length} items here</strong>{cluster.items.map(item => <MapItem key={item.id} item={item}/>)}</div>}</Popup>
-    </Marker>)}
+  const clusters = useMemo(() => clusterMedia(items, zoom), [items, zoom]);
+  const visibleClusters = useProgressiveReveal(clusters, 200);
+  useEffect(() => {
+    onRenderProgress(visibleClusters.length < clusters.length);
+  }, [visibleClusters.length, clusters.length, onRenderProgress]);
+  return <>{visibleClusters.map(cluster =>
+    <Marker key={cluster.id} position={[cluster.lat, cluster.lng]} icon={cluster.items.length === 1 ? mediaPointIcon() : clusterIcon(cluster.items.length)} eventHandlers={{click: () => { if (!selectMode) onSelectCluster(cluster.items); }}}/>)}
     {pickedGPS && parseGPS(pickedGPS) && <Marker position={parseGPS(pickedGPS)!} icon={pickedPointIcon()}>
       <Popup><PickedPointPopup gps={pickedGPS} copyStatus={copyStatus} onCopyStatus={onCopyStatus}/></Popup>
     </Marker>}
@@ -1785,14 +2357,6 @@ function PickedPointPopup({gps,copyStatus,onCopyStatus}:{gps:string; copyStatus:
     <input aria-label="Picked GPS coordinates" value={gps} readOnly onFocus={event => event.currentTarget.select()}/>
     <button type="button" className="secondary" onClick={copyPickedGPS}>Copy coordinates</button>
     {copyStatus && <small className={copyStatus === "Copied." ? "success" : "error"}>{copyStatus}</small>}
-  </div>;
-}
-
-function MapItem({item}:{item:MapMedia}) {
-  const target = libraryItemURL(item.libraryId, item);
-  return <div className="map-item">
-    <Link to={target} aria-label={`Open ${item.name} in folder`}><img className="popup-image" src={api.thumbnailUrl(item.id)} alt=""/></Link>
-    <strong>{item.name}</strong><small>{item.gps}</small>
   </div>;
 }
 

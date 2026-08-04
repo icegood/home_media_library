@@ -171,6 +171,112 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/me/password:
+    put:
+      tags: [Auth]
+      summary: Change the current user's password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                newPassword:
+                  type: string
+                  minLength: 12
+                  maxLength: 72
+      responses:
+        "200":
+          description: Password changed
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/me/email:
+    put:
+      tags: [Auth]
+      summary: Set or clear the current user's email address
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  example: user@example.com
+      responses:
+        "200":
+          description: Email saved
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Email already in use by another account
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password reset link for an email address
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  example: user@example.com
+      responses:
+        "200":
+          description: Reset request processed. sent is false with reason smtpNotConfigured when outbound email is disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent:
+                    type: boolean
+                  reason:
+                    type: string
+                    example: smtpNotConfigured
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/v1/auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Set a new password using a reset token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  minLength: 12
+                  maxLength: 72
+      responses:
+        "200":
+          description: Password reset
+        "400":
+          description: Invalid, expired, or already used reset token
   /api/v1/settings:
     get:
       tags: [Auth]
@@ -208,6 +314,8 @@ paths:
     get:
       tags: [Library]
       summary: Libraries visible to the current user
+      description: Statistics are omitted so the listing stays fast; fetch them for a
+        single library via /api/v1/libraries/{id}/stats.
       responses:
         "200":
           description: Visible libraries
@@ -219,6 +327,25 @@ paths:
                   $ref: "#/components/schemas/Library"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/libraries/{id}/stats:
+    get:
+      tags: [Library]
+      summary: Statistics for one library
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      responses:
+        "200":
+          description: Folder, file, image, and video counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/libraries/{id}/entries:
     get:
       tags: [Library]
@@ -687,6 +814,21 @@ paths:
     get:
       tags: [Media]
       summary: Geotagged media visible to the current user
+      description: Optionally restrict to a single library or folder subtree with the
+        library and folder query parameters. folder requires library.
+      parameters:
+        - in: query
+          name: library
+          required: false
+          schema:
+            type: integer
+          description: Restrict to geotagged media inside this library
+        - in: query
+          name: folder
+          required: false
+          schema:
+            type: integer
+          description: Restrict to geotagged media inside this folder's subtree
       responses:
         "200":
           description: Map items with their library id
@@ -696,8 +838,14 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/MapMedia"
+        "400":
+          $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/admin/libraries:
     post:
       tags: [Admin]
@@ -1187,6 +1335,10 @@ components:
           example: alice
         role:
           $ref: "#/components/schemas/Role"
+        email:
+          type: string
+          nullable: true
+          example: alice@example.com
     LibraryStats:
       type: object
       properties:
@@ -1219,8 +1371,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/LibraryRoot"
-        stats:
-          $ref: "#/components/schemas/LibraryStats"
     FavoriteView:
       type: object
       required: [id, name, count]
@@ -1283,7 +1433,7 @@ components:
               type: integer
     MediaFolder:
       type: object
-      required: [id, parentId, relativePath]
+      required: [id, parentId, relativePath, name]
       properties:
         id:
           type: integer
@@ -1291,6 +1441,9 @@ components:
           type: integer
         relativePath:
           type: string
+        name:
+          type: string
+          description: Real folder name derived from its filesystem path.
     ThumbnailRef:
       type: object
       required: [mediaId, index]
@@ -1481,9 +1634,6 @@ components:
     Settings:
       type: object
       properties:
-        transcodeCodec:
-          type: string
-          enum: [h264, h265, vp9]
         httpEnabled:
           type: boolean
         httpsEnabled:
@@ -1520,10 +1670,27 @@ components:
           type: integer
         logRotateMaxAgeDays:
           type: integer
+        smtpHost:
+          type: string
+        smtpPort:
+          type: integer
+        smtpUsername:
+          type: string
+        smtpFrom:
+          type: string
     UserSettings:
       type: object
-      required: [theme]
+      required: [theme, codec, zoom]
       properties:
         theme:
           type: string
-          enum: [light, dark]
+          enum: [light, dark, system]
+          description: Interface theme. `system` follows the browser or operating system color scheme.
+        codec:
+          type: string
+          enum: [h264, h265, vp9]
+        zoom:
+          type: integer
+          minimum: 80
+          maximum: 140
+          description: UI scale as a percentage of the default; also scales folder and file names.
