@@ -17,6 +17,8 @@ const (
 
 const InvalidID = -1
 
+const MaxVideoThumbnailCount = 100
+
 type User struct {
 	ID           int    `json:"id"`
 	Login        string `json:"login"`
@@ -75,7 +77,7 @@ func DefaultServerSettings() ServerSettings {
 		ThumbnailHeight:                  360,
 		WorkerPoolSize:                   4,
 		VideoThumbnailFirstSeconds:       5,
-		VideoThumbnailMaxCount:           10,
+		VideoThumbnailMaxCount:           MaxVideoThumbnailCount,
 		VideoThumbnailMinIntervalSeconds: 120,
 		SessionMaxAgeHours:               720,
 		FinishedJobRetentionMinutes:      10,

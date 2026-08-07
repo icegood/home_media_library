@@ -11,22 +11,20 @@ Use this workflow whenever frontend changes are made in the web app and the resu
 
 1. Confirm the source code changed in the frontend files.
 2. Rebuild the frontend and ensure the new assets are emitted.
-3. Copy the built assets into the running web container or restart the relevant services.
+3. Deploy via the project's official start script so the container images and stack are refreshed.
 4. Open the app in the browser and verify the visible UI, not just the source code.
 
 ## Required sequence for this repository
 
-For this project, always follow this order:
+For this project, always follow this order. Never run `docker build ...` or `docker compose up --build ...` directly — the official deployment entry point is `deploy/start.sh`, which derives image names/versions, builds both backend and web, and brings the stack up.
 
 1. Run tests for the web app:
    - `cd web && npm test -- --run src/App.test.tsx`
 2. Build the frontend:
    - `cd web && npm run build`
-3. Rebuild/restart the containerized web stack:
-   - `cd .. && docker compose up --build -d web gateway`
-4. Copy the built frontend into the running web container:
-   - `docker compose cp web/dist/. web:/usr/share/nginx/html/`
-5. Reload the browser page and verify the visible UI.
+3. Deploy the whole stack with the official script:
+   - `cd .. && sh deploy/start.sh local-build`
+4. Reload the browser page with a hard refresh and verify the visible UI.
 
 ## Important note
 
@@ -44,6 +42,5 @@ If the visible browser page still looks old after a rebuild, treat it as a deplo
 - [ ] Source code updated
 - [ ] Web tests passed
 - [ ] Frontend build completed
-- [ ] Docker web/gateway services refreshed
-- [ ] Built assets copied into the running container
+- [ ] Stack deployed with `sh deploy/start.sh local-build` (no direct `docker build`/`docker compose up --build`)
 - [ ] Browser page reloaded and visually verified

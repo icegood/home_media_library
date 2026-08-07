@@ -889,7 +889,19 @@ func (a *API) play(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", transcoder.ContentType())
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	_ = transcoder.Stream(r.Context(), file.Name(), w)
+	_ = transcoder.Stream(r.Context(), file.Name(), w, startSeconds(r))
+}
+
+func startSeconds(r *http.Request) float64 {
+	raw := strings.TrimSpace(r.URL.Query().Get("start"))
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
 }
 
 func codecSet(value string) map[transcode.Codec]bool {
@@ -1091,8 +1103,8 @@ func (a *API) videoThumbnailTiming(ctx context.Context) (int, int, int) {
 	if maxCount < 1 {
 		maxCount = 1
 	}
-	if maxCount > 10 {
-		maxCount = 10
+	if maxCount > domain.MaxVideoThumbnailCount {
+		maxCount = domain.MaxVideoThumbnailCount
 	}
 	if minInterval < 1 {
 		minInterval = 120
@@ -2627,8 +2639,8 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "worker pool size must be between 1 and 64")
 		return
 	}
-	if input.VideoThumbnailFirstSeconds < 0 || input.VideoThumbnailMaxCount < 1 || input.VideoThumbnailMaxCount > 10 || input.VideoThumbnailMinIntervalSeconds < 1 {
-		problem(w, http.StatusBadRequest, "video thumbnail first time must be non-negative, max count must be between 1 and 10, and min interval must be positive")
+	if input.VideoThumbnailFirstSeconds < 0 || input.VideoThumbnailMaxCount < 1 || input.VideoThumbnailMaxCount > domain.MaxVideoThumbnailCount || input.VideoThumbnailMinIntervalSeconds < 1 {
+		problem(w, http.StatusBadRequest, "video thumbnail first time must be non-negative, max count must be between 1 and "+strconv.Itoa(domain.MaxVideoThumbnailCount)+", and min interval must be positive")
 		return
 	}
 	if input.SessionMaxAgeHours < 1 || input.SessionMaxAgeHours > 8760 {

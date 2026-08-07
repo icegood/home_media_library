@@ -271,6 +271,57 @@ func TestSharedPhysicalRootUsesOneMediaIdentity(t *testing.T) {
 	}
 }
 
+func TestRefreshSkipsAlreadyIndexedMedia(t *testing.T) {
+	root := t.TempDir()
+	countFile := filepath.Join(root, "count")
+	if err := os.WriteFile(countFile, []byte("0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	countingTool := filepath.Join(root, "count-exif")
+	if err := os.WriteFile(countingTool, []byte("#!/bin/sh\nn=$(cat \""+countFile+"\")\nn=$((n+1))\necho \"$n\" > \""+countFile+"\"\necho '{\"SourceFile\":\"x.jpg\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	photos := filepath.Join(root, "photos")
+	if err := os.MkdirAll(photos, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	photoPath := filepath.Join(photos, "one.jpg")
+	if err := os.WriteFile(photoPath, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repository := openSQLite(t)
+	library := scanner.NewLibrary("Photos", []domain.LibraryRoot{{ID: domain.InvalidID, Path: photos}})
+	var err error
+	library, err = repository.CreateLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := scanner.Scanner{
+		Store:    repository,
+		Metadata: metadata.Extractor{ExifTool: countingTool, FFProbe: filepath.Join(root, "missing-ffprobe"), Timeout: time.Second},
+	}
+	if err := subject.Scan(context.Background(), library); err != nil {
+		t.Fatal(err)
+	}
+	count, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(count) != "1\n" {
+		t.Fatalf("first scan should extract metadata once, count=%q", count)
+	}
+	if err := subject.Scan(context.Background(), library); err != nil {
+		t.Fatal(err)
+	}
+	count, err = os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(count) != "1\n" {
+		t.Fatalf("refresh should not re-extract metadata for existing media, count=%q", count)
+	}
+}
+
 func TestMetadataErrorIsStoredAndPreventsRetry(t *testing.T) {
 	root := t.TempDir()
 	failingTool := filepath.Join(root, "fail-exif")

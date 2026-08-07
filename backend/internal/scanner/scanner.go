@@ -230,24 +230,21 @@ func (s Scanner) importMedia(ctx context.Context, root, filePath string, entry f
 		return err
 	}
 	relative = filepath.ToSlash(relative)
-	existing, existingErr := s.Store.MediaByPath(ctx, filePath)
-	extracted := metadata.Result{Metadata: map[string]any{}}
+	// The refresh job only imports new files; rows that already exist are not
+	// rewritten or re-extracted. User edits (GPS, name, taken-at) are applied
+	// through the dedicated update endpoints, so they are never lost here.
+	if _, existingErr := s.Store.MediaByPath(ctx, filePath); existingErr == nil {
+		return nil
+	}
+	extracted, err := s.metadata().Extract(ctx, filePath, mimeType)
 	metadataError := ""
-	if existingErr == nil && existing.MetadataError != "" {
-		extracted.Metadata = existing.Metadata
-		extracted.GPS = existing.GPS
-		extracted.TakenAt = existing.TakenAt
-		metadataError = existing.MetadataError
+	if err != nil {
+		metadataError = err.Error()
 	} else {
-		extracted, err = s.metadata().Extract(ctx, filePath, mimeType)
-		if err != nil {
-			metadataError = err.Error()
-		} else {
-			metadataError = extracted.Error
-		}
-		if metadataError != "" {
-			applog.Printf(applog.Error, "metadata failed for %s: %s", filePath, metadataError)
-		}
+		metadataError = extracted.Error
+	}
+	if metadataError != "" {
+		applog.Printf(applog.Error, "metadata failed for %s: %s", filePath, metadataError)
 	}
 	takenAt := extracted.TakenAt
 	if takenAt == "" {

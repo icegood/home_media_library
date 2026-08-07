@@ -36,6 +36,8 @@ async function call<T>(path:string, init:RequestInit = {}):Promise<T> {
   return json() as T;
 }
 
+export const MAX_VIDEO_THUMBNAILS = 100;
+
 export const api = {
   setupStatus: () => call<{required:boolean}>("/setup"),
   setup: (login:string, password:string) =>
@@ -121,8 +123,8 @@ export const api = {
   folderThumbnailUrl: (id:ID) => authUrl(`/folders/${id}/thumbnail`),
   videoThumbnails: (id:ID) => call<VideoThumbnail[]>(`/media/${id}/thumbnails`),
   contentUrl: (id:ID) => authUrl(`/media/${id}/content`),
-  playbackUrl: (id:ID, codecs:string[]) =>
-    authUrl(`/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}`)
+  playbackUrl: (id:ID, codecs:string[], start = 0) =>
+    authUrl(`/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}${start > 0 ? `&start=${start}` : ""}`)
 };
 
 export interface AdminSettings {

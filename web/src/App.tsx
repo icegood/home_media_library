@@ -2,7 +2,7 @@ import { FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEven
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import { api, type UserSettings as UserSettingsPayload } from "./api";
+import { api, MAX_VIDEO_THUMBNAILS, type UserSettings as UserSettingsPayload } from "./api";
 import type { EmbyImportResult, Entry, FavoriteView, FilesystemListing, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export function App() {
@@ -89,7 +89,7 @@ export function App() {
           <button type="button" className="logout-button" role="menuitem" onClick={handleLogout}>Logout</button>
         </div>
       </details></header>
-    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} resolvedTheme={resolvedTheme} systemDark={systemDark} onThemeChange={setTheme} onZoomChange={setZoom} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
+    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
     <Routes>
       <Route path="/" element={<Libraries/>}/>
       <Route path="/library/:id" element={<Browser/>}/>
@@ -683,8 +683,7 @@ function JobInstanceRow({job,onControl}:{job:JobStatus; onControl:(id:string, ac
   return <article className="job-row">
     <div><strong>{job.libraryName}</strong><small>{job.status} · instance {job.id.slice(0, 8)}</small></div>
     <div className="job-progress"><span style={{width:`${percent}%`}}/></div>
-    <small>{job.total > 0 ? `${job.processed}/${job.total}` : `${job.processed} paths`} · {job.rootPath || "no root"}</small>
-    {job.currentPath && <small className="job-path">{job.currentPath}</small>}
+    <small>{job.total > 0 ? `${job.processed}/${job.total}` : `${job.processed} paths`} · {job.currentPath || job.rootPath || "no root"}</small>
     {job.cancelable && <div className="job-controls">
       {job.paused || job.status === "paused"
         ? <button type="button" className="secondary" onClick={() => onControl(job.id, "resume")}>Resume</button>
@@ -931,7 +930,7 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
   const [thumbnailWidth, setThumbnailWidth] = useState(480);
   const [thumbnailHeight, setThumbnailHeight] = useState(360);
   const [videoThumbnailFirstSeconds, setVideoThumbnailFirstSeconds] = useState(5);
-  const [videoThumbnailMaxCount, setVideoThumbnailMaxCount] = useState(10);
+  const [videoThumbnailMaxCount, setVideoThumbnailMaxCount] = useState(MAX_VIDEO_THUMBNAILS);
   const [videoThumbnailMinIntervalSeconds, setVideoThumbnailMinIntervalSeconds] = useState(120);
   const [workerPoolSize, setWorkerPoolSize] = useState(4);
   const [sessionMaxAgeHours, setSessionMaxAgeHours] = useState(720);
@@ -1008,7 +1007,7 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
     </fieldset>
     <fieldset><legend>Video thumbnails</legend>
       <label>First thumbnail, seconds<input type="number" min="0" value={videoThumbnailFirstSeconds} onChange={event => setVideoThumbnailFirstSeconds(Number(event.target.value))} required/></label>
-      <label>Max thumbnails<input type="number" min="1" max="10" value={videoThumbnailMaxCount} onChange={event => setVideoThumbnailMaxCount(Number(event.target.value))} required/></label>
+      <label>Max thumbnails<input type="number" min="1" max={MAX_VIDEO_THUMBNAILS} value={videoThumbnailMaxCount} onChange={event => setVideoThumbnailMaxCount(Number(event.target.value))} required/></label>
       <label>Minimum interval, seconds<input type="number" min="1" value={videoThumbnailMinIntervalSeconds} onChange={event => setVideoThumbnailMinIntervalSeconds(Number(event.target.value))} required/></label>
       <small>Thumbnails are capped by max count and never closer than the minimum interval.</small>
     </fieldset></>}
@@ -1151,8 +1150,8 @@ function ResetPassword() {
   </form></main>;
 }
 
-function UserSettingsModal({user, theme, zoom, resolvedTheme, systemDark, onThemeChange, onZoomChange, onUserChanged, onClose}:{
-  user:User; theme:"light"|"dark"|"system"; zoom:number; resolvedTheme:"light"|"dark"; systemDark:boolean;
+function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZoomChange, onUserChanged, onClose}:{
+  user:User; theme:"light"|"dark"|"system"; zoom:number; resolvedTheme:"light"|"dark";
   onThemeChange:(theme:"light"|"dark"|"system")=>void;
   onZoomChange:(zoom:number)=>void;
   onUserChanged:(user:User)=>void; onClose:()=>void;
@@ -1171,9 +1170,6 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, systemDark, onThem
   useEffect(() => {
     api.userSettings().then(settings => { setCodec(settings.codec); setLoaded(true); }).catch(() => undefined);
   }, [user.id]);
-  useEffect(() => {
-    document.documentElement.dataset.theme = draftTheme === "system" ? (systemDark ? "dark" : "light") : draftTheme;
-  }, [draftTheme, systemDark]);
   useEffect(() => {
     document.documentElement.style.fontSize = `${draftZoom}%`;
   }, [draftZoom]);
@@ -1229,9 +1225,7 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, systemDark, onThem
           <option value="vp9">VP9 — WebM with Opus audio</option>
         </select></label>
         <small>Used when your browser cannot play the original video. Choose the codec your devices support best.</small>
-        {error && <p className="error">{error}</p>}
-        {saved && <p className="success">Settings saved.</p>}
-        <button type="button" onClick={() => void saveSettings()} disabled={saving || !loaded}>{saving ? "Saving…" : "Save settings"}</button>
+        <small>Your browser plays directly without transcoding: {supportedVideoFormats().join(", ") || "none"}.</small>
       </fieldset>
       <fieldset><legend>Email</legend>
         <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} onBlur={() => void saveEmail()} autoComplete="email" placeholder="you@example.com"/></label>
@@ -1243,6 +1237,9 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, systemDark, onThem
         <button type="button" className="secondary" onClick={() => setPasswordModalOpen(true)}>Change password…</button>
         <small>Requires your current password. Use a separate strong password.</small>
       </fieldset>
+      {error && <p className="error">{error}</p>}
+      {saved && <p className="success">Settings saved.</p>}
+      <button type="button" className="settings-save" onClick={() => void saveSettings()} disabled={saving || !loaded}>{saving ? "Saving…" : "Save settings"}</button>
     </div>
     {passwordModalOpen && <ChangePasswordModal onClose={() => setPasswordModalOpen(false)}/>}
   </div>;
@@ -1663,7 +1660,7 @@ function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onO
         const row = Math.floor((start + index) / columns);
         const priority = row >= firstVisibleRow && row < firstVisibleRow + visibleRows;
         return entry.type === "folder" ?
-          <FolderEntry key={`folder-${entry.relativePath}`} entry={entry} view={view} libraryId={libraryId} priority={priority} onOpenFolder={onOpenFolder}/> :
+          <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} priority={priority} onOpenFolder={onOpenFolder}/> :
           <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} priority={priority} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected}/>;
       })}
     </div>
@@ -2052,44 +2049,120 @@ function toDateTimeLocal(value:string|undefined) {
   return local.toISOString().slice(0, 16);
 }
 
+function videoMetadataDuration(metadata:Record<string, unknown>): number {
+  const ffprobe = metadata?.ffprobe as {format?:{duration?:unknown}}|undefined;
+  const raw = ffprobe?.format?.duration;
+  const value = typeof raw === "string" ? Number(raw) : raw;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function codecLabel(codecName:string) {
+  const names:Record<string,string> = {h264:"H.264", h265:"H.265 / HEVC", hevc:"H.265 / HEVC", vp9:"VP9", mpeg1video:"MPEG-1", mpeg2video:"MPEG-2", msmpeg4v3:"MPEG-4 Part 2 (msmpeg4v3)", aac:"AAC", mp3:"MP3", mp2:"MP2", opus:"Opus", vorbis:"Vorbis", ac3:"AC-3", eac3:"E-AC-3", flac:"FLAC"};
+  return names[codecName] ?? codecName;
+}
+
+function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"transcoded"; reasons:string[]} {
+  const streams = (item.metadata?.ffprobe as {streams?:Array<{codec_type?:string; codec_name?:string}>}|undefined)?.streams ?? [];
+  const video = streams.find(stream => stream.codec_type === "video");
+  const audio = streams.find(stream => stream.codec_type === "audio");
+  const codecName = video?.codec_name ?? "";
+  const sourceCodec = codecName === "h264" ? "h264" : codecName === "hevc" || codecName === "h265" ? "h265" : codecName === "vp9" ? "vp9" : "";
+  const audioName = audio?.codec_name ?? "";
+  const mime = (item.mimeType || "").split(";")[0].trim().toLowerCase();
+  const reasons: string[] = [];
+  if (!sourceCodec) {
+    reasons.push(`Video codec "${codecLabel(codecName) || "unknown"}" is not supported by your browser.`);
+  } else if (!supported.includes(sourceCodec)) {
+    reasons.push(`Video codec "${codecLabel(sourceCodec)}" is not supported by your browser.`);
+  }
+  if (sourceCodec) {
+    const expectedAudio = sourceCodec === "vp9" ? "opus" : "aac";
+    if (audioName !== "" && audioName !== expectedAudio) {
+      reasons.push(`Audio track is ${codecLabel(audioName)}, but ${codecLabel(sourceCodec)} video needs ${codecLabel(expectedAudio)} audio to play without transcoding.`);
+    }
+    const containerOk = sourceCodec === "vp9" ? mime === "video/webm" : mime === "video/mp4" || mime === "video/x-m4v";
+    if (!containerOk) {
+      const expectedContainer = sourceCodec === "vp9" ? "WebM" : "MP4";
+      reasons.push(`File container is ${mime || "unknown"}, but ${codecLabel(sourceCodec)} video needs a ${expectedContainer} container.`);
+    }
+  }
+  return {mode: reasons.length > 0 ? "transcoded" : "original", reasons};
+}
+
 function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
   const videoRef = useRef<HTMLVideoElement|null>(null);
+  const metadataDuration = videoMetadataDuration(item.metadata);
   const [thumbs, setThumbs] = useState<VideoThumbnail[]>([]);
   const [hover, setHover] = useState<VideoThumbnail|null>(null);
   const [hoverLeft, setHoverLeft] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [current, setCurrent] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(metadataDuration);
+  const [offsets, setOffsets] = useState<[number,number]>([0,0]);
+  const [active, setActive] = useState(0);
+  const [pending, setPending] = useState<number|null>(null);
+  const videoRefs = [useRef<HTMLVideoElement|null>(null), useRef<HTMLVideoElement|null>(null)];
+  const activeRef = useRef(0);
+  const seekTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
+  const seekPending = useRef(false);
+  const playback = videoPlaybackReport(item, supported);
+  const transcoded = playback.mode === "transcoded";
+  const [reportOpen, setReportOpen] = useState(false);
+  const targetSlot = active === 0 ? 1 : 0;
   useEffect(() => { api.videoThumbnails(item.id).then(setThumbs).catch(() => setThumbs([])); }, [item.id]);
+  useEffect(() => () => { if (seekTimer.current !== null) clearTimeout(seekTimer.current); }, []);
+  useEffect(() => { activeRef.current = active; }, [active]);
+  function activeVideo() {
+    return videoRefs[activeRef.current].current;
+  }
   function toggle() {
-    const video = videoRef.current;
+    const video = activeVideo();
     if (!video) return;
     if (video.paused) void video.play();
     else video.pause();
   }
   function seek(value:number) {
-    const video = videoRef.current;
-    if (!video || !Number.isFinite(duration)) return;
-    video.currentTime = value;
-    setCurrent(value);
+    if (!Number.isFinite(duration)) return;
+    const clamped = Math.min(Math.max(value, 0), duration || value);
+    setCurrent(clamped);
+    if (!transcoded) {
+      const video = activeVideo();
+      if (video) video.currentTime = clamped;
+      return;
+    }
+    if (seekTimer.current !== null) clearTimeout(seekTimer.current);
+    seekPending.current = true;
+    seekTimer.current = setTimeout(() => {
+      const slot = activeRef.current === 0 ? 1 : 0;
+      setPending(clamped);
+      setOffsets(prev => { const next = [...prev] as [number,number]; next[slot] = clamped; return next; });
+    }, 400);
   }
   function jump(delta:number) {
-    seek(Math.min(Math.max(current + delta, 0), duration || current + delta));
+    seek(current + delta);
   }
   function stop() {
-    const video = videoRef.current;
-    if (!video) return;
-    video.pause();
-    video.currentTime = 0;
+    const video = activeVideo();
+    if (video) video.pause();
+    if (seekTimer.current !== null) clearTimeout(seekTimer.current);
+    seekPending.current = false;
+    setPending(null);
     setCurrent(0);
     setPlaying(false);
   }
   function replay() {
-    const video = videoRef.current;
-    if (!video) return;
-    video.currentTime = 0;
+    if (seekTimer.current !== null) clearTimeout(seekTimer.current);
+    seekPending.current = false;
     setCurrent(0);
-    void video.play();
+    setPlaying(true);
+    if (!transcoded) {
+      const video = activeVideo();
+      if (video) { video.currentTime = 0; void video.play(); }
+      return;
+    }
+    const slot = activeRef.current === 0 ? 1 : 0;
+    setPending(0);
+    setOffsets(prev => { const next = [...prev] as [number,number]; next[slot] = 0; return next; });
   }
   function hoverTimeline(event:MouseEvent<HTMLDivElement>) {
     if (thumbs.length === 0) return;
@@ -2101,13 +2174,45 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
     setHover(closest);
     setHoverLeft(ratio * 100);
   }
-  return <div className="video-box">
-    <video ref={videoRef} autoPlay preload="metadata" src={api.playbackUrl(item.id, supported)}
-      onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
-      onLoadedMetadata={event => setDuration(event.currentTarget.duration || 0)}
-      onTimeUpdate={event => setCurrent(event.currentTarget.currentTime)}>
+  function renderVideo(slot:number) {
+    const isActive = active === slot;
+    const offset = offsets[slot];
+    return <video key={`slot-${slot}-${offset}`} ref={videoRefs[slot]} src={api.playbackUrl(item.id, supported, offset)}
+      style={isActive ? undefined : {visibility:"hidden", position:"absolute", top:0, left:0, width:"100%"}}
+      preload="auto" muted={!isActive} autoPlay={isActive && playing} playsInline
+      onCanPlay={() => {
+        if (isActive) return;
+        if (pending === null || offsets[slot] !== pending) return;
+        seekPending.current = false;
+        setPending(null);
+        setActive(slot);
+        const el = videoRefs[slot].current;
+        if (!el) return;
+        el.muted = false;
+        if (playing) {
+          try { void el.play(); } catch { /* ignore */ }
+        } else el.pause();
+      }}
+      onLoadedMetadata={event => { const reported = event.currentTarget.duration; if (!(metadataDuration > 0) && Number.isFinite(reported) && reported > 0) setDuration(reported); }}
+      onTimeUpdate={event => { if (!isActive || seekPending.current) return; const position = offset + event.currentTarget.currentTime; setCurrent(duration > 0 ? Math.min(position, duration) : position); }}
+      onPlay={isActive ? () => setPlaying(true) : undefined}
+      onPause={isActive ? () => setPlaying(false) : undefined}>
       Your browser cannot play this video.
-    </video>
+    </video>;
+  }
+  return <div className="video-box">
+    <div className="video-stack">
+      {renderVideo(active)}
+      {transcoded && pending !== null && renderVideo(targetSlot)}
+    </div>
+    {transcoded && <div className="video-badge-wrap">
+      <button type="button" className="video-badge" aria-expanded={reportOpen} aria-controls="transcode-reasons"
+        onClick={event => { event.stopPropagation(); setReportOpen(v => !v); }}>Transcoded ▾</button>
+      {reportOpen && <div className="video-badge-popover" id="transcode-reasons" role="tooltip">
+        <strong>Why transcoded?</strong>
+        <ul>{playback.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
+      </div>}
+    </div>}
     <div className="video-controls">
       <button type="button" onClick={toggle}>{playing ? "Pause" : "Play"}</button>
       <button type="button" onClick={stop}>Stop</button>
@@ -2125,6 +2230,18 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
       <button type="button" onClick={() => jump(10)}>+10s</button>
     </div>
   </div>;
+}
+
+function supportedVideoFormats() {
+  const video = document.createElement("video");
+  const checks:Record<string,{probe:string[]; label:string}> = {
+    h264: {label:"MP4 — H.264 + AAC", probe:['video/mp4; codecs="avc1.42E01E,mp4a.40.2"']},
+    h265: {label:"MP4 — H.265 / HEVC + AAC", probe:['video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"']},
+    vp9: {label:"WebM — VP9 + Opus", probe:['video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp09.00.10.08,opus"']}
+  };
+  return Object.entries(checks)
+    .filter(([,entry]) => entry.probe.some(type => video.canPlayType(type) !== ""))
+    .map(([,entry]) => entry.label);
 }
 
 function supportedVideoCodecs() {

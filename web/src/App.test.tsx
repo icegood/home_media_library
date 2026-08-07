@@ -52,10 +52,12 @@ const mockApi = vi.hoisted(() => ({
   cleanupOrphanThumbnails: vi.fn(),
   shutdown: vi.fn(),
   importEmby: vi.fn(),
-  filesystem: vi.fn()
+  filesystem: vi.fn(),
+  videoThumbnails: vi.fn(),
+  playbackUrl: vi.fn()
 }));
 
-vi.mock("./api", () => ({ api: mockApi }));
+vi.mock("./api", () => ({ api: mockApi, MAX_VIDEO_THUMBNAILS: 100 }));
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -74,13 +76,13 @@ beforeEach(() => {
   mockApi.map.mockResolvedValue([]);
   mockApi.settings.mockResolvedValue({
     httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
-    thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:10, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
+    thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
     sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
     smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
   });
   mockApi.updateSettings.mockResolvedValue({
     httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
-    thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:10, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
+    thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
     sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
     smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
   });
@@ -126,6 +128,8 @@ beforeEach(() => {
   mockApi.filesystem.mockResolvedValue({root:"/media", path:"/media", parent:"", directories:[
     {name:"photos", path:"/media/photos"}
   ]});
+  mockApi.videoThumbnails.mockResolvedValue([]);
+  mockApi.playbackUrl.mockReturnValue("/play.mp4");
 });
 
 afterEach(() => {
@@ -154,7 +158,7 @@ test("settings navigation opens thumbnail subsection and shows video thumbnail s
   expect(await screen.findByRole("heading", {name:"Admin panel"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"Thumbnails"})).toBeInTheDocument();
   expect(screen.getByText("Video thumbnails")).toBeInTheDocument();
-  expect(screen.getByLabelText("Max thumbnails")).toHaveValue(10);
+  expect(screen.getByLabelText("Max thumbnails")).toHaveValue(100);
   expect(screen.getByLabelText("Minimum interval, seconds")).toHaveValue(120);
 });
 
@@ -339,10 +343,11 @@ test("regular user has no settings menu and picks theme in user settings", async
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"dark"}});
-  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
   await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264", zoom:100}));
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
 test("system theme resolves via prefers-color-scheme and updates on change", async () => {
@@ -362,11 +367,29 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"system"}});
   expect(document.documentElement.dataset.theme).toBe("light");
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264", zoom:100}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
-  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264", zoom:100}));
+  dark = false;
+  listeners.forEach(listener => listener({matches:false}));
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+});
+
+test("user settings lists the full direct-play formats the browser supports", async () => {
+  const originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
+  HTMLVideoElement.prototype.canPlayType = (type:string) => type.startsWith("video/mp4") ? "maybe" : "";
+  try {
+    mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+    render(<MemoryRouter><App/></MemoryRouter>);
+    fireEvent.click(await screen.findByLabelText("User menu"));
+    fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+    const dialog = await screen.findByRole("dialog", {name:"User settings"});
+    expect(await within(dialog).findByText("Your browser plays directly without transcoding: MP4 — H.264 + AAC, MP4 — H.265 / HEVC + AAC.")).toBeInTheDocument();
+  } finally {
+    HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
+  }
 });
 
 test("user settings modal changes codec email and password", async () => {
@@ -375,6 +398,7 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await screen.findByLabelText("User menu"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  expect(await within(dialog).findByText(/Your browser plays directly without transcoding/)).toBeInTheDocument();
 
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Codec"}), {target:{value:"vp9"}});
@@ -941,6 +965,95 @@ test("old admin settings route redirects to the admin panel", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin/settings"]}><App/></MemoryRouter>);
   await waitFor(() => expect(screen.getByRole("heading", {name:"Admin panel"})).toBeInTheDocument());
+});
+
+test("video player shows the real duration from ffprobe metadata for transcoded streams", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraryMedia.mockResolvedValue([
+    {id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}
+  ]);
+  mockApi.videoThumbnails.mockResolvedValue([
+    {index:0, timeSeconds:1, url:"/thumb0.jpg"},
+    {index:1, timeSeconds:404, url:"/thumb1.jpg"},
+    {index:2, timeSeconds:808, url:"/thumb2.jpg"}
+  ]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const slider = await screen.findByLabelText("Seek video");
+  expect(slider).toHaveAttribute("max", "4033.88");
+  expect(screen.getByText("67:13")).toBeInTheDocument();
+  expect(mockApi.playbackUrl).toHaveBeenCalledWith(100, expect.anything(), 0);
+  expect(screen.getByRole("button", {name:/Transcoded/})).toBeInTheDocument();
+});
+
+test("seeking a transcoded video requests a server-side start offset instead of relying on browser seeking", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraryMedia.mockResolvedValue([
+    {id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}
+  ]);
+  mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const slider = await screen.findByLabelText("Seek video");
+  fireEvent.change(slider, {target:{value:"1234"}});
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
+  expect(mockApi.playbackUrl).toHaveBeenLastCalledWith(100, expect.anything(), 1234);
+});
+
+test("transcoded video keeps showing the absolute position after a server-side seek", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraryMedia.mockResolvedValue([
+    {id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}
+  ]);
+  mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const slider = await screen.findByLabelText("Seek video");
+  fireEvent.change(slider, {target:{value:"1234"}});
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
+  const preload = document.querySelectorAll(".video-stack video")[1] as HTMLVideoElement;
+  fireEvent.canPlay(preload);
+  fireEvent.timeUpdate(preload, {target:{currentTime:5}});
+  expect(slider).toHaveValue("1239");
+  expect(screen.getByText("20:39")).toBeInTheDocument();
+});
+
+test("transcode badge dropdown explains which parts are incompatible", async () => {
+  const originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
+  HTMLVideoElement.prototype.canPlayType = (type:string) => type.startsWith("video/webm") ? "maybe" : "";
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    mockApi.libraryMedia.mockResolvedValue([
+      {id:100, folderId:20, relativePath:"clip.mkv", name:"clip.mkv", kind:"video", mimeType:"video/x-matroska", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"vp9"},{codec_type:"audio", codec_name:"mp3"}]}}, gps:"", takenAt:""}
+    ]);
+    mockApi.videoThumbnails.mockResolvedValue([]);
+    render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+    const badge = await screen.findByRole("button", {name:/Transcoded/});
+    expect(screen.queryByText("Why transcoded?")).not.toBeInTheDocument();
+    fireEvent.click(badge);
+    expect(screen.getByText("Why transcoded?")).toBeInTheDocument();
+    expect(screen.queryByText(/Video codec/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Audio track is MP3, but VP9 video needs Opus audio to play without transcoding\./)).toBeInTheDocument();
+    expect(screen.getByText(/File container is video\/x-matroska, but VP9 video needs a WebM container\./)).toBeInTheDocument();
+    fireEvent.click(badge);
+    expect(screen.queryByText("Why transcoded?")).not.toBeInTheDocument();
+  } finally {
+    HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
+  }
+});
+
+test("video player shows no transcode badge when the video can be direct-played", async () => {
+  const originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
+  HTMLVideoElement.prototype.canPlayType = () => "maybe";
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    mockApi.libraryMedia.mockResolvedValue([
+      {id:100, folderId:20, relativePath:"clip.mp4", name:"clip.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"h264"},{codec_type:"audio", codec_name:"aac"}]}}, gps:"", takenAt:""}
+    ]);
+    mockApi.videoThumbnails.mockResolvedValue([]);
+    render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+    await screen.findByLabelText("Seek video");
+    expect(screen.queryByRole("button", {name:/Transcoded/})).not.toBeInTheDocument();
+  } finally {
+    HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
+  }
 });
 
 test("map area selection fetches media inside the rectangle from the server and shows a right-side timeline panel", async () => {

@@ -106,18 +106,23 @@ func (s Service) ContentType() string {
 	return `video/mp4; codecs="avc1.42E01E,mp4a.40.2"`
 }
 
-func (s Service) Stream(ctx context.Context, input string, output io.Writer) error {
+func (s Service) Stream(ctx context.Context, input string, output io.Writer, startSeconds float64) error {
 	videoCodec, audioCodec, formatArgs, err := arguments(s.Target)
 	if err != nil {
 		return err
 	}
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
+	}
+	if startSeconds > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%g", startSeconds))
+	}
+	args = append(args,
 		"-i", input,
 		"-map", "0:v:0", "-map", "0:a:0?",
 		"-c:v", videoCodec, "-preset", "veryfast",
 		"-c:a", audioCodec, "-b:a", "160k",
-	}
+	)
 	args = append(args, formatArgs...)
 	args = append(args, "pipe:1")
 	command := exec.CommandContext(ctx, "ffmpeg", args...)
