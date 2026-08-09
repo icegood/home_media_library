@@ -52,7 +52,7 @@ case "$mode" in
     WEB_IMAGE="ghcr.io/icegood/home-media-library-web:${resolved_version}"
     ENV_FILE="${ENV_FILE:-.env}"
     export API_IMAGE WEB_IMAGE ENV_FILE
-    docker compose -f compose.yaml pull api web gateway
+    docker compose -f compose.yaml pull
     docker compose -f compose.yaml rm -sf
     docker compose -f compose.yaml up -d --no-build --remove-orphans
     ;;
@@ -65,9 +65,6 @@ case "$mode" in
 
     if [ "${RUNTIME_DIR:-}" = "./runtime" ]; then
       RUNTIME_DIR="../runtime"
-    fi
-    if [ "${MEDIA_ROOT:-}" = "./sample-media" ]; then
-      MEDIA_ROOT="../sample-media"
     fi
 
     if [ ! -f ../VERSION ]; then
@@ -84,7 +81,7 @@ case "$mode" in
     fi
     BUILD_DATE="${BUILD_DATE:-unknown}"
     ENV_FILE="${ENV_FILE:-../.env}"
-    export PROJECT_VERSION API_IMAGE WEB_IMAGE VCS_REF BUILD_DATE ENV_FILE RUNTIME_DIR MEDIA_ROOT
+    export PROJECT_VERSION API_IMAGE WEB_IMAGE VCS_REF BUILD_DATE ENV_FILE RUNTIME_DIR
 
     docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml build
     docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml up -d --remove-orphans

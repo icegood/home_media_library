@@ -5,10 +5,9 @@ Workspace: self-hosted multi-user media library (`media_library`).
 ## Skills
 
 - `update-ui-after-build` (`.github/skills/update-ui-after-build/SKILL.md`) — after
-  any frontend change, verify in the running app: run web tests, `npm run build`,
-  `docker compose up --build -d web gateway`, copy `web/dist/` into the running web
-  container, hard-reload the browser. A stale browser/container means deployment
-  issue until proven otherwise.
+  any frontend change, verify in the running app: build, test, and deploy through
+  `deploy/start.sh local-build`, then hard-reload the browser. A stale browser/container
+  means deployment issue until proven otherwise.
 - `media-library-architecture` (`.github/skills/media-library-architecture/SKILL.md`) —
   full architecture map: components, data model, flows, runtime layout, hygiene.
 - `short-answers` (`.github/skills/short-answers/SKILL.md`) — answer very short,
@@ -31,8 +30,9 @@ Three-container Compose stack with one host bind `./runtime` → `/runtime`:
   reloads on generated-Caddyfile change. TLS terminates here (Let's Encrypt).
 
 Key facts:
-- Media files stay in original folders (mounted read-only, `MEDIA_ROOT`); libraries
-  reference explicit absolute paths, and the api container runs as the host user
+- Media files stay in original folders; operators mount them into the api
+  container and add them as libraries in the admin UI. Libraries reference
+  explicit absolute paths, and the api container runs as the host user
   (`MEDIA_UID`/`MEDIA_GID`), which is the filesystem access boundary. DB stores
   users, libraries, permissions, folder/media indexes, metadata, GPS.
 - Auth: HttpOnly `media_session` JWT cookie (claims `uid`+`role`). Setup endpoint
@@ -73,7 +73,9 @@ Ignore (generated/output): `.env` (secrets), `runtime/`, `thumbnails/`,
 
 ## Verification
 
-All build/test is done via Docker; no host Go/Node toolchain is used:
-- `docker build -t media-library-api ./backend` (runs `go test ./...`)
-- `docker build -t media-library-web ./web` (runs `npm test && npm run build`)
-- Local frontend dev/test: `cd web && npm test -- --run src/App.test.tsx`
+Build, test, and deploy run ONLY through the official script `deploy/start.sh`; never run
+raw `docker build`, `docker compose up --build`, `npm test`, or `npm run build` by hand. No
+host Go/Node toolchain is used.
+- `sh deploy/start.sh local-build` — builds backend + web (each image build runs its tests:
+  `go test ./...` and `npm test && npm run build`) and brings the stack up.
+- `sh deploy/start.sh prod` — pull published images and restart the stack.

@@ -86,6 +86,8 @@ export const api = {
   deleteScheduledTask: (id:ID) => call<void>(`/admin/scheduled-tasks/${id}`, {method:"DELETE"}),
   jobs: () => call<JobStatus[]>("/admin/jobs"),
   logs: (limit = 300) => call<LogTail>(`/admin/logs?limit=${encodeURIComponent(String(limit))}`),
+  clearLogs: () => call<{path:string}>("/admin/logs", {method:"DELETE"}),
+  logsDownloadUrl: () => authUrl("/admin/logs/download"),
   pauseJob: (id:string) => call<JobStatus>(`/admin/jobs/${id}/pause`, {method:"POST"}),
   resumeJob: (id:string) => call<JobStatus>(`/admin/jobs/${id}/resume`, {method:"POST"}),
   cancelJob: (id:string) => call<JobStatus>(`/admin/jobs/${id}/cancel`, {method:"POST"}),
@@ -133,6 +135,7 @@ export interface AdminSettings {
   publicDns:string;
   acmeEmail:string;
   httpsCertificateExpiresAt:string;
+  httpsGatewayEnabled:boolean;
   thumbnailWidth:number;
   thumbnailHeight:number;
   videoThumbnailFirstSeconds:number;
@@ -152,8 +155,22 @@ export interface AdminSettings {
   smtpFrom:string;
 }
 
+export type TranscodeSchemaId =
+  | "h264-aac-mp4"
+  | "h264-opus-mp4"
+  | "vp9-opus-webm"
+  | "vp9-vorbis-webm"
+  | "av1-opus-webm"
+  | "hevc-aac-mp4"
+  | "hevc-opus-mp4"
+  | "vp8-vorbis-webm"
+  | "vp8-opus-webm";
+
 export interface UserSettings {
   theme:"light"|"dark"|"system";
-  codec:"h264"|"h265"|"vp9";
+  codec:TranscodeSchemaId;
   zoom:number;
+  defaultThumbImage:string;
+  defaultThumbVideo:string;
+  defaultThumbFolder:string;
 }

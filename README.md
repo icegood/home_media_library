@@ -60,10 +60,13 @@ To build local source instead, run:
 sh deploy/start.sh local-build
 ```
 
-HTTP is enabled by default and HTTPS is disabled. After creating the initial
-administrator, open **Admin panel → System → Network** to enable or disable either
-protocol. At least one must remain enabled. Changes are persisted and Caddy
-reloads them automatically without Docker access or a container restart.
+The stack runs HTTP-only out of the box: the web service publishes `WEB_PORT`
+directly and no gateway container is started. To serve HTTPS from the app
+itself, enable the optional Caddy gateway once by setting `COMPOSE_PROFILES=https`
+in `deploy/.env` and restarting the stack, then open **Admin panel → System →
+Network** to enable HTTPS. At least one protocol must remain enabled. Changes are
+persisted and Caddy reloads them automatically without Docker access or a
+container restart.
 
 When enabling HTTPS, enter the public DNS name and Let's Encrypt contact email
 in the same administrator screen.
@@ -80,6 +83,12 @@ automatically, and keeps ACME state in external host folders. Before starting HT
 In HTTPS-only mode no HTTP application listener or HTTP-to-HTTPS redirect is
 configured. Let’s Encrypt may still use port 80 temporarily for the ACME HTTP
 challenge; TLS-ALPN validation on port 443 is also supported by Caddy.
+
+Before enabling HTTPS, decide how your domain will be reachable from the public
+internet (own domain + port forwarding, Tailscale, tunnel, or an existing
+reverse proxy). Step-by-step instructions for every option are in
+[`docs/https-domain-setup.md`](docs/https-domain-setup.md), and a short version
+is shown inline in **Admin panel → System → Network**.
 
 On the first startup, the browser presents a setup form for the initial
 administrator login and password. The setup endpoint is disabled permanently
@@ -122,7 +131,7 @@ prefixes.
 ### Prerequisites
 
 - Docker with Compose v2 (for the containerized setup).
-- A folder with media files to serve (point `MEDIA_ROOT` at it).
+- Media folders mounted into the API container (see below).
 - A `.env` file with `JWT_SECRET` set to 32+ random characters.
 
 ### Production deployment from release artifact
@@ -165,7 +174,6 @@ chmod 600 .env
 Edit `.env`:
 
 - `JWT_SECRET` — replace with a real 32+ character secret.
-- `MEDIA_ROOT` — host folder with your media files.
 - `MEDIA_UID` / `MEDIA_GID` — host user/group id that should own runtime files.
 - `DOCKER_GID` — host docker socket group id, if you want the admin stop button.
 - `HTTP_PORT` / `HTTPS_PORT` — host ports to expose.
@@ -214,12 +222,13 @@ sh start.sh prod
 cp deploy/.env.default .env
 ```
 
-Edit `.env`: set `JWT_SECRET`, `MEDIA_ROOT` (the host folder with your media),
-and `MEDIA_UID`/`MEDIA_GID` to your host user and group IDs — the API container
-runs as that user (the access boundary), so it can read the mounted media and
-write the host-mounted `RUNTIME_DIR`. Set `DOCKER_GID` to the host docker
-socket group id so the admin UI **Stop Docker container** action can call Docker
-and stop the API container for real:
+Edit `.env`: set `JWT_SECRET`, and `MEDIA_UID`/`MEDIA_GID` to your host user and
+group IDs — the API container runs as that user (the access boundary), so it can
+read the mounted media and write the host-mounted `RUNTIME_DIR`. Mount your media
+folders into the API container manually (e.g. add a volume in
+`deploy/compose.yaml`) and add them as libraries in the admin UI. Set
+`DOCKER_GID` to the host docker socket group id so the admin UI **Stop Docker
+container** action can call Docker and stop the API container for real:
 
 ```sh
 getent group docker | cut -d: -f3
@@ -377,7 +386,8 @@ The complete HTTP API is documented as an OpenAPI 3.0 spec:
   document embedded in the backend binary.
 
 See [`docs/architecture.md`](docs/architecture.md) for boundaries and the
-production roadmap.
+production roadmap, and [`docs/https-domain-setup.md`](docs/https-domain-setup.md)
+for preparing a domain for Let's Encrypt HTTPS.
 
 ## Video playback
 

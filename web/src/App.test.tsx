@@ -46,6 +46,8 @@ const mockApi = vi.hoisted(() => ({
   folderThumbnailUrl: vi.fn(),
   jobs: vi.fn(),
   logs: vi.fn(),
+  clearLogs: vi.fn(),
+  logsDownloadUrl: vi.fn(() => "/api/v1/admin/logs/download"),
   pauseJob: vi.fn(),
   resumeJob: vi.fn(),
   cancelJob: vi.fn(),
@@ -67,21 +69,21 @@ beforeEach(() => {
   document.documentElement.style.fontSize = "";
   mockApi.setupStatus.mockResolvedValue({required:false});
   mockApi.me.mockRejectedValue(new Error("unauthorized"));
-  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264", zoom:100});
-  mockApi.updateUserSettings.mockResolvedValue({theme:"dark", codec:"h264", zoom:100});
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100});
+  mockApi.updateUserSettings.mockResolvedValue({theme:"dark", codec:"h264-aac-mp4", zoom:100});
   mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
     {id:10, path:"/media/family/photos"}
   ]}]);
   mockApi.libraryStats.mockResolvedValue({folders:3, files:12, images:10, videos:2});
   mockApi.map.mockResolvedValue([]);
   mockApi.settings.mockResolvedValue({
-    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
+    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:true,
     thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
     sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
     smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
   });
   mockApi.updateSettings.mockResolvedValue({
-    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"",
+    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:true,
     thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
     sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
     smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
@@ -216,6 +218,20 @@ test("all backend settings have visible admin controls", async () => {
   expect(screen.getByLabelText("Keep logs, days")).toBeInTheDocument();
 });
 
+test("HTTPS controls are hidden when the gateway is not enabled", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.settings.mockResolvedValue({
+    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:false,
+    thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
+    sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
+    smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
+  });
+  render(<MemoryRouter initialEntries={["/admin?section=network"]}><App/></MemoryRouter>);
+  expect(await screen.findByLabelText("Enable HTTP")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Enable HTTPS with Let’s Encrypt")).not.toBeInTheDocument();
+  expect(screen.getByText(/optional gateway container is not enabled/)).toBeInTheDocument();
+});
+
 test("settings navigation opens libraries section", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
@@ -346,7 +362,7 @@ test("regular user has no settings menu and picks theme in user settings", async
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264", zoom:100}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
@@ -368,7 +384,7 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"system"}});
   expect(document.documentElement.dataset.theme).toBe("light");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264", zoom:100}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
@@ -401,10 +417,10 @@ test("user settings modal changes codec email and password", async () => {
   expect(await within(dialog).findByText(/Your browser plays directly without transcoding/)).toBeInTheDocument();
 
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Codec"}), {target:{value:"vp9"}});
+  fireEvent.change(within(dialog).getByRole("combobox", {name:"Transcode schema"}), {target:{value:"vp9-opus-webm"}});
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9", zoom:100}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 
   fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
   fireEvent.blur(within(dialog).getByLabelText("Email address"));
@@ -433,11 +449,11 @@ test("user settings modal changes zoom grade numerically", async () => {
   expect(document.documentElement.style.fontSize).toBe("120%");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264", zoom:120}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Zoom"}), {target:{value:"80"}});
   expect(document.documentElement.style.fontSize).toBe("80%");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264", zoom:80}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 });
 
 test("virtual grid mounts only the visible window of many entries first", async () => {
@@ -649,6 +665,36 @@ test("admin logs section renders recent log lines and can refresh", async () => 
   expect(screen.getByText(/app.log/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Refresh"}));
   await waitFor(() => expect(mockApi.logs).toHaveBeenCalledTimes(2));
+});
+
+test("admin can clear the application log file from the logs section", async () => {
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    mockApi.clearLogs.mockResolvedValue({path:"/runtime/app-config/logs/app.log"});
+    render(<MemoryRouter initialEntries={["/admin?section=logs"]}><App/></MemoryRouter>);
+    expect(await screen.findByText(/media API listening/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {name:"Clear logs"}));
+    await waitFor(() => expect(mockApi.clearLogs).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Logs cleared.")).toBeInTheDocument();
+    expect(screen.queryByText(/media API listening/)).not.toBeInTheDocument();
+    expect(screen.getByText("No log lines yet.")).toBeInTheDocument();
+  } finally {
+    confirmSpy.mockRestore();
+  }
+});
+
+test("admin can download the full application log file from the logs section", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=logs"]}><App/></MemoryRouter>);
+  expect(await screen.findByText(/media API listening/)).toBeInTheDocument();
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  try {
+    fireEvent.click(screen.getByRole("button", {name:"Download logs"}));
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+  } finally {
+    clickSpy.mockRestore();
+  }
 });
 
 test("library root can be selected from docker filesystem picker", async () => {
@@ -1030,7 +1076,7 @@ test("transcode badge dropdown explains which parts are incompatible", async () 
     fireEvent.click(badge);
     expect(screen.getByText("Why transcoded?")).toBeInTheDocument();
     expect(screen.queryByText(/Video codec/)).not.toBeInTheDocument();
-    expect(screen.getByText(/Audio track is MP3, but VP9 video needs Opus audio to play without transcoding\./)).toBeInTheDocument();
+    expect(screen.getByText(/Audio track is MP3, but VP9 video needs Opus or Vorbis audio to play without transcoding\./)).toBeInTheDocument();
     expect(screen.getByText(/File container is video\/x-matroska, but VP9 video needs a WebM container\./)).toBeInTheDocument();
     fireEvent.click(badge);
     expect(screen.queryByText("Why transcoded?")).not.toBeInTheDocument();

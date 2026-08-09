@@ -36,7 +36,7 @@ func NewPostgres(dsn string) (*Postgres, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("postgres dsn is empty")
 	}
-	db, err := sql.Open("pgx", dsn)
+	db, err := openLogged("pgx", dsn)
 	if err != nil {
 		return nil, err
 	}

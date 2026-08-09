@@ -6,6 +6,8 @@ services:
         VERSION: ${PROJECT_VERSION:-0.1.0}
         VCS_REF: ${VCS_REF:-local}
         BUILD_DATE: ${BUILD_DATE:-unknown}
+    volumes:
+      - /media/ice/backup/backup_photos/phones:/media:ro
   web:
     build:
       context: ../web

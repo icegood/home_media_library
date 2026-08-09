@@ -113,8 +113,9 @@ jobs:
 
           Install:
           1. Copy .env.default to .env
-          2. Edit JWT_SECRET, MEDIA_ROOT, MEDIA_UID, MEDIA_GID, DOCKER_GID and ports
-          3. Run:
+          2. Edit JWT_SECRET, MEDIA_UID, MEDIA_GID, DOCKER_GID and ports
+          3. Add to compose media bindings to api container. Enough to have them as read only
+          4. Run:
              sh start.sh prod
           EOF
 

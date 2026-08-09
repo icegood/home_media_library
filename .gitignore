@@ -1,4 +1,5 @@
 .env
+.continue/
 runtime/
 thumbnails/
 runtime.discarded-*/
@@ -16,3 +17,4 @@ web/android/.gradle/
 web/android/app/build/
 .idea/
 .vscode/
+

@@ -657,7 +657,7 @@ paths:
   /api/v1/media/{id}/thumbnail:
     get:
       tags: [Media]
-      summary: Serve a media thumbnail (generates it on demand)
+      summary: Serve a generated media thumbnail
       parameters:
         - $ref: "#/components/parameters/MediaID"
         - name: index
@@ -683,7 +683,11 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
-          $ref: "#/components/responses/Error"
+          description: Thumbnail has not been generated yet. Thumbnails are produced by the thumbnail-creation job, not on demand.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           description: Thumbnail generation failed or was previously skipped
           content:
@@ -720,7 +724,7 @@ paths:
   /api/v1/folders/{id}/thumbnail:
     get:
       tags: [Media]
-      summary: Serve a folder cover (3-way montage of its best media)
+      summary: Serve a generated folder cover (3-way montage of its best media)
       parameters:
         - name: id
           in: path
@@ -741,7 +745,11 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
-          $ref: "#/components/responses/Error"
+          description: Folder cover has not been generated yet. Covers are produced by the thumbnail-creation job, not on demand.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "422":
           description: Folder thumbnail could not be generated
           content:
@@ -1645,6 +1653,9 @@ components:
         httpsCertificateExpiresAt:
           type: string
           nullable: true
+        httpsGatewayEnabled:
+          type: boolean
+          description: Read-only. Whether the optional gateway container is part of this deployment. When false the HTTPS settings are not applicable and the app serves plain HTTP only.
         thumbnailWidth:
           type: integer
         thumbnailHeight:
@@ -1688,9 +1699,19 @@ components:
           description: Interface theme. `system` follows the browser or operating system color scheme.
         codec:
           type: string
-          enum: [h264, h265, vp9]
+          enum: [h264-aac-mp4, h264-opus-mp4, vp9-opus-webm, vp9-vorbis-webm, av1-opus-webm, hevc-aac-mp4, hevc-opus-mp4, vp8-vorbis-webm, vp8-opus-webm]
+          description: Transcode fallback schema (video codec, audio codec, container). Legacy values h264, h265, and vp9 are accepted and normalized on save.
         zoom:
           type: integer
           minimum: 80
           maximum: 140
           description: UI scale as a percentage of the default; also scales folder and file names.
+        defaultThumbImage:
+          type: string
+          description: Id of the placeholder picture shown for images whose thumbnail has not been generated yet.
+        defaultThumbVideo:
+          type: string
+          description: Id of the placeholder picture shown for videos whose thumbnail has not been generated yet.
+        defaultThumbFolder:
+          type: string
+          description: Id of the placeholder picture shown for folder covers that have not been generated yet.

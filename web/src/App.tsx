@@ -38,7 +38,7 @@ export function App() {
   }, [zoom]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); }).catch(() => undefined);
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); syncUserDefaultThumbs(settings); }).catch(() => undefined);
   }, [user?.id]);
   useEffect(() => {
     function closeTopMenus(event:PointerEvent) {
@@ -814,7 +814,9 @@ function LogViewer() {
   const [tail, setTail] = useState<LogTail>({path:"", lines:[]});
   const [limit, setLimit] = useState(300);
   const [loading, setLoading] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   async function load() {
     setLoading(true); setError("");
     try {
@@ -825,17 +827,41 @@ function LogViewer() {
       setLoading(false);
     }
   }
+  async   function clear() {
+    if (!window.confirm("Clear the application log file? This cannot be undone.")) return;
+    setClearing(true); setError(""); setMessage("");
+    try {
+      const result = await api.clearLogs();
+      setTail({path:result.path, lines:[]});
+      setMessage("Logs cleared.");
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setClearing(false);
+    }
+  }
+  function download() {
+    const anchor = document.createElement("a");
+    anchor.href = api.logsDownloadUrl();
+    anchor.download = "app.log";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
   useEffect(() => { void load(); }, []);
   return <section className="logs-panel">
     <div className="panel-title">
       <div><h2>Logs</h2><p>Recent application log lines from the API container.</p></div>
       <button type="button" className="secondary" disabled={loading} onClick={load}>{loading ? "Refreshing…" : "Refresh"}</button>
+      <button type="button" className="secondary" disabled={tail.lines.length === 0 && !tail.path} onClick={download}>Download logs</button>
+      <button type="button" className="danger secondary" disabled={clearing} onClick={clear}>{clearing ? "Clearing…" : "Clear logs"}</button>
     </div>
     <div className="logs-toolbar">
       <label>Lines<input type="number" min="1" max="2000" value={limit} onChange={event => setLimit(Number(event.target.value))}/></label>
       {tail.path && <small>File: <code>{tail.path}</code></small>}
     </div>
     {error && <p className="error">{error}</p>}
+    {message && <p className="success">{message}</p>}
     {tail.lines.length === 0 && !error && <p className="muted">No log lines yet.</p>}
     {tail.lines.length > 0 && <pre className="log-output" aria-label="Application logs">{tail.lines.join("\n")}</pre>}
   </section>;
@@ -948,10 +974,12 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [httpsGatewayEnabled, setHTTPSGatewayEnabled] = useState(false);
   useEffect(() => { api.settings().then(value => {
     setHTTPEnabled(value.httpEnabled); setHTTPSEnabled(value.httpsEnabled);
     setPublicDns(value.publicDns); setAcmeEmail(value.acmeEmail);
     setHTTPSCertificateExpiresAt(value.httpsCertificateExpiresAt);
+    setHTTPSGatewayEnabled(value.httpsGatewayEnabled);
     setThumbnailWidth(value.thumbnailWidth); setThumbnailHeight(value.thumbnailHeight);
     setVideoThumbnailFirstSeconds(value.videoThumbnailFirstSeconds);
     setVideoThumbnailMaxCount(value.videoThumbnailMaxCount);
@@ -972,7 +1000,7 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
     let cancelled = false;
     setSaving(true); setSaved(false); setError("");
     const timeout = window.setTimeout(() => {
-      api.updateSettings({httpEnabled,httpsEnabled,publicDns,acmeEmail,httpsCertificateExpiresAt,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpFrom,smtpPassword:smtpPassword || undefined})
+      api.updateSettings({httpEnabled,httpsEnabled,publicDns,acmeEmail,httpsGatewayEnabled,httpsCertificateExpiresAt,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpFrom,smtpPassword:smtpPassword || undefined})
         .then(value => { if (!cancelled) { setHTTPSCertificateExpiresAt(value.httpsCertificateExpiresAt); setSaved(true); } })
         .catch(cause => { if (!cancelled) setError((cause as Error).message); })
         .finally(() => { if (!cancelled) setSaving(false); });
@@ -984,13 +1012,25 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
     {!loaded ? <p className="muted">Loading settings…</p> : <>
     {section === "network" && <fieldset><legend>Network</legend>
       <label className="check"><input type="checkbox" checked={httpEnabled} onChange={event => setHTTPEnabled(event.target.checked)}/> Enable HTTP</label>
-      <label className="check"><input type="checkbox" checked={httpsEnabled} onChange={event => setHTTPSEnabled(event.target.checked)}/> Enable HTTPS with Let’s Encrypt</label>
-      {httpsEnabled && <>
-        <label>Public DNS name<input value={publicDns} onChange={event => setPublicDns(event.target.value)} placeholder="media.example.com" required/></label>
-        <label>Let’s Encrypt email<input type="email" value={acmeEmail} onChange={event => setAcmeEmail(event.target.value)} required/></label>
-        <label>Certificate expires<input value={httpsCertificateExpiresAt || "Not installed yet"} readOnly aria-readonly="true"/></label>
-      </>}
-      <small>At least one protocol must remain enabled. HTTPS changes are applied automatically.</small>
+      {httpsGatewayEnabled ? <>
+        <label className="check"><input type="checkbox" checked={httpsEnabled} onChange={event => setHTTPSEnabled(event.target.checked)}/> Enable HTTPS with Let’s Encrypt</label>
+        {httpsEnabled && <>
+          <label>Public DNS name<input value={publicDns} onChange={event => setPublicDns(event.target.value)} placeholder="media.example.com" required/></label>
+          <label>Let’s Encrypt email<input type="email" value={acmeEmail} onChange={event => setAcmeEmail(event.target.value)} required/></label>
+          <label>Certificate expires<input value={httpsCertificateExpiresAt || "Not installed yet"} readOnly aria-readonly="true"/></label>
+          <details className="help-box"><summary>How to prepare your domain for Let’s Encrypt</summary>
+            <p>Let’s Encrypt must be able to reach your host on public ports 80 and 443 at the name you enter, or no certificate is issued. Choose the way that fits your setup:</p>
+            <ul>
+              <li><strong>Public domain (recommended):</strong> point the domain’s A/AAAA record at your public IP and forward TCP 80 and 443 to this host.</li>
+              <li><strong>Tailscale:</strong> a <code>*.ts.net</code> name can never get a Let’s Encrypt certificate. Keep HTTP enabled, leave HTTPS off, and expose the app with <code>tailscale serve</code> or <code>tailscale funnel</code> — Tailscale provides the certificate itself.</li>
+              <li><strong>Tunnel / CDN:</strong> put Cloudflare Tunnel (or similar) in front of HTTP mode; the tunnel terminates TLS, so no ports need to be opened.</li>
+              <li><strong>Own reverse proxy:</strong> if you already run a public proxy or VPS, serve HTTPS there and keep the app in HTTP mode.</li>
+            </ul>
+            <small>Full guide with step-by-step commands: <code>docs/https-domain-setup.md</code> in the repository.</small>
+          </details>
+        </>}
+        <small>At least one protocol must remain enabled. HTTPS changes are applied automatically.</small>
+      </> : <small>The optional gateway container is not enabled in this deployment, so the app serves plain HTTP only. To make HTTPS available, set <code>COMPOSE_PROFILES=https</code> in <code>deploy/.env</code> and restart the stack.</small>}
     </fieldset>}
     {section === "mail" && <fieldset><legend>Outbound email</legend>
       <label>SMTP host<input value={smtpHost} onChange={event => setSMTPHost(event.target.value)} placeholder="smtp.example.com"/></label>
@@ -1158,7 +1198,10 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
 }) {
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"system">(theme);
   const [draftZoom, setDraftZoom] = useState(zoom);
-  const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264");
+  const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264-aac-mp4");
+  const [defaultThumbImage, setDefaultThumbImage] = useState("mountains");
+  const [defaultThumbVideo, setDefaultThumbVideo] = useState("mountains");
+  const [defaultThumbFolder, setDefaultThumbFolder] = useState("mountains");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1168,7 +1211,13 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   const [emailSaved, setEmailSaved] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   useEffect(() => {
-    api.userSettings().then(settings => { setCodec(settings.codec); setLoaded(true); }).catch(() => undefined);
+    api.userSettings().then(settings => {
+      setCodec(normalizeSchemaId(settings.codec));
+      setDefaultThumbImage(settings.defaultThumbImage || "mountains");
+      setDefaultThumbVideo(settings.defaultThumbVideo || "mountains");
+      setDefaultThumbFolder(settings.defaultThumbFolder || "mountains");
+      setLoaded(true);
+    }).catch(() => undefined);
   }, [user.id]);
   useEffect(() => {
     document.documentElement.style.fontSize = `${draftZoom}%`;
@@ -1182,7 +1231,8 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   async function saveSettings() {
     setSaving(true); setError(""); setSaved(false);
     try {
-      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom});
+      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
+      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
       onThemeChange(draftTheme);
       onZoomChange(draftZoom);
       setSaved(true);
@@ -1218,14 +1268,35 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
         </select></label>
         <small>Scales the whole interface, including folder and file names.</small>
       </fieldset>
-      <fieldset><legend>Video fallback codec</legend>
-        <label>Codec<select value={codec} disabled={!loaded} onChange={event => { setCodec(event.target.value as UserSettingsPayload["codec"]); setSaved(false); }}>
-          <option value="h264">H.264 — widest compatibility</option>
-          <option value="h265">H.265 / HEVC — smaller files, limited browser support</option>
-          <option value="vp9">VP9 — WebM with Opus audio</option>
+      <fieldset><legend>Video fallback profile</legend>
+        <label>Transcode schema<select value={codec} disabled={!loaded} onChange={event => { setCodec(event.target.value as UserSettingsPayload["codec"]); setSaved(false); }}>
+          {(Object.keys(TRANSCODE_SCHEMAS) as UserSettingsPayload["codec"][]).map(id => {
+            const schema = TRANSCODE_SCHEMAS[id];
+            return <option key={id} value={id}>{schema.videoLabel} + {schema.audioLabel} → {schema.containerLabel} — {schema.compressionLabel} compression — browser: {schema.supportLabel}</option>;
+          })}
         </select></label>
-        <small>Used when your browser cannot play the original video. Choose the codec your devices support best.</small>
+        <small>Used when your browser cannot play the original video. Choose the profile your devices support best.</small>
         <small>Your browser plays directly without transcoding: {supportedVideoFormats().join(", ") || "none"}.</small>
+      </fieldset>
+      <fieldset><legend>Default pictures</legend>
+        <small>Shown while a thumbnail has not been generated yet, so you can see which items are not covered. You can pick a different picture for images, videos, and folders.</small>
+        {(["image","video","folder"] as const).map(kind => {
+          const value = kind === "image" ? defaultThumbImage : kind === "video" ? defaultThumbVideo : defaultThumbFolder;
+          const onChange = kind === "image" ? setDefaultThumbImage : kind === "video" ? setDefaultThumbVideo : setDefaultThumbFolder;
+          return <div className="thumb-picker" key={kind}>
+            <span className="thumb-picker-label">{kind === "image" ? "Images" : kind === "video" ? "Videos" : "Folders"}</span>
+            <div className="thumb-picker-grid" role="radiogroup" aria-label={`Default picture for ${kind === "image" ? "images" : kind === "video" ? "videos" : "folders"}`}>
+              {DEFAULT_THUMB_PICTURES.map(picture => (
+                <button key={picture.id} type="button" role="radio" aria-checked={value === picture.id} title={picture.name}
+                  className={`thumb-picker-option${value === picture.id ? " selected" : ""}`}
+                  onClick={() => { onChange(picture.id); setSaved(false); }}>
+                  <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(picture.svg)}")`}}/>
+                  {kind !== "image" && <span className={`thumb-kind-badge thumb-kind-badge-sm ${kind === "folder" ? "thumb-kind-folder" : "thumb-kind-video"}`}>{kind === "video" ? "▶" : "▰"}</span>}
+                </button>
+              ))}
+            </div>
+          </div>;
+        })}
       </fieldset>
       <fieldset><legend>Email</legend>
         <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} onBlur={() => void saveEmail()} autoComplete="email" placeholder="you@example.com"/></label>
@@ -1739,9 +1810,52 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Ent
   </div>;
 }
 
+const THUMB_RETRY_MS = 8000;
+
+const DEFAULT_THUMB_PICTURES = [
+  {id:"mountains", name:"Mountains", svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" preserveAspectRatio="xMidYMid slice"><rect width="200" height="150" fill="#55779b"/><circle cx="152" cy="40" r="17" fill="#f3d27a"/><path d="M0 112 L48 66 L92 98 L128 72 L164 106 L200 88 L200 150 L0 150 Z" fill="#3f5d43"/><path d="M0 132 L60 100 L110 126 L152 104 L200 122 L200 150 L0 150 Z" fill="#2f4634"/></svg>`},
+  {id:"sunset", name:"Sunset", svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" preserveAspectRatio="xMidYMid slice"><rect width="200" height="150" fill="#d98c5f"/><rect y="18" width="200" height="46" fill="#e8b068"/><circle cx="100" cy="68" r="20" fill="#f7e08a"/><path d="M0 105 L30 88 L65 100 L100 84 L140 102 L180 90 L200 98 L200 150 L0 150 Z" fill="#5d3a45"/><path d="M0 128 L50 108 L95 126 L150 106 L200 120 L200 150 L0 150 Z" fill="#4a2d38"/></svg>`},
+  {id:"forest", name:"Forest", svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" preserveAspectRatio="xMidYMid slice"><rect width="200" height="150" fill="#7d98a1"/><rect y="100" width="200" height="50" fill="#37523f"/><path d="M0 110 L200 110 L200 150 L0 150 Z" fill="#2c4434"/><path d="M30 112 L48 72 L66 112 Z" fill="#24402f"/><path d="M84 112 L104 64 L124 112 Z" fill="#24402f"/><path d="M140 112 L158 76 L176 112 Z" fill="#24402f"/></svg>`},
+  {id:"ocean", name:"Ocean", svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" preserveAspectRatio="xMidYMid slice"><rect width="200" height="150" fill="#4f8dab"/><rect y="16" width="200" height="42" fill="#6ba3bd"/><circle cx="150" cy="58" r="16" fill="#f3d27a"/><path d="M0 96 Q25 88 50 96 T100 96 T150 96 T200 96 L200 150 L0 150 Z" fill="#3a7d99"/><path d="M0 118 Q25 110 50 118 T100 118 T150 118 T200 118 L200 150 L0 150 Z" fill="#2f6884"/></svg>`},
+  {id:"city", name:"City", svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" preserveAspectRatio="xMidYMid slice"><rect width="200" height="150" fill="#b8c0cc"/><rect y="96" width="200" height="54" fill="#7d8794"/><path d="M12 70 L34 70 L34 96 L12 96 Z M42 48 L68 48 L68 96 L42 96 Z M76 64 L96 64 L96 96 L76 96 Z M104 40 L134 40 L134 96 L104 96 Z M142 58 L166 58 L166 96 L142 96 Z M174 76 L192 76 L192 96 L174 96 Z" fill="#626c79"/><path d="M48 54 L54 54 L54 60 L48 60 Z M60 54 L66 54 L66 60 L60 60 Z M48 66 L54 66 L54 72 L48 72 Z M110 46 L116 46 L116 52 L110 52 Z M122 46 L128 46 L128 52 L122 52 Z M110 58 L116 58 L116 64 L110 64 Z M122 58 L128 58 L128 64 L122 64 Z M148 64 L154 64 L154 70 L148 70 Z M160 64 L166 64 L166 70 L160 70 Z" fill="#a9b2bd"/></svg>`}
+] as const;
+
+function svgDataUri(svg:string) { return `data:image/svg+xml,${encodeURIComponent(svg)}`; }
+
+const userDefaultThumbs = {image:"mountains", video:"mountains", folder:"mountains"};
+function syncUserDefaultThumbs(settings:UserSettingsPayload) {
+  userDefaultThumbs.image = settings.defaultThumbImage || "mountains";
+  userDefaultThumbs.video = settings.defaultThumbVideo || "mountains";
+  userDefaultThumbs.folder = settings.defaultThumbFolder || "mountains";
+}
+function defaultThumbPicture(kind?:string) {
+  const id = kind === "folder" ? userDefaultThumbs.folder : kind === "video" ? userDefaultThumbs.video : userDefaultThumbs.image;
+  return DEFAULT_THUMB_PICTURES.find(picture => picture.id === id) ?? DEFAULT_THUMB_PICTURES[0];
+}
+
+function ThumbImage({src, priority, kind}:{src:string; priority?:boolean; kind?:string}) {
+  const [state, setState] = useState<"loading"|"missing"|"loaded">("loading");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (state !== "missing" || document.hidden) return;
+    const interval = window.setInterval(() => setAttempt(value => value + 1), THUMB_RETRY_MS);
+    return () => window.clearInterval(interval);
+  }, [state]);
+  const url = attempt === 0 ? src : `${src}${src.includes("?") ? "&" : "?"}ts=${attempt}`;
+  return <div className="thumb-frame">
+    {state !== "loaded" && <span className="thumb-placeholder" aria-hidden="true">
+      <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(defaultThumbPicture(kind).svg)}")`}}/>
+      {kind !== "image" && <span className={`thumb-kind-badge ${kind === "folder" ? "thumb-kind-folder" : "thumb-kind-video"}`}>{kind === "video" ? "▶" : "▰"}</span>}
+    </span>}
+    <img loading="lazy" fetchPriority={priority ? "high" : "auto"} src={url} alt=""
+      onLoad={() => setState("loaded")}
+      onError={() => setState("missing")}/>
+  </div>;
+}
+
 function FolderCover({folderId, priority}:{folderId?:ID; priority?:boolean}) {
   if (folderId == null) return <span className="folder">▰</span>;
-  return <div className="folder-cover"><img loading="lazy" fetchPriority={priority ? "high" : "auto"} src={api.folderThumbnailUrl(folderId)} alt=""/></div>;
+  return <div className="folder-cover"><ThumbImage src={api.folderThumbnailUrl(folderId)} priority={priority} kind="folder"/></div>;
 }
 
 function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void}) {
@@ -1753,7 +1867,7 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,o
       <input type="checkbox" checked={selected} onChange={() => onToggleSelected(item.id)}/>
     </label>}
     {view === "tile" && <div className="thumb-wrap">
-      <img loading="lazy" fetchPriority={priority ? "high" : "auto"} src={api.thumbnailUrl(item.id)} alt=""/>
+      <ThumbImage src={api.thumbnailUrl(item.id)} priority={priority} kind={item.kind}/>
       {item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}
     </div>}
     <div><strong>{item.name}</strong><small>{item.kind} · {formatBytes(item.size)}</small></div>
@@ -2056,17 +2170,38 @@ function videoMetadataDuration(metadata:Record<string, unknown>): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+const TRANSCODE_SCHEMAS: Record<UserSettingsPayload["codec"], {videoLabel:string; audioLabel:string; containerLabel:string; supportLabel:string; compressionLabel:string; probe:string[]}> = {
+  "h264-aac-mp4":  {videoLabel:"H.264", audioLabel:"AAC", containerLabel:"MP4", supportLabel:"Excellent", compressionLabel:"Good", probe:['video/mp4; codecs="avc1.42E01E,mp4a.40.2"']},
+  "h264-opus-mp4": {videoLabel:"H.264", audioLabel:"Opus", containerLabel:"MP4", supportLabel:"Good, but less universal", compressionLabel:"Good", probe:['video/mp4; codecs="avc1.42E01E,opus"']},
+  "vp9-opus-webm":  {videoLabel:"VP9", audioLabel:"Opus", containerLabel:"WebM", supportLabel:"Excellent", compressionLabel:"Very good", probe:['video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp09.00.10.08,opus"']},
+  "vp9-vorbis-webm":{videoLabel:"VP9", audioLabel:"Vorbis", containerLabel:"WebM", supportLabel:"Very good", compressionLabel:"Very good", probe:['video/webm; codecs="vp9,vorbis"']},
+  "av1-opus-webm":  {videoLabel:"AV1", audioLabel:"Opus", containerLabel:"WebM", supportLabel:"Very good on modern devices", compressionLabel:"Excellent", probe:['video/webm; codecs="av01.0.04M.08,opus"']},
+  "hevc-aac-mp4":   {videoLabel:"HEVC", audioLabel:"AAC", containerLabel:"MP4", supportLabel:"Platform-dependent", compressionLabel:"Excellent", probe:['video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"']},
+  "hevc-opus-mp4":  {videoLabel:"HEVC", audioLabel:"Opus", containerLabel:"MP4", supportLabel:"Poor / inconsistent", compressionLabel:"Excellent", probe:['video/mp4; codecs="hvc1,opus"', 'video/mp4; codecs="hev1,opus"']},
+  "vp8-vorbis-webm":{videoLabel:"VP8", audioLabel:"Vorbis", containerLabel:"WebM", supportLabel:"Excellent", compressionLabel:"Fair", probe:['video/webm; codecs="vp8,vorbis"']},
+  "vp8-opus-webm":  {videoLabel:"VP8", audioLabel:"Opus", containerLabel:"WebM", supportLabel:"Excellent", compressionLabel:"Fair", probe:['video/webm; codecs="vp8,opus"']}
+};
+
+function normalizeSchemaId(value:string): UserSettingsPayload["codec"] {
+  if (value in TRANSCODE_SCHEMAS) return value as UserSettingsPayload["codec"];
+  const legacy:Record<string, UserSettingsPayload["codec"]> = {h264:"h264-aac-mp4", h265:"hevc-aac-mp4", vp9:"vp9-opus-webm"};
+  return legacy[value] ?? "h264-aac-mp4";
+}
+
 function codecLabel(codecName:string) {
-  const names:Record<string,string> = {h264:"H.264", h265:"H.265 / HEVC", hevc:"H.265 / HEVC", vp9:"VP9", mpeg1video:"MPEG-1", mpeg2video:"MPEG-2", msmpeg4v3:"MPEG-4 Part 2 (msmpeg4v3)", aac:"AAC", mp3:"MP3", mp2:"MP2", opus:"Opus", vorbis:"Vorbis", ac3:"AC-3", eac3:"E-AC-3", flac:"FLAC"};
+  const names:Record<string,string> = {h264:"H.264", h265:"H.265 / HEVC", hevc:"H.265 / HEVC", vp9:"VP9", vp8:"VP8", av1:"AV1", mpeg1video:"MPEG-1", mpeg2video:"MPEG-2", msmpeg4v3:"MPEG-4 Part 2 (msmpeg4v3)", aac:"AAC", mp3:"MP3", mp2:"MP2", opus:"Opus", vorbis:"Vorbis", ac3:"AC-3", eac3:"E-AC-3", flac:"FLAC"};
   return names[codecName] ?? codecName;
 }
+
+const DIRECT_PLAY_AUDIO: Record<string,string[]> = {h264:["aac"], h265:["aac"], hevc:["aac"], vp9:["opus","vorbis"], vp8:["opus","vorbis"], av1:["opus"]};
+const DIRECT_PLAY_CONTAINER: Record<string,string[]> = {h264:["video/mp4","video/x-m4v"], h265:["video/mp4","video/x-m4v"], hevc:["video/mp4","video/x-m4v"], vp9:["video/webm"], vp8:["video/webm"], av1:["video/webm"]};
 
 function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"transcoded"; reasons:string[]} {
   const streams = (item.metadata?.ffprobe as {streams?:Array<{codec_type?:string; codec_name?:string}>}|undefined)?.streams ?? [];
   const video = streams.find(stream => stream.codec_type === "video");
   const audio = streams.find(stream => stream.codec_type === "audio");
   const codecName = video?.codec_name ?? "";
-  const sourceCodec = codecName === "h264" ? "h264" : codecName === "hevc" || codecName === "h265" ? "h265" : codecName === "vp9" ? "vp9" : "";
+  const sourceCodec = codecName === "h264" ? "h264" : codecName === "hevc" || codecName === "h265" ? "h265" : codecName === "vp9" ? "vp9" : codecName === "vp8" ? "vp8" : codecName === "av1" ? "av1" : "";
   const audioName = audio?.codec_name ?? "";
   const mime = (item.mimeType || "").split(";")[0].trim().toLowerCase();
   const reasons: string[] = [];
@@ -2076,14 +2211,13 @@ function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"
     reasons.push(`Video codec "${codecLabel(sourceCodec)}" is not supported by your browser.`);
   }
   if (sourceCodec) {
-    const expectedAudio = sourceCodec === "vp9" ? "opus" : "aac";
-    if (audioName !== "" && audioName !== expectedAudio) {
-      reasons.push(`Audio track is ${codecLabel(audioName)}, but ${codecLabel(sourceCodec)} video needs ${codecLabel(expectedAudio)} audio to play without transcoding.`);
+    const expectedAudio = DIRECT_PLAY_AUDIO[sourceCodec] ?? [];
+    if (audioName !== "" && !expectedAudio.includes(audioName)) {
+      reasons.push(`Audio track is ${codecLabel(audioName)}, but ${codecLabel(sourceCodec)} video needs ${expectedAudio.map(codecLabel).join(" or ")} audio to play without transcoding.`);
     }
-    const containerOk = sourceCodec === "vp9" ? mime === "video/webm" : mime === "video/mp4" || mime === "video/x-m4v";
+    const containerOk = (DIRECT_PLAY_CONTAINER[sourceCodec] ?? []).includes(mime);
     if (!containerOk) {
-      const expectedContainer = sourceCodec === "vp9" ? "WebM" : "MP4";
-      reasons.push(`File container is ${mime || "unknown"}, but ${codecLabel(sourceCodec)} video needs a ${expectedContainer} container.`);
+      reasons.push(`File container is ${mime || "unknown"}, but ${codecLabel(sourceCodec)} video needs a ${sourceCodec === "vp9" || sourceCodec === "vp8" || sourceCodec === "av1" ? "WebM" : "MP4"} container.`);
     }
   }
   return {mode: reasons.length > 0 ? "transcoded" : "original", reasons};
@@ -2232,27 +2366,25 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
   </div>;
 }
 
+const VIDEO_FORMAT_PROBES: Record<string,{label:string; probe:string[]}> = {
+  h264: {label:"MP4 — H.264 + AAC", probe:['video/mp4; codecs="avc1.42E01E,mp4a.40.2"', 'video/mp4; codecs="avc1.42E01E,opus"']},
+  h265: {label:"MP4 — H.265 / HEVC + AAC", probe:['video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"', 'video/mp4; codecs="hvc1,opus"', 'video/mp4; codecs="hev1,opus"']},
+  vp9: {label:"WebM — VP9 + Opus", probe:['video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp09.00.10.08,opus"', 'video/webm; codecs="vp9,vorbis"']},
+  vp8: {label:"WebM — VP8 + Vorbis", probe:['video/webm; codecs="vp8,vorbis"', 'video/webm; codecs="vp8,opus"']},
+  av1: {label:"WebM — AV1 + Opus", probe:['video/webm; codecs="av01.0.04M.08,opus"']}
+};
+
 function supportedVideoFormats() {
   const video = document.createElement("video");
-  const checks:Record<string,{probe:string[]; label:string}> = {
-    h264: {label:"MP4 — H.264 + AAC", probe:['video/mp4; codecs="avc1.42E01E,mp4a.40.2"']},
-    h265: {label:"MP4 — H.265 / HEVC + AAC", probe:['video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"']},
-    vp9: {label:"WebM — VP9 + Opus", probe:['video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp09.00.10.08,opus"']}
-  };
-  return Object.entries(checks)
-    .filter(([,entry]) => entry.probe.some(type => video.canPlayType(type) !== ""))
-    .map(([,entry]) => entry.label);
+  return Object.values(VIDEO_FORMAT_PROBES)
+    .filter(entry => entry.probe.some(type => video.canPlayType(type) !== ""))
+    .map(entry => entry.label);
 }
 
 function supportedVideoCodecs() {
   const video = document.createElement("video");
-  const checks:Record<string,string[]> = {
-    h264: ['video/mp4; codecs="avc1.42E01E,mp4a.40.2"'],
-    h265: ['video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"'],
-    vp9: ['video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp09.00.10.08,opus"']
-  };
-  return Object.entries(checks)
-    .filter(([,types]) => types.some(type => video.canPlayType(type) !== ""))
+  return Object.entries(VIDEO_FORMAT_PROBES)
+    .filter(([,entry]) => entry.probe.some(type => video.canPlayType(type) !== ""))
     .map(([codec]) => codec);
 }
 
@@ -2421,7 +2553,7 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
 
 function MapAreaItem({item}:{item:MapMedia}) {
   return <Link className="map-area-item" to={libraryItemURL(item.libraryId, item)} aria-label={`Open ${item.name} in folder`}>
-    <span className="thumb-wrap"><img loading="lazy" src={api.thumbnailUrl(item.id)} alt=""/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
+    <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
     <small>{item.name}</small>
   </Link>;
 }

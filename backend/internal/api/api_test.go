@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -534,6 +535,115 @@ func TestVideoThumbnailCountRespectsMaxAndMinimumInterval(t *testing.T) {
 	}
 }
 
+func TestShortVideoHasNoThumbnailsWhenFirstIntervalExceedsDuration(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	item, _ := f.store.Media(context.Background(), f.photoID)
+	item.Name = "clip.mkv"
+	item.Kind = domain.KindVideo
+	item.MIMEType = "video/x-matroska"
+	item.Metadata = map[string]any{"ffprobe": map[string]any{"format": map[string]any{"duration": "3.635000"}}}
+	if _, err := f.store.UpsertMedia(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := f.store.ServerSettings(context.Background())
+	settings.VideoThumbnailFirstSeconds = 5
+	settings.VideoThumbnailMaxCount = 10
+	settings.VideoThumbnailMinIntervalSeconds = 120
+	_ = f.store.SaveServerSettings(context.Background(), settings)
+	response := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/thumbnails", f.photoID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	var thumbnails []struct {
+		Index       int `json:"index"`
+		TimeSeconds int `json:"timeSeconds"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &thumbnails); err != nil {
+		t.Fatal(err)
+	}
+	if len(thumbnails) != 0 {
+		t.Fatalf("expected no thumbnails when the first interval is past the end of the video, got %#v", thumbnails)
+	}
+}
+
+func TestVideoThumbnailServedWhenFirstIntervalInsideDuration(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	item, _ := f.store.Media(context.Background(), f.photoID)
+	item.Name = "clip.mkv"
+	item.Kind = domain.KindVideo
+	item.MIMEType = "video/x-matroska"
+	item.Metadata = map[string]any{"ffprobe": map[string]any{"format": map[string]any{"duration": "30"}}}
+	if _, err := f.store.UpsertMedia(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := f.store.ServerSettings(context.Background())
+	settings.VideoThumbnailFirstSeconds = 1
+	settings.VideoThumbnailMaxCount = 10
+	settings.VideoThumbnailMinIntervalSeconds = 120
+	_ = f.store.SaveServerSettings(context.Background(), settings)
+	thumbDir := filepath.Join(f.thumbnailDir, "media", "0")
+	if err := os.MkdirAll(thumbDir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(thumbDir, fmt.Sprintf("%d_0.jpg", f.photoID)), []byte("thumb"), 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if code := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/thumbnail", f.photoID), alice, nil).Code; code != http.StatusOK {
+		t.Fatalf("valid video thumbnail should be served, got status %d", code)
+	}
+}
+
+func TestStaleThumbnailNotServedWhenNoThumbnailsConfigured(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	item, _ := f.store.Media(context.Background(), f.photoID)
+	item.Name = "clip.mkv"
+	item.Kind = domain.KindVideo
+	item.MIMEType = "video/x-matroska"
+	item.Metadata = map[string]any{"ffprobe": map[string]any{"format": map[string]any{"duration": "3.635000"}}}
+	if _, err := f.store.UpsertMedia(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := f.store.ServerSettings(context.Background())
+	settings.VideoThumbnailFirstSeconds = 5
+	_ = f.store.SaveServerSettings(context.Background(), settings)
+	thumbDir := filepath.Join(f.thumbnailDir, "media", "0")
+	if err := os.MkdirAll(thumbDir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(thumbDir, fmt.Sprintf("%d_0.jpg", f.photoID))
+	if err := os.WriteFile(target, []byte("stale thumb"), 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if code := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/thumbnail", f.photoID), alice, nil).Code; code == http.StatusOK {
+		t.Fatalf("stale thumbnail file must not be served when no thumbnails are configured, got status %d", code)
+	}
+}
+
+func TestEmptyThumbnailFileIsTreatedAsMissing(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	thumbDir := filepath.Join(f.thumbnailDir, "media", "0")
+	if err := os.MkdirAll(thumbDir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(thumbDir, fmt.Sprintf("%d_0.jpg", f.photoID))
+	if err := os.WriteFile(target, nil, 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if code := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/thumbnail", f.photoID), alice, nil).Code; code == http.StatusOK {
+		t.Fatalf("empty thumbnail file should be treated as missing, got status %d", code)
+	}
+	if err := os.WriteFile(target, []byte("real thumb"), 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if code := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/thumbnail", f.photoID), alice, nil).Code; code != http.StatusOK {
+		t.Fatalf("non-empty thumbnail file should be served, got status %d", code)
+	}
+}
+
 func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 	f := setup(t)
 	admin := login(t, f.handler, "admin")
@@ -777,23 +887,36 @@ func TestFirstRunRejectsWeakPassword(t *testing.T) {
 func TestCodecIsUserSetting(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")
-	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"vp9"}`))
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"vp9-opus-webm"}`))
 	if response.Code != http.StatusOK {
 		t.Fatalf("user codec status = %d", response.Code)
 	}
 	settings, _ := f.store.UserSettings(context.Background(), f.aliceID)
-	if settings.Codec != "vp9" {
+	if settings.Codec != "vp9-opus-webm" {
 		t.Fatalf("stored codec = %q", settings.Codec)
 	}
 	if settings.Zoom != 100 {
 		t.Fatalf("missing zoom must default to 100, got %d", settings.Zoom)
 	}
 	adminSettings, _ := f.store.UserSettings(context.Background(), 1)
-	if adminSettings.Codec != "h264" {
+	if adminSettings.Codec != "h264-aac-mp4" {
 		t.Fatalf("default admin codec = %q", adminSettings.Codec)
 	}
 	if adminSettings.Zoom != 100 {
 		t.Fatalf("default admin zoom = %d", adminSettings.Zoom)
+	}
+}
+
+func TestLegacyCodecSettingIsNormalized(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"vp9"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy codec status = %d", response.Code)
+	}
+	settings, _ := f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.Codec != "vp9-opus-webm" {
+		t.Fatalf("legacy codec not normalized, stored = %q", settings.Codec)
 	}
 }
 
@@ -854,6 +977,51 @@ func TestSettingsRejectInvalidLogLevel(t *testing.T) {
 	}
 }
 
+func TestHTTPSNormalizedAwayWithoutGateway(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	response := request(f.handler, http.MethodPut, "/api/v1/admin/settings", admin, []byte(`{"httpEnabled":false,"httpsEnabled":true,"publicDns":"media.example.com","acmeEmail":"ops@example.com","logLevel":"I"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("settings status = %d: %s", response.Code, response.Body)
+	}
+	settings, _ := f.store.ServerSettings(context.Background())
+	if !settings.HTTPEnabled || settings.HTTPSEnabled || settings.PublicDNS != "" || settings.ACMEEmail != "" {
+		t.Fatalf("HTTPS was not normalized away without a gateway: %+v", settings)
+	}
+	get := request(f.handler, http.MethodGet, "/api/v1/admin/settings", admin, nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", get.Code, get.Body)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(get.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if enabled, _ := payload["httpsGatewayEnabled"].(bool); enabled {
+		t.Fatalf("gateway flag must be false without a gateway: %s", get.Body)
+	}
+}
+
+func TestHTTPSStoredWhenGatewayEnabled(t *testing.T) {
+	repository := openSQLite(t)
+	if _, err := repository.CreateInitialAdmin(context.Background(), domain.User{ID: domain.InvalidID, Login: "admin"}, "password"); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&api.API{
+		Store: repository, JWTSecret: []byte(secret),
+		GatewayConfigPath: filepath.Join(t.TempDir(), "Caddyfile"),
+		GatewayEnabled:    true,
+	}).Handler()
+	admin := login(t, handler, "admin")
+	response := request(handler, http.MethodPut, "/api/v1/admin/settings", admin, []byte(`{"httpEnabled":false,"httpsEnabled":true,"publicDns":"media.example.com","acmeEmail":"ops@example.com","logLevel":"I"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("settings status = %d: %s", response.Code, response.Body)
+	}
+	settings, _ := repository.ServerSettings(context.Background())
+	if !settings.HTTPSEnabled || settings.HTTPEnabled || settings.PublicDNS != "media.example.com" || settings.ACMEEmail != "ops@example.com" {
+		t.Fatalf("HTTPS settings not stored with a gateway: %+v", settings)
+	}
+}
+
 func TestAdminCanReadRecentLogs(t *testing.T) {
 	repository := openSQLite(t)
 	if _, err := repository.CreateInitialAdmin(context.Background(), domain.User{ID: domain.InvalidID, Login: "admin"}, "password"); err != nil {
@@ -881,5 +1049,59 @@ func TestAdminCanReadRecentLogs(t *testing.T) {
 	}
 	if payload.Path != logFile || len(payload.Lines) != 2 || payload.Lines[0] != "I server started" || payload.Lines[1] != "E thumbnail failed" {
 		t.Fatalf("unexpected logs payload: %#v", payload)
+	}
+}
+
+func TestAdminCanClearLogs(t *testing.T) {
+	repository := openSQLite(t)
+	if _, err := repository.CreateInitialAdmin(context.Background(), domain.User{ID: domain.InvalidID, Login: "admin"}, "password"); err != nil {
+		t.Fatal(err)
+	}
+	logFile := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(logFile, []byte("I server started\nE thumbnail failed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&api.API{
+		Store: repository, Scanner: scanner.Scanner{Store: repository},
+		JWTSecret: []byte(secret), ThumbnailDir: t.TempDir(), LogFile: logFile,
+	}).Handler()
+	admin := login(t, handler, "admin")
+	response := request(handler, http.MethodDelete, "/api/v1/admin/logs", admin, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(content)) != "" {
+		t.Fatalf("log file not cleared: %q", content)
+	}
+}
+
+func TestAdminCanDownloadLogs(t *testing.T) {
+	repository := openSQLite(t)
+	if _, err := repository.CreateInitialAdmin(context.Background(), domain.User{ID: domain.InvalidID, Login: "admin"}, "password"); err != nil {
+		t.Fatal(err)
+	}
+	logFile := filepath.Join(t.TempDir(), "app.log")
+	want := "I server started\nE thumbnail failed\n"
+	if err := os.WriteFile(logFile, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := (&api.API{
+		Store: repository, Scanner: scanner.Scanner{Store: repository},
+		JWTSecret: []byte(secret), ThumbnailDir: t.TempDir(), LogFile: logFile,
+	}).Handler()
+	admin := login(t, handler, "admin")
+	response := request(handler, http.MethodGet, "/api/v1/admin/logs/download", admin, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, `filename="app.log"`) {
+		t.Fatalf("unexpected Content-Disposition: %q", disposition)
+	}
+	if got := response.Body.String(); got != want {
+		t.Fatalf("downloaded content = %q, want %q", got, want)
 	}
 }

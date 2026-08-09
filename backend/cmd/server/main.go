@@ -72,6 +72,7 @@ func main() {
 		JWTSecret:         []byte(secret),
 		GatewayConfigPath: gatewayPath,
 		CaddyDataDir:      env("CADDY_DATA_DIR", "/runtime/caddy-data"),
+		GatewayEnabled:    envBool("HTTPS_GATEWAY_ENABLED"),
 		ThumbnailDir:      env("THUMBNAIL_DIR", "/thumbnails"),
 		LogFile:           logPath,
 		Shutdown:          stop,
@@ -116,6 +117,16 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// envBool reports whether a boolean env flag is enabled. The compose file sets
+// HTTPS_GATEWAY_ENABLED to "1" when the optional gateway profile is active.
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func dockerStopSelf(ctx context.Context) error {

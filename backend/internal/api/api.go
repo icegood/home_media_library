@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,7 @@ type API struct {
 	JWTSecret         []byte
 	GatewayConfigPath string
 	CaddyDataDir      string
+	GatewayEnabled    bool
 	ThumbnailDir      string
 	LogFile           string
 	Shutdown          func()
@@ -117,6 +119,8 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/admin/scheduled-tasks/{id}", a.auth(a.admin(http.HandlerFunc(a.deleteScheduledTask))))
 	mux.Handle("GET /api/v1/admin/jobs", a.auth(a.admin(http.HandlerFunc(a.jobsList))))
 	mux.Handle("GET /api/v1/admin/logs", a.auth(a.admin(http.HandlerFunc(a.logs))))
+	mux.Handle("GET /api/v1/admin/logs/download", a.auth(a.admin(http.HandlerFunc(a.downloadLogs))))
+	mux.Handle("DELETE /api/v1/admin/logs", a.auth(a.admin(http.HandlerFunc(a.clearLogs))))
 	mux.Handle("POST /api/v1/admin/jobs/{id}/pause", a.auth(a.admin(http.HandlerFunc(a.pauseJob))))
 	mux.Handle("POST /api/v1/admin/jobs/{id}/resume", a.auth(a.admin(http.HandlerFunc(a.resumeJob))))
 	mux.Handle("POST /api/v1/admin/jobs/{id}/cancel", a.auth(a.admin(http.HandlerFunc(a.cancelJob))))
@@ -134,7 +138,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /swagger", a.swaggerRedirect)
 	mux.HandleFunc("GET /swagger/", a.swaggerUI)
 	mux.HandleFunc("GET /swagger/openapi.yaml", a.swaggerSpec)
-	return securityHeaders(mux)
+	return logRequests(securityHeaders(mux))
 }
 
 func (a *API) setupStatus(w http.ResponseWriter, r *http.Request) {
@@ -183,11 +187,14 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid JSON")
 		return
 	}
-	user, err := a.Store.Authenticate(r.Context(), normalizeLogin(input.Login), input.Password)
+	login := normalizeLogin(input.Login)
+	user, err := a.Store.Authenticate(r.Context(), login, input.Password)
 	if err != nil {
+		applog.Printf(applog.Warn, "failed login for %q from %s", login, remoteAddr(r))
 		problem(w, 401, "invalid credentials")
 		return
 	}
+	applog.Printf(applog.Info, "session started for user %q (id %d) from %s", user.Login, user.ID, remoteAddr(r))
 	now := time.Now()
 	sessionMaxAge := time.Duration(a.serverSettings(r.Context()).SessionMaxAgeHours) * time.Hour
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims{UserID: user.ID, Role: user.Role,
@@ -413,6 +420,9 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		Theme string `json:"theme"`
 		Codec string `json:"codec"`
 		Zoom  int    `json:"zoom"`
+		DefaultThumbImage  string `json:"defaultThumbImage"`
+		DefaultThumbVideo  string `json:"defaultThumbVideo"`
+		DefaultThumbFolder string `json:"defaultThumbFolder"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		problem(w, http.StatusBadRequest, "invalid JSON")
@@ -423,9 +433,9 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "theme must be light, dark, or system")
 		return
 	}
-	input.Codec = strings.TrimSpace(input.Codec)
-	if _, err := transcode.ParseCodec(input.Codec); err != nil {
-		problem(w, http.StatusBadRequest, "codec must be one of: h264, h265, vp9")
+	schema, err := transcode.ParseSchema(input.Codec)
+	if err != nil {
+		problem(w, http.StatusBadRequest, "codec must be a valid transcode schema (e.g. h264-aac-mp4, vp9-opus-webm)")
 		return
 	}
 	zoom := input.Zoom
@@ -436,12 +446,49 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "zoom must be between 80 and 140")
 		return
 	}
-	settings := domain.UserSettings{Theme: input.Theme, Codec: input.Codec, Zoom: zoom}
+	thumbs := domain.DefaultUserSettings()
+	thumbs.DefaultThumbImage, err = normalizeDefaultThumb(input.DefaultThumbImage)
+	if err != nil {
+		problem(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	thumbs.DefaultThumbVideo, err = normalizeDefaultThumb(input.DefaultThumbVideo)
+	if err != nil {
+		problem(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	thumbs.DefaultThumbFolder, err = normalizeDefaultThumb(input.DefaultThumbFolder)
+	if err != nil {
+		problem(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom,
+		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder}
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {
 		problem(w, http.StatusInternalServerError, "could not save user settings")
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// normalizeDefaultThumb validates a default-thumbnail picture id. The catalog
+// of ids lives in the web UI; unknown ids fall back to the default there, so
+// the backend only checks the shape.
+func normalizeDefaultThumb(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "mountains", nil
+	}
+	if len(value) > 32 {
+		return "", errors.New("default thumbnail picture id is too long")
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' {
+			continue
+		}
+		return "", errors.New("default thumbnail picture id may only contain lowercase letters, digits, and dashes")
+	}
+	return value, nil
 }
 
 func (a *API) libraries(w http.ResponseWriter, r *http.Request) {
@@ -859,6 +906,7 @@ func (a *API) play(w http.ResponseWriter, r *http.Request) {
 	supported := codecSet(r.URL.Query().Get("codecs"))
 	if supported[sourceCodec] && transcode.DirectPlayAudioSupported(sourceCodec, sourceAudio) &&
 		transcode.DirectPlayContainerSupported(sourceCodec, item.MIMEType) {
+		applog.Printf(applog.Debug, "direct play media %d (%s) for user %d: source video %s", item.ID, item.RelativePath, current(r).ID, sourceCodec)
 		info, err := file.Stat()
 		if err != nil {
 			problem(w, http.StatusInternalServerError, "could not read video")
@@ -874,17 +922,18 @@ func (a *API) play(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, "could not read user settings")
 		return
 	}
-	target, err := transcode.ParseCodec(settings.Codec)
+	schema, err := transcode.ParseSchema(settings.Codec)
 	if err != nil {
-		problem(w, http.StatusInternalServerError, "invalid stored transcode codec")
+		problem(w, http.StatusInternalServerError, "invalid stored transcode schema")
 		return
 	}
 	transcoder := a.Transcoder
-	transcoder.Target = target
-	if !supported[target] {
+	transcoder.Target = schema
+	if !supported[schema.Video] {
 		problem(w, http.StatusNotAcceptable, "browser does not support source or configured transcode codec")
 		return
 	}
+	applog.Printf(applog.Info, "transcoding media %d (%s) for user %d: source video %s -> schema %s", item.ID, item.RelativePath, current(r).ID, sourceCodec, schema.ID)
 	w.Header().Set("X-Media-Playback", "transcoded")
 	w.Header().Set("Content-Type", transcoder.ContentType())
 	w.Header().Set("Cache-Control", "no-store")
@@ -930,8 +979,8 @@ func (a *API) thumbnail(w http.ResponseWriter, r *http.Request) {
 		index = value
 	}
 	target := a.thumbnailPath(item.ID, index)
-	if _, err := os.Stat(target); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+	if !usableThumbnail(target) {
+		if _, err := os.Stat(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 			problem(w, http.StatusInternalServerError, "could not read thumbnail storage")
 			return
 		}
@@ -939,19 +988,12 @@ func (a *API) thumbnail(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusUnprocessableEntity, "thumbnail skipped because previous error is not cleared: "+item.ThumbnailError)
 			return
 		}
-		if item.Kind == domain.KindVideo {
-			if err := a.generateVideoThumbnail(r.Context(), file.Name(), item, index, target); err != nil {
-				applog.Printf(applog.Error, "thumbnail failed for %s: %s", item.RelativePath, err)
-				_ = a.Store.SetMediaActionError(r.Context(), item.ID, "thumbnail", err.Error())
-				problem(w, http.StatusUnprocessableEntity, err.Error())
-				return
-			}
-		} else if err := a.generateImageThumbnail(r.Context(), file.Name(), item.ID, index, target); err != nil {
-			applog.Printf(applog.Error, "thumbnail failed for %s: %s", item.RelativePath, err)
-			_ = a.Store.SetMediaActionError(r.Context(), item.ID, "thumbnail", err.Error())
-			problem(w, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
+		problem(w, http.StatusNotFound, "thumbnail not generated yet")
+		return
+	}
+	if item.Kind == domain.KindVideo && index >= len(a.videoThumbnailTimes(r.Context(), item)) {
+		problem(w, http.StatusNotFound, "thumbnail not configured for this video")
+		return
 	}
 	if err := a.Store.UpsertThumbnail(r.Context(), domain.Thumbnail{
 		MediaID: item.ID, Index: index, Path: target, MIMEType: "image/jpeg",
@@ -966,6 +1008,11 @@ func (a *API) thumbnail(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) thumbnailPath(mediaID int, index int) string {
 	return filepath.Join(a.thumbnailRoot(), "media", thumbnailBucket(mediaID), fmt.Sprintf("%d_%d.jpg", mediaID, index))
+}
+
+func usableThumbnail(target string) bool {
+	info, err := os.Stat(target)
+	return err == nil && info.Size() > 0
 }
 
 func (a *API) folderThumbnailPath(folderID int) string {
@@ -1082,6 +1129,13 @@ func (a *API) generateThumbnail(ctx context.Context, source, target string, inpu
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not create thumbnail: %s", strings.TrimSpace(string(output)))
 	}
+	info, err := os.Stat(tempName)
+	if err != nil {
+		return fmt.Errorf("could not stat generated thumbnail: %w", err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("ffmpeg produced an empty thumbnail (seek is likely past the end of the media)")
+	}
 	_ = os.Chmod(tempName, 0o660)
 	if err := os.Rename(tempName, target); err != nil {
 		return fmt.Errorf("could not store thumbnail: %w", err)
@@ -1115,6 +1169,9 @@ func (a *API) videoThumbnailTiming(ctx context.Context) (int, int, int) {
 func (a *API) videoThumbnailTimes(ctx context.Context, item domain.Media) []int {
 	first, maxCount, minInterval := a.videoThumbnailTiming(ctx)
 	duration := metadataDurationSeconds(item.Metadata)
+	if duration > 0 && float64(first) >= duration {
+		return []int{}
+	}
 	if duration <= 0 || maxCount == 1 || duration <= float64(first) {
 		return []int{first}
 	}
@@ -1231,10 +1288,8 @@ func (a *API) folderThumbnail(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusInternalServerError, "could not read folder thumbnail")
 			return
 		}
-		if err := a.generateFolderThumbnail(r.Context(), folder.ID, refs, target); err != nil {
-			problem(w, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
+		problem(w, http.StatusNotFound, "folder thumbnail not generated yet")
+		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
@@ -1289,13 +1344,11 @@ func (a *API) generateFolderThumbnail(ctx context.Context, folderID int, refs []
 
 func (a *API) ensureThumbnail(ctx context.Context, ref domain.ThumbnailRef) (string, error) {
 	target := a.thumbnailPath(ref.MediaID, ref.Index)
-	if _, err := os.Stat(target); err == nil {
+	if usableThumbnail(target) {
 		_ = a.Store.UpsertThumbnail(ctx, domain.Thumbnail{
 			MediaID: ref.MediaID, Index: ref.Index, Path: target, MIMEType: "image/jpeg",
 		})
 		return target, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
 	}
 	item, err := a.Store.Media(ctx, ref.MediaID)
 	if err != nil {
@@ -1306,13 +1359,11 @@ func (a *API) ensureThumbnail(ctx context.Context, ref domain.ThumbnailRef) (str
 
 func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, index int) (string, error) {
 	target := a.thumbnailPath(item.ID, index)
-	if _, err := os.Stat(target); err == nil {
+	if usableThumbnail(target) {
 		_ = a.Store.UpsertThumbnail(ctx, domain.Thumbnail{
 			MediaID: item.ID, Index: index, Path: target, MIMEType: "image/jpeg",
 		})
 		return target, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
 	}
 	if item.ThumbnailError != "" {
 		return "", fmt.Errorf("thumbnail skipped because previous error is not cleared: %s", item.ThumbnailError)
@@ -2264,6 +2315,51 @@ func (a *API) logs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "lines": lines})
 }
 
+// downloadLogs streams the full application log file as an attachment.
+func (a *API) downloadLogs(w http.ResponseWriter, r *http.Request) {
+	path := a.LogFile
+	if strings.TrimSpace(path) == "" {
+		path = "/runtime/app-config/logs/app.log"
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filepath.Base(path)))
+	http.ServeFile(w, r, path)
+	applog.Printf(applog.Info, "application log file downloaded by admin user %d", current(r).ID)
+}
+
+// clearLogs empties the application log file. The API keeps its file handle
+// open for appending, so truncating in place is enough to reset it.
+func (a *API) clearLogs(w http.ResponseWriter, r *http.Request) {
+	path := a.LogFile
+	if strings.TrimSpace(path) == "" {
+		path = "/runtime/app-config/logs/app.log"
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not open log file")
+		return
+	}
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
+		problem(w, http.StatusInternalServerError, "could not clear log file")
+		return
+	}
+	if err := file.Close(); err != nil {
+		problem(w, http.StatusInternalServerError, "could not close log file")
+		return
+	}
+	applog.Printf(applog.Info, "application logs cleared by admin user %d", current(r).ID)
+	writeJSON(w, http.StatusOK, map[string]any{"path": path})
+}
+
+func remoteAddr(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func (a *API) shutdown(w http.ResponseWriter, r *http.Request) {
 	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
 	if mode == "" {
@@ -2578,6 +2674,14 @@ func filesystemParent(target string) string {
 
 func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 	settings := a.serverSettings(r.Context())
+	// Without the optional gateway container HTTPS cannot be served, so the
+	// effective transport is always HTTP-only and the HTTPS fields are hidden.
+	if !a.GatewayEnabled {
+		settings.HTTPEnabled = true
+		settings.HTTPSEnabled = false
+		settings.PublicDNS = ""
+		settings.ACMEEmail = ""
+	}
 	transport := gatewayconfig.FromServerSettings(settings)
 	certificateExpiresAt := ""
 	if expires, ok := gatewayconfig.CertificateExpiration(a.CaddyDataDir, transport.PublicDNS); ok {
@@ -2589,6 +2693,7 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 		"publicDns":                        settings.PublicDNS,
 		"acmeEmail":                        settings.ACMEEmail,
 		"httpsCertificateExpiresAt":        certificateExpiresAt,
+		"httpsGatewayEnabled":              a.GatewayEnabled,
 		"thumbnailWidth":                   settings.ThumbnailWidth,
 		"thumbnailHeight":                  settings.ThumbnailHeight,
 		"workerPoolSize":                   settings.WorkerPoolSize,
@@ -2626,6 +2731,14 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 	transport := gatewayconfig.Settings{
 		HTTPEnabled: input.HTTPEnabled, HTTPSEnabled: input.HTTPSEnabled,
 		PublicDNS: strings.TrimSpace(input.PublicDNS), ACMEEmail: strings.TrimSpace(input.ACMEEmail),
+	}
+	if !a.GatewayEnabled {
+		// The gateway container is not part of this deployment, so HTTPS does
+		// not exist: normalize the effective transport to HTTP-only.
+		transport.HTTPEnabled = true
+		transport.HTTPSEnabled = false
+		transport.PublicDNS = ""
+		transport.ACMEEmail = ""
 	}
 	if err := gatewayconfig.Validate(transport); err != nil {
 		problem(w, http.StatusBadRequest, err.Error())
@@ -2829,5 +2942,44 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		next.ServeHTTP(w, r)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Flush forwards flushes from streaming handlers such as video playback.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// logRequests writes one debug line per request so the log file shows live
+// activity instead of appearing dead during normal use.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := &statusRecorder{ResponseWriter: w}
+		start := time.Now()
+		next.ServeHTTP(recorder, r)
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		applog.Printf(applog.Debug, "http %s %s -> %d (%s)", r.Method, r.URL.RequestURI(), status, time.Since(start).Round(time.Millisecond))
 	})
 }

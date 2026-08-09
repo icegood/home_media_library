@@ -2,9 +2,14 @@ services:
   api:
     image: ${API_IMAGE:?API_IMAGE is required. Use ./start.sh or ./deploy/start.sh so it is derived from PROJECT_VERSION and mode.}
     env_file: ${ENV_FILE:?ENV_FILE is required. Use ./start.sh or ./deploy/start.sh.}
+    environment:
+      HTTPS_GATEWAY_ENABLED: ${COMPOSE_PROFILES:+"1"}
     volumes:
       - ${RUNTIME_DIR:-./runtime}:/runtime
-      - ${MEDIA_ROOT:-./sample-media}:/media:ro
+      # Media is NOT mounted by default. Mount your photo/video folders into
+      # this container (read-only) so the api process can read them, then add
+      # them as libraries in the admin UI. See README.deploy.txt. Example:
+      #   - /path/to/your/photos:/media:ro
       - /var/run/docker.sock:/var/run/docker.sock
     expose:
       - "8080"
@@ -14,11 +19,16 @@ services:
     image: ${WEB_IMAGE:?WEB_IMAGE is required. Use ./start.sh or ./deploy/start.sh so it is derived from PROJECT_VERSION and mode.}
     depends_on:
       - api
-    expose:
-      - "8080"
+    ports:
+      - "${WEB_PORT:-8080}:8080"
     restart: unless-stopped
   gateway:
     image: caddy:2.10-alpine
+    # This service is CONDITIONAL: it only runs when the compose profile
+    # "https" is active (set COMPOSE_PROFILES=https in .env). With the profile
+    # off, `docker compose up` does not deploy the gateway at all.
+    profiles:
+      - "https"
     depends_on:
       - web
     entrypoint:
@@ -46,9 +56,9 @@ services:
       XDG_DATA_HOME: /runtime/caddy-data
       XDG_CONFIG_HOME: /runtime/caddy-config
     ports:
-      - "${HTTP_PORT:-8080}:80"
-      - "${HTTPS_PORT:-443}:443"
-      - "${HTTPS_PORT:-443}:443/udp"
+      - "${GATEWAY_HTTP_PORT:-8081}:80"
+      - "${GATEWAY_HTTPS_PORT:-443}:443"
+      - "${GATEWAY_HTTPS_PORT:-443}:443/udp"
     volumes:
       - ${RUNTIME_DIR:-./runtime}:/runtime
     restart: unless-stopped

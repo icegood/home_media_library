@@ -93,10 +93,19 @@ type UserSettings struct {
 	Theme string `json:"theme"`
 	Codec string `json:"codec"`
 	Zoom  int    `json:"zoom"`
+	// DefaultThumbImage/Video/Folder pick the placeholder picture shown for
+	// media whose thumbnail has not been generated yet. Values are ids in the
+	// web UI's built-in picture catalog.
+	DefaultThumbImage  string `json:"defaultThumbImage"`
+	DefaultThumbVideo  string `json:"defaultThumbVideo"`
+	DefaultThumbFolder string `json:"defaultThumbFolder"`
 }
 
 func DefaultUserSettings() UserSettings {
-	return UserSettings{Theme: "light", Codec: "h264", Zoom: 100}
+	return UserSettings{
+		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100,
+		DefaultThumbImage: "mountains", DefaultThumbVideo: "mountains", DefaultThumbFolder: "mountains",
+	}
 }
 
 type ScheduledTask struct {

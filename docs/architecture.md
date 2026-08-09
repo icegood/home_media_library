@@ -30,7 +30,8 @@ directory layout.
   that user can read and rejects nothing at the app level.
 - Every library, metadata, map, thumbnail and content request passes through
   the same access check.
-- Original folders are mounted read-only into the API container.
+- Media folders are mounted into the API container by the operator and added
+  as libraries in the admin UI.
 - Passwords use bcrypt; sessions are signed, expiring bearer tokens.
 - HTTPS deployment terminates TLS at Caddy, which obtains and renews its
   certificate directly through Let's Encrypt ACME. API and web containers are

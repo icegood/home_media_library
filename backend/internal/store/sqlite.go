@@ -49,7 +49,7 @@ func NewSQLite(dsn string) (*SQLite, error) {
 		dsn += "&"
 	}
 	dsn += "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openLogged("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}

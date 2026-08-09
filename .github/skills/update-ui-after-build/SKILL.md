@@ -16,15 +16,14 @@ Use this workflow whenever frontend changes are made in the web app and the resu
 
 ## Required sequence for this repository
 
-For this project, always follow this order. Never run `docker build ...` or `docker compose up --build ...` directly — the official deployment entry point is `deploy/start.sh`, which derives image names/versions, builds both backend and web, and brings the stack up.
+For this project, always follow this order. Never run `docker build ...`,
+`docker compose up --build ...`, `npm test`, or `npm run build` directly — the official
+deployment entry point is `deploy/start.sh`, which derives image names/versions, runs the
+tests inside the image builds, builds both backend and web, and brings the stack up.
 
-1. Run tests for the web app:
-   - `cd web && npm test -- --run src/App.test.tsx`
-2. Build the frontend:
-   - `cd web && npm run build`
-3. Deploy the whole stack with the official script:
-   - `cd .. && sh deploy/start.sh local-build`
-4. Reload the browser page with a hard refresh and verify the visible UI.
+1. Run the whole build+test+deploy with the official script:
+   - `sh deploy/start.sh local-build`
+2. Reload the browser page with a hard refresh and verify the visible UI.
 
 ## Important note
 
@@ -40,7 +39,5 @@ If the visible browser page still looks old after a rebuild, treat it as a deplo
 ## Checklist
 
 - [ ] Source code updated
-- [ ] Web tests passed
-- [ ] Frontend build completed
-- [ ] Stack deployed with `sh deploy/start.sh local-build` (no direct `docker build`/`docker compose up --build`)
+- [ ] Stack built, tested, and deployed with `sh deploy/start.sh local-build` (no direct `docker build`, `docker compose up --build`, `npm test`, or `npm run build`)
 - [ ] Browser page reloaded and visually verified

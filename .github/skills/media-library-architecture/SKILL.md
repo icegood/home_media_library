@@ -36,8 +36,7 @@ The web app also packages as an Android app via Capacitor.
 - `gateway` — Caddy 2.10. The deploy compose inlines a small watcher for the
   generated Caddyfile and reloads Caddy on change; certs via Let's Encrypt.
 - `deploy/compose.yaml` — production api + web + gateway services; single bind
-  mount `./runtime` -> `/runtime` plus read-only media root (`MEDIA_ROOT`) and
-  Emby config. `compose.local.yaml` adds local source build contexts for dev.
+  mount `./runtime` -> `/runtime` plus read-only media sources (user defined). `compose.local.yaml` adds local source build contexts for dev.
 
 ## Data model
 
@@ -92,6 +91,8 @@ Ignore (generated/output): `.env` (secrets), `runtime/`, `thumbnails/`,
 
 ## Verification
 
-All compile/tests run in containers: `docker build -t media-library-api ./backend`,
-`docker build -t media-library-web ./web`. After frontend changes use the
-`update-ui-after-build` skill to verify the running UI.
+All compile/tests run in containers and are driven only by the official script
+`deploy/start.sh` — never run `docker build`, `docker compose up --build`, `npm test`, or
+`npm run build` directly. `sh deploy/start.sh local-build` builds backend + web (running
+`go test ./...` and `npm test && npm run build` inside the image builds) and deploys the
+stack. After frontend changes use the `update-ui-after-build` skill to verify the running UI.
