@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type UserSettings as UserSettingsPayload } from "./api";
-import type { EmbyImportResult, Entry, FavoriteView, FilesystemListing, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export function App() {
   const [user, setUser] = useState<User|null>(null);
@@ -130,54 +130,64 @@ function folderCrumbName(folder:MediaFolder) {
   return parts[parts.length - 1] || folder.relativePath || `Folder ${folder.id}`;
 }
 
+const folderEntriesCache = new Map<string, Promise<FolderEntries>>();
+
+export function resetFolderEntriesCache() {
+  folderEntriesCache.clear();
+}
+
+function useFolderEntries(libraryId:number, folderId:number|null): FolderEntries | null {
+  const key = `${libraryId}/${folderId ?? ""}`;
+  const [data, setData] = useState<FolderEntries|null>(null);
+  useEffect(() => {
+    if (!Number.isFinite(libraryId)) return;
+    let cancelled = false;
+    setData(null);
+    let promise = folderEntriesCache.get(key);
+    if (!promise) {
+      promise = folderId == null
+        ? api.entries(libraryId).then(entries => ({entries, chain: []}))
+        : api.folderEntries(libraryId, folderId);
+      folderEntriesCache.set(key, promise);
+    }
+    promise.then(result => { if (!cancelled) setData(result); })
+      .catch(() => { if (!cancelled) setData(null); })
+      .finally(() => { if (folderEntriesCache.get(key) === promise) folderEntriesCache.delete(key); });
+    return () => { cancelled = true; };
+  }, [key]);
+  return data;
+}
+
 function useBreadcrumb(): Crumb[] | null {
   const location = useLocation();
-  const [crumbs, setCrumbs] = useState<Crumb[]|null>(null);
   const pathname = location.pathname;
+  const favoritesMatch = pathname.match(/^\/favorites\/view\/[^/]+$/);
+  const rootMatch = pathname.match(/^\/library\/([^/]+)$/);
+  const folderMatch = pathname.match(/^\/library\/([^/]+)\/folder\/([^/]+)$/);
+  const viewerMatch = pathname.match(/^\/library\/([^/]+)\/view\/([^/]+)$/);
+  const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : NaN;
+  const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : null;
+  const folderData = useFolderEntries(folderID != null ? libraryID : NaN, folderID);
+  const [libraries, setLibraries] = useState<Library[]|null>(null);
   useEffect(() => {
     let cancelled = false;
-    setCrumbs(null);
-    const favoritesMatch = pathname.match(/^\/favorites\/view\/[^/]+$/);
-    if (favoritesMatch) {
-      setCrumbs([{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}]);
-      return;
-    }
-    const rootMatch = pathname.match(/^\/library\/([^/]+)$/);
-    const folderMatch = pathname.match(/^\/library\/([^/]+)\/folder\/([^/]+)$/);
-    const viewerMatch = pathname.match(/^\/library\/([^/]+)\/view\/([^/]+)$/);
-    const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : NaN;
+    setLibraries(null);
     if (!Number.isFinite(libraryID)) return;
-    const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : null;
-    (async () => {
-      try {
-        const libraries = await api.libraries();
-        if (cancelled) return;
-        const library = libraries.find(item => item.id === libraryID);
-        const base: Crumb[] = [{label:"Libraries", to:"/"}];
-        if (library) base.push({label:library.name, to:`/library/${libraryID}`});
-        if (folderID != null && Number.isFinite(folderID)) {
-          const chain: MediaFolder[] = [];
-          const seen = new Set<number>();
-          let currentID: number = folderID;
-          while (currentID >= 0 && !seen.has(currentID)) {
-            seen.add(currentID);
-            const folder = await api.folder(libraryID, currentID);
-            if (cancelled) return;
-            chain.unshift(folder);
-            currentID = folder.parentId;
-          }
-          base.push(...chain.map(folder => ({label:folderCrumbName(folder), to:`/library/${libraryID}/folder/${folder.id}`})));
-        }
-        if (cancelled) return;
-        if ((rootMatch || folderMatch) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
-        setCrumbs(base);
-      } catch {
-        // Leave null so the header falls back to the home brand.
-      }
-    })();
+    api.libraries().then(items => { if (!cancelled) setLibraries(items); }).catch(() => setLibraries(null));
     return () => { cancelled = true; };
   }, [pathname]);
-  return crumbs;
+  return useMemo(() => {
+    if (favoritesMatch) return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
+    if (!Number.isFinite(libraryID) || !libraries) return null;
+    const library = libraries.find(item => item.id === libraryID);
+    const base: Crumb[] = [{label:"Libraries", to:"/"}];
+    if (library) base.push({label:library.name, to:`/library/${libraryID}`});
+    if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
+      base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:`/library/${libraryID}/folder/${folder.id}`})));
+    }
+    if ((rootMatch || folderMatch) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
+    return base;
+  }, [libraries, folderData, pathname]);
 }
 
 function closeParentDetails(event:MouseEvent<HTMLElement>) {
@@ -273,6 +283,36 @@ function StopServerButton() {
     <div className="settings-stop-buttons">
       <button type="button" className="danger" disabled={stopping !== ""} onClick={() => void stop("docker")}>{stopping === "docker" ? "Stopping container…" : "Stop Docker container"}</button>
       <button type="button" className="secondary" disabled={stopping !== ""} onClick={() => void stop("signal")}>{stopping === "signal" ? "Stopping process…" : "Stop server process"}</button>
+    </div>
+  </div>;
+}
+
+function DatabaseVacuumAction() {
+  const [busy, setBusy] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [error, setError] = useState("");
+  async function run() {
+    const message = "Compact the database file now? It runs in the background and briefly locks the database while the compacted file is written.";
+    if (!window.confirm(message)) return;
+    setBusy(true); setStarted(false); setError("");
+    try {
+      await api.vacuumDatabase();
+      setStarted(true);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="settings-top-actions">
+    <div>
+      <strong>Database maintenance</strong>
+      <small>Reclaims space freed by deleted libraries, users, media, and finished job history.</small>
+      {started && <p className="success">Vacuum started in the background. Track it in the job list below.</p>}
+      {error && <p className="error">{error}</p>}
+    </div>
+    <div className="settings-stop-buttons">
+      <button type="button" className="secondary" disabled={busy} onClick={() => void run()}>{busy ? "Compacting…" : "Compact database now"}</button>
     </div>
   </div>;
 }
@@ -651,7 +691,7 @@ function JobMonitor() {
     const interval = window.setInterval(load, 1500);
     return () => { cancelled = true; window.clearInterval(interval); };
   }, []);
-  const categories = ["scan", "thumbnail-create"];
+  const categories = ["scan", "thumbnail-create", "vacuum"];
   const activeJobs = jobs.filter(isActiveJob);
   const completedJobs = jobs.filter(job => !isActiveJob(job)).slice(0, 10);
   return <section className="jobs-panel">
@@ -683,7 +723,7 @@ function JobInstanceRow({job,onControl}:{job:JobStatus; onControl:(id:string, ac
   return <article className="job-row">
     <div><strong>{job.libraryName}</strong><small>{job.status} · instance {job.id.slice(0, 8)}</small></div>
     <div className="job-progress"><span style={{width:`${percent}%`}}/></div>
-    <small>{job.total > 0 ? `${job.processed}/${job.total}` : `${job.processed} paths`} · {job.currentPath || job.rootPath || "no root"}</small>
+    <small>{job.total > 0 ? `${job.processed}/${job.total}` : `${job.processed} paths`}{job.currentPath || job.rootPath ? ` · ${job.currentPath || job.rootPath}` : ""}</small>
     {job.cancelable && <div className="job-controls">
       {job.paused || job.status === "paused"
         ? <button type="button" className="secondary" onClick={() => onControl(job.id, "resume")}>Resume</button>
@@ -701,6 +741,7 @@ function jobCategory(job:JobStatus) {
 function categoryLabel(category:string) {
   if (category === "thumbnail-create") return "Thumbnail create";
   if (category === "scan") return "Scan";
+  if (category === "vacuum") return "Vacuum";
   return category;
 }
 
@@ -1054,7 +1095,7 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
     {section === "jobs" && <><fieldset><legend>Job worker pool</legend>
       <label>Worker pool size<input type="number" min="1" max="64" value={workerPoolSize} onChange={event => setWorkerPoolSize(Number(event.target.value))} required/></label>
       <small>Shared parallel worker count for scan/import and thumbnail creation jobs.</small>
-    </fieldset><JobMonitor/></>}
+    </fieldset><DatabaseVacuumAction/><JobMonitor/></>}
     {section === "timeouts" && <><fieldset><legend>Login timeout</legend>
       <label>Remember login, hours<input type="number" min="1" max="8760" value={sessionMaxAgeHours} onChange={event => setSessionMaxAgeHours(Number(event.target.value))} required/></label>
       <small>Controls the HttpOnly login cookie and JWT expiration. Default is 720 hours, about 30 days.</small>
@@ -1413,14 +1454,13 @@ function Browser() {
   const {id="", folderId} = useParams(); const navigate = useNavigate();
   const libraryId = Number(id);
   const currentFolderId = folderId == null ? null : Number(folderId);
+  const folderData = useFolderEntries(libraryId, currentFolderId);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [view, setView] = useState<"tile"|"list">("tile");
   const [selected, setSelected] = useState<ID[]>([]);
   useEffect(() => {
-    if (!Number.isFinite(libraryId)) return;
-    const load = currentFolderId == null ? api.entries(libraryId) : api.folderEntries(libraryId, currentFolderId);
-    load.then(setEntries);
-  }, [libraryId,currentFolderId]);
+    setEntries(folderData?.entries ?? []);
+  }, [folderData]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
   function applyBulkGPS(updated:Media[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
@@ -1748,7 +1788,8 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Ent
   async function openStats() {
     setStats(null); setStatsError(""); setCalculating(true);
     try {
-      const children = await api.folderEntries(libraryId, entry.id);
+      const data = await api.folderEntries(libraryId, entry.id);
+      const children = data.entries;
       setStats({
         folders: children.filter(child => child.type === "folder").length,
         media: children.filter(child => child.type === "media").length,
@@ -1895,73 +1936,68 @@ function FavoriteButton({item,viewId,onChange}:{item:Media; viewId?:ID; onChange
       setBusy(false);
     }
   }
-  async function addToView(targetViewId:ID) {
-    setBusy(true);
-    try {
-      const updated = await api.favoriteMedia(targetViewId, item.id);
-      setFavorite(true);
-      setChoosing(false);
-      onChange?.(updated);
-    } finally {
-      setBusy(false);
-    }
-  }
-  const label = favorite && viewId != null ? `Remove ${item.name} from this favorite view` : `Add ${item.name} to favorite view`;
+  const label = favorite && viewId != null ? `Remove ${item.name} from this favorite view` : `Manage favorite views for ${item.name}`;
   return <>
     <button type="button" className={`favorite-button ${favorite ? "active" : ""}`} aria-label={label} disabled={busy} onClick={toggle}>{favorite ? "★" : "☆"}</button>
-    {choosing && <FavoriteViewChooser item={item} busy={busy} onAdd={addToView} onClose={() => setChoosing(false)}/>}
+    {choosing && <FavoriteViewChooser item={item} onChange={updated => { setFavorite(Boolean(updated.favorite)); onChange?.(updated); }} onClose={() => setChoosing(false)}/>}
   </>;
 }
 
-function FavoriteViewChooser({item,busy,onAdd,onClose}:{item:Media; busy:boolean; onAdd:(viewId:ID)=>Promise<void>; onClose:()=>void}) {
-  const [views, setViews] = useState<FavoriteView[]>([]);
-  const [selected, setSelected] = useState<ID>(-1);
+function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item:Media)=>void; onClose:()=>void}) {
+  const [views, setViews] = useState<FavoriteViewMembership[]>([]);
   const [newName, setNewName] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
-    api.favoriteViews()
-      .then(loaded => {
-        setViews(loaded);
-        setSelected(loaded[0]?.id ?? -1);
-      })
+    api.mediaFavoriteViews(item.id)
+      .then(setViews)
       .catch(cause => setError((cause as Error).message));
-  }, []);
-  async function addExisting(event:FormEvent) {
-    event.preventDefault();
-    if (selected < 0) return;
+  }, [item.id]);
+  async function toggle(view:FavoriteViewMembership) {
+    setBusy(true);
+    setError("");
     try {
-      setError("");
-      await onAdd(selected);
+      const updated = view.contains ? await api.unfavoriteMedia(view.id, item.id) : await api.favoriteMedia(view.id, item.id);
+      setViews(current => current.map(currentView => currentView.id === view.id ? {...currentView, contains: !view.contains} : currentView));
+      onChange(updated);
     } catch (cause) {
       setError((cause as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
   async function createAndAdd(event:FormEvent) {
     event.preventDefault();
     const name = newName.trim();
     if (!name) return;
+    setBusy(true);
+    setError("");
     try {
-      setError("");
       const created = await api.createFavoriteView(name);
-      setViews(current => [...current, created].sort((left, right) => left.name.localeCompare(right.name)));
-      setSelected(created.id);
+      const updated = await api.favoriteMedia(created.id, item.id);
+      setViews(current => [...current, {...created, contains:true}].sort((left, right) => left.name.localeCompare(right.name)));
       setNewName("");
-      await onAdd(created.id);
+      onChange(updated);
     } catch (cause) {
       setError((cause as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Add ${item.name} to favorite view`} onClick={event => closeOnBackdropClick(event, onClose)}>
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Favorite views for ${item.name}`} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal favorite-picker">
-      <div className="panel-title"><div><h2>Add to favorites</h2><p>{item.name}</p></div><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><div><h2>Favorites</h2><p>{item.name}</p></div><button type="button" className="secondary" onClick={onClose}>Close</button></div>
       {error && <p className="error">{error}</p>}
       {views.length === 0 ? <p className="muted">No favorite views yet. Create one below.</p> :
-        <form className="favorite-picker-form" onSubmit={addExisting}>
-          <label>Favorite view<select value={selected} onChange={event => setSelected(Number(event.target.value))}>
-            {views.map(view => <option key={view.id} value={view.id}>{view.name}</option>)}
-          </select></label>
-          <button type="submit" disabled={busy || selected < 0}>Add here</button>
-        </form>}
+        <div className="favorite-picker-list">
+          {views.map(view => (
+            <label key={view.id} className="favorite-picker-item">
+              <input type="checkbox" checked={view.contains} disabled={busy} onChange={() => toggle(view)}/>
+              <span>{view.name}</span>
+              <small>{view.count} items</small>
+            </label>
+          ))}
+        </div>}
       <form className="favorite-picker-form" onSubmit={createAndAdd}>
         <label>New favorite view<input value={newName} onChange={event => setNewName(event.target.value)} placeholder="Best photos"/></label>
         <button type="submit" disabled={busy || !newName.trim()}>Create and add</button>
@@ -1979,7 +2015,8 @@ function MediaViewerPage() {
   const itemQuery = query.get("item");
   const hasItemQuery = itemQuery != null;
   const currentMediaId = Number(itemQuery ?? -1);
-  const [items, setItems] = useState<Media[]>([]);
+  const folderData = useFolderEntries(libraryId, routeFolderId);
+  const items = (folderData?.entries ?? []).map(entry => entry.media).filter((media): media is Media => media != null);
   const [fallbackItem, setFallbackItem] = useState<Media|null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const folderMedia = items.filter(media => media.folderId === routeFolderId);
@@ -1987,8 +2024,10 @@ function MediaViewerPage() {
   const item = index >= 0 ? folderMedia[index] : fallbackItem;
   const previous = index > 0 ? folderMedia[index - 1] : null;
   const next = index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null;
-  useEffect(() => { if (Number.isFinite(libraryId)) api.libraryMedia(libraryId).then(setItems); }, [libraryId]);
-  useEffect(() => { if (Number.isFinite(currentMediaId)) api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null)); }, [currentMediaId]);
+  useEffect(() => {
+    if (index >= 0 || !Number.isFinite(currentMediaId)) return;
+    api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null));
+  }, [currentMediaId, index]);
   function go(media:Media|null) {
     if (media) navigate(libraryItemURL(libraryId, media));
   }

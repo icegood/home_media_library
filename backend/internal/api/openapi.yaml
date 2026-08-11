@@ -378,13 +378,43 @@ paths:
         - $ref: "#/components/parameters/FolderID"
       responses:
         "200":
-          description: Direct child folders and media in the folder
+          description: Direct child folders and media in the folder, plus the folder chain
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Entry"
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Entry"
+                  chain:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MediaFolder"
+                required: [entries, chain]
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/libraries/{id}/folders/{folderId}:
+    get:
+      tags: [Library]
+      summary: Fetch a single folder inside a library
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+        - $ref: "#/components/parameters/FolderID"
+      responses:
+        "200":
+          description: The folder, with its relative path within the library
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaFolder"
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -566,6 +596,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Media"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}/favorite-views:
+    get:
+      tags: [Favorites]
+      summary: Favorite views of the current user containing a media item
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      responses:
+        "200":
+          description: The user's favorite views annotated with membership
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FavoriteViewMembership"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1200,6 +1251,287 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/db/vacuum:
+    post:
+      tags: [Admin]
+      summary: Start a database vacuum job
+      description: >
+        Runs SQLite VACUUM in the background. Not supported when the server is
+        backed by a Postgres store.
+      responses:
+        "202":
+          description: Vacuum job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "400":
+          description: Vacuum is not supported by the configured store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/thumbnails/orphans:
+    post:
+      tags: [Admin]
+      summary: Start a thumbnail cleanup job
+      description: >
+        Deletes thumbnail files that are no longer referenced by media or
+        folders, then removes their database records. Runs in the background.
+      responses:
+        "202":
+          description: Cleanup job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/scheduled-tasks:
+    get:
+      tags: [Admin]
+      summary: List scheduled tasks
+      responses:
+        "200":
+          description: Scheduled tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduledTask"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admin]
+      summary: Create a scheduled task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduledTaskInput"
+      responses:
+        "201":
+          description: Scheduled task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduledTask"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/scheduled-tasks/{id}:
+    put:
+      tags: [Admin]
+      summary: Update a scheduled task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Scheduled task id.
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduledTaskInput"
+      responses:
+        "200":
+          description: Updated scheduled task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduledTask"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Admin]
+      summary: Delete a scheduled task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Scheduled task id.
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/users:
+    get:
+      tags: [Admin]
+      summary: List users
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admin]
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserInput"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid login, role or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/users/{id}:
+    put:
+      tags: [Admin]
+      summary: Update a user (login, role, optional password)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: User id.
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserInput"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/logs:
+    get:
+      tags: [Admin]
+      summary: Read the tail of the application log
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Number of lines to return, between 1 and 2000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2000
+            default: 300
+      responses:
+        "200":
+          description: Tail of the log file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    delete:
+      tags: [Admin]
+      summary: Clear the application log
+      responses:
+        "204":
+          description: Cleared
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/logs/download:
+    get:
+      tags: [Admin]
+      summary: Download the full application log as a text file
+      responses:
+        "200":
+          description: The log file, sent as an attachment
+          content:
+            text/plain:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/libraries/{id}/access:
+    get:
+      tags: [Admin]
+      summary: List users and their read access to a library
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      responses:
+        "200":
+          description: Per-user read access
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LibraryUserAccess"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/admin/settings:
     get:
       tags: [Admin]
@@ -1347,6 +1679,27 @@ components:
           type: string
           nullable: true
           example: alice@example.com
+    UserInput:
+      type: object
+      required: [login, role]
+      properties:
+        login:
+          type: string
+          description: 3-64 letters, digits, dots, dashes or underscores (case-insensitive).
+        role:
+          $ref: "#/components/schemas/Role"
+        password:
+          type: string
+          description: 12-72 characters. Required when creating; optional when editing to keep the current password.
+    LibraryUserAccess:
+      type: object
+      required: [user, allowed]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        allowed:
+          type: boolean
+          description: Whether the user may read this library.
     LibraryStats:
       type: object
       properties:
@@ -1390,6 +1743,15 @@ components:
         count:
           type: integer
           description: Number of media items in the view.
+    FavoriteViewMembership:
+      allOf:
+        - $ref: "#/components/schemas/FavoriteView"
+        - type: object
+          required: [contains]
+          properties:
+            contains:
+              type: boolean
+              description: Whether the media item belongs to this view.
     Kind:
       type: string
       enum: [image, video]
@@ -1519,7 +1881,7 @@ components:
           type: string
         category:
           type: string
-          enum: [scan, thumbnail-create]
+          enum: [scan, thumbnail-create, vacuum, orphan-thumbnail-cleanup]
         type:
           type: string
         libraryId:
@@ -1550,6 +1912,49 @@ components:
           type: string
           format: date-time
           nullable: true
+    ScheduledTask:
+      type: object
+      required: [id, name, taskType, cron, enabled, nextRunAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        taskType:
+          type: string
+          enum: [scan, thumbnail-create, vacuum]
+        libraryId:
+          type: integer
+          description: Required for scan and thumbnail-create tasks; zero for vacuum.
+        cron:
+          type: string
+        enabled:
+          type: boolean
+        lastRunAt:
+          type: string
+          format: date-time
+          nullable: true
+        nextRunAt:
+          type: string
+          format: date-time
+          description: Next scheduled run, recomputed when the task is created or edited.
+    ScheduledTaskInput:
+      type: object
+      required: [name, taskType, cron]
+      properties:
+        name:
+          type: string
+        taskType:
+          type: string
+          enum: [scan, thumbnail-create, vacuum]
+        libraryId:
+          type: integer
+          description: Required for scan and thumbnail-create tasks; ignored for vacuum when creating.
+        cron:
+          type: string
+        enabled:
+          type: boolean
+          default: true
     LibraryInput:
       type: object
       required: [name, roots]
@@ -1639,6 +2044,16 @@ components:
                 type: string
               path:
                 type: string
+    LogsResponse:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Absolute path of the log file inside the container.
+        lines:
+          type: array
+          items:
+            type: string
     Settings:
       type: object
       properties:

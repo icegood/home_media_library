@@ -10,6 +10,7 @@ import (
 
 	"media-library/backend/internal/applog"
 	"media-library/backend/internal/domain"
+	"media-library/backend/internal/jobpool"
 	"media-library/backend/internal/metadata"
 	"media-library/backend/internal/store"
 )
@@ -18,7 +19,24 @@ type Scanner struct {
 	Store    store.Store
 	Metadata metadata.Extractor
 	Progress func(path string, media bool) error
-	Workers  int
+	// JobID, when set, scopes queued media imports in the shared worker pool
+	// so pause/resume/cancel applies to this job.
+	JobID string
+	// WorkerPool, when set, runs media imports on the shared pool instead of
+	// spawning per-scan goroutines. SetCapacity changes made while the job is
+	// paused apply automatically to work submitted after the change.
+	WorkerPool *jobpool.Pool
+	// Paused, when set, reports whether the surrounding job is currently
+	// paused. It is consulted at submit time so work queued while the job is
+	// paused starts parked (and releases workers to other jobs).
+	Paused func() bool
+}
+
+func (s Scanner) WithPool(jobID string, pool *jobpool.Pool, paused func() bool) Scanner {
+	s.JobID = jobID
+	s.WorkerPool = pool
+	s.Paused = paused
+	return s
 }
 
 func (s Scanner) Scan(ctx context.Context, library domain.Library) (err error) {
@@ -175,66 +193,65 @@ func (s Scanner) scanRoot(ctx context.Context, _ domain.Library, mapping domain.
 	}); err != nil {
 		return err
 	}
-	workers := s.Workers
-	if workers < 1 {
-		workers = 1
-	}
-	if workers > len(tasks) && len(tasks) > 0 {
-		workers = len(tasks)
-	}
-	taskCh := make(chan mediaTask, len(tasks))
-	for _, task := range tasks {
-		taskCh <- task
-	}
-	close(taskCh)
-	errCh := make(chan error, workers)
-	for worker := 0; worker < workers; worker++ {
-		go func() {
-			for task := range taskCh {
-				if err := s.importMedia(ctx, root, task.filePath, task.entry, task.mimeType, task.parentID); err != nil {
-					errCh <- err
-					return
-				}
-				media, err := s.Store.MediaByPath(ctx, task.filePath)
+	if len(tasks) > 0 {
+		if s.WorkerPool != nil {
+			work := make([]jobpool.Work, len(tasks))
+			for i, task := range tasks {
+				task := task
+			work[i] = func(ctx context.Context) error {
+				mediaID, err := s.importMedia(ctx, root, task.filePath, task.entry, task.mimeType, task.parentID)
 				if err != nil {
-					errCh <- err
-					return
+					return err
 				}
 				seenMediaMu.Lock()
-				seenMedia[media.ID] = true
+				seenMedia[mediaID] = true
 				seenMediaMu.Unlock()
+				return nil
 			}
-			errCh <- nil
-		}()
-	}
-	for range workers {
-		if err := <-errCh; err != nil {
-			return err
+			}
+			paused := s.Paused != nil && s.Paused()
+			s.WorkerPool.Submit(s.JobID, ctx, paused, work)
+			if err := s.WorkerPool.Wait(ctx, s.JobID); err != nil {
+				return err
+			}
+			return s.Store.PruneFolder(ctx, rootID, seenFolders, seenMedia)
+		}
+		for _, task := range tasks {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			mediaID, err := s.importMedia(ctx, root, task.filePath, task.entry, task.mimeType, task.parentID)
+			if err != nil {
+				return err
+			}
+			seenMediaMu.Lock()
+			seenMedia[mediaID] = true
+			seenMediaMu.Unlock()
 		}
 	}
 	return s.Store.PruneFolder(ctx, rootID, seenFolders, seenMedia)
 }
 
-func (s Scanner) importMedia(ctx context.Context, root, filePath string, entry fs.DirEntry, mimeType string, parentID int) error {
+func (s Scanner) importMedia(ctx context.Context, root, filePath string, entry fs.DirEntry, mimeType string, parentID int) (int, error) {
 	if s.Progress != nil {
 		if err := s.Progress(filePath, true); err != nil {
-			return err
+			return domain.InvalidID, err
 		}
 	}
 	info, err := entry.Info()
 	if err != nil {
-		return err
+		return domain.InvalidID, err
 	}
 	relative, err := filepath.Rel(root, filePath)
 	if err != nil {
-		return err
+		return domain.InvalidID, err
 	}
 	relative = filepath.ToSlash(relative)
 	// The refresh job only imports new files; rows that already exist are not
 	// rewritten or re-extracted. User edits (GPS, name, taken-at) are applied
 	// through the dedicated update endpoints, so they are never lost here.
-	if _, existingErr := s.Store.MediaByPath(ctx, filePath); existingErr == nil {
-		return nil
+	if existing, existingErr := s.Store.MediaByPath(ctx, filePath); existingErr == nil {
+		return existing.ID, nil
 	}
 	extracted, err := s.metadata().Extract(ctx, filePath, mimeType)
 	metadataError := ""
@@ -250,12 +267,15 @@ func (s Scanner) importMedia(ctx context.Context, root, filePath string, entry f
 	if takenAt == "" {
 		takenAt = info.ModTime().UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
-	_, err = s.Store.UpsertMedia(ctx, domain.Media{
+	media, err := s.Store.UpsertMedia(ctx, domain.Media{
 		ID: domain.InvalidID, FolderID: parentID, Path: filePath, RelativePath: relative, Name: entry.Name(),
 		Kind: domain.KindFromMIME(mimeType), MIMEType: mimeType, Size: info.Size(),
 		Metadata: extracted.Metadata, GPS: extracted.GPS, TakenAt: takenAt, MetadataError: metadataError,
 	})
-	return err
+	if err != nil {
+		return domain.InvalidID, err
+	}
+	return media.ID, nil
 }
 
 func (s Scanner) mimeTypeForPath(ctx context.Context, path string) (string, bool) {

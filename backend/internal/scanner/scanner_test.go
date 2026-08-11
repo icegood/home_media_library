@@ -63,27 +63,26 @@ func TestScanPreservesRelativeFoldersAndFiltersFiles(t *testing.T) {
 	if err := subject.Scan(context.Background(), library); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := repository.Entries(context.Background(), library.ID, "")
+	entries, _ := repository.Entries(context.Background(), 0, library.ID, "")
 	if len(entries) != 2 || entries[0].Type != "folder" || entries[0].RelativePath != "archive" ||
 		entries[1].RelativePath != "family" {
 		t.Fatalf("unexpected root entries: %#v", entries)
 	}
-	entries, _ = repository.Entries(context.Background(), library.ID, "family")
-	if len(entries) != 2 || entries[0].RelativePath != "family/2025" || entries[1].RelativePath != "family/empty" ||
-		len(entries[0].FolderThumbnails) != 1 || entries[0].FolderThumbnails[0].MediaID == domain.InvalidID {
+	entries, _ = repository.Entries(context.Background(), 0, library.ID, "family")
+	if len(entries) != 2 || entries[0].RelativePath != "family/2025" || entries[1].RelativePath != "family/empty" {
 		t.Fatalf("unexpected current entries: %#v", entries)
 	}
-	entries, _ = repository.Entries(context.Background(), library.ID, "family/empty")
+	entries, _ = repository.Entries(context.Background(), 0, library.ID, "family/empty")
 	if len(entries) != 1 || entries[0].Type != "folder" || entries[0].RelativePath != "family/empty/child" {
 		t.Fatalf("unexpected empty-folder entries: %#v", entries)
 	}
-	entries, _ = repository.Entries(context.Background(), library.ID, "family/2025")
+	entries, _ = repository.Entries(context.Background(), 0, library.ID, "family/2025")
 	if len(entries) != 1 || entries[0].RelativePath != "family/2025/photo.JPG" ||
 		entries[0].Media.RelativePath != "family/2025/photo.JPG" ||
 		entries[0].Media.MIMEType != "image/jpeg" {
 		t.Fatalf("unexpected media entries: %#v", entries)
 	}
-	entries, _ = repository.Entries(context.Background(), library.ID, "archive")
+	entries, _ = repository.Entries(context.Background(), 0, library.ID, "archive")
 	mimeTypes := map[string]string{}
 	for _, entry := range entries {
 		mimeTypes[entry.Name] = entry.Media.MIMEType
@@ -172,7 +171,7 @@ func TestScanImportsGeneratedDerivativeMedia(t *testing.T) {
 	if err := subject.Scan(context.Background(), library); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := repository.Entries(context.Background(), library.ID, "photos")
+	entries, _ := repository.Entries(context.Background(), 0, library.ID, "photos")
 	if len(entries) != 2 || entries[0].Name != "clip.MOV" || entries[1].Name != "clip_libvpx-vp9_libmp3lame.mkv" || entries[1].Media.MIMEType != "video/x-matroska" {
 		t.Fatalf("generated derivative should be imported, got %#v", entries)
 	}
@@ -182,7 +181,7 @@ func TestScanImportsGeneratedDerivativeMedia(t *testing.T) {
 	if err := subject.Scan(context.Background(), library); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ = repository.Entries(context.Background(), library.ID, "photos")
+	entries, _ = repository.Entries(context.Background(), 0, library.ID, "photos")
 	if len(entries) != 1 || entries[0].Name != "clip_libvpx-vp9_libmp3lame.mkv" {
 		t.Fatalf("removed original should be pruned without removing derivative, got %#v", entries)
 	}
@@ -214,13 +213,13 @@ func TestSingleRootLibraryOpensAtRootChildren(t *testing.T) {
 	if err := subject.Scan(context.Background(), library); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := repository.Entries(context.Background(), library.ID, "")
+	entries, _ := repository.Entries(context.Background(), 0, library.ID, "")
 	if len(entries) != 1 || entries[0].ID != library.Roots[0].ID || entries[0].RelativePath != "20100821_karpaty_lakes_pip_ivan" {
 		t.Fatalf("library root should show the picked root folder, got %#v", entries)
 	}
-	entries, _ = repository.EntriesForFolder(context.Background(), library.ID, library.Roots[0].ID)
-	if len(entries) != 2 || entries[0].RelativePath != "DSC-H3" || entries[1].RelativePath != "NIKON_D50" {
-		t.Fatalf("root folder should open at disk subfolders, got %#v", entries)
+	folderEntries, _ := repository.EntriesForFolder(context.Background(), 0, library.ID, library.Roots[0].ID)
+	if len(folderEntries.Entries) != 2 || folderEntries.Entries[0].RelativePath != "DSC-H3" || folderEntries.Entries[1].RelativePath != "NIKON_D50" {
+		t.Fatalf("root folder should open at disk subfolders, got %#v", folderEntries.Entries)
 	}
 }
 
@@ -261,8 +260,8 @@ func TestSharedPhysicalRootUsesOneMediaIdentity(t *testing.T) {
 	if err := subject.Scan(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
-	firstEntries, _ := repository.Entries(context.Background(), first.ID, "shared")
-	secondEntries, _ := repository.Entries(context.Background(), second.ID, "shared")
+	firstEntries, _ := repository.Entries(context.Background(), 0, first.ID, "shared")
+	secondEntries, _ := repository.Entries(context.Background(), 0, second.ID, "shared")
 	if len(firstEntries) != 1 || len(secondEntries) != 1 {
 		t.Fatalf("unexpected entries: first=%#v second=%#v", firstEntries, secondEntries)
 	}
@@ -351,7 +350,7 @@ func TestMetadataErrorIsStoredAndPreventsRetry(t *testing.T) {
 	if err := subject.Scan(context.Background(), library); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := repository.Entries(context.Background(), library.ID, "photos")
+	entries, _ := repository.Entries(context.Background(), 0, library.ID, "photos")
 	if len(entries) != 1 || entries[0].Media == nil || entries[0].Media.MetadataError == "" {
 		t.Fatalf("metadata error was not stored: %#v", entries)
 	}

@@ -6,6 +6,7 @@ export interface LibraryRoot { id:ID; path?:string }
 export interface LibraryStats { folders:number; files:number; images:number; videos:number }
 export interface Library { id:ID; name:string; roots?:LibraryRoot[]; stats?:LibraryStats }
 export interface FavoriteView { id:ID; name:string; count:number }
+export interface FavoriteViewMembership extends FavoriteView { contains:boolean }
 export interface Media {
   id:ID; folderId:ID; relativePath:string; name:string;
   kind:"image"|"video"; mimeType:string; size:number;
@@ -23,6 +24,10 @@ export interface ThumbnailRef { mediaId:ID; index:number }
 export interface Entry {
   id:ID; name:string; relativePath:string; type:"folder"|"media";
   media?:Media; folder?:MediaFolder; folderThumbnails?:ThumbnailRef[]; folderThumbnail?:ID;
+}
+export interface FolderEntries {
+  entries: Entry[];
+  chain: MediaFolder[];
 }
 export interface VideoThumbnail { index:number; timeSeconds:number; url:string }
 export interface FilesystemDirectory { name:string; path:string }

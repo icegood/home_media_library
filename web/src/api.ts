@@ -1,4 +1,4 @@
-import type { EmbyImportResult, Entry, FavoriteView, FilesystemListing, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -70,6 +70,7 @@ export const api = {
   createThumbnails: (id:ID, input:{recreateExisting?:boolean} = {}) =>
     call<JobStatus>(`/admin/libraries/${id}/thumbnails`, {method:"POST", body:JSON.stringify(input)}),
   cleanupOrphanThumbnails: () => call<JobStatus>("/admin/thumbnails/orphans", {method:"POST"}),
+  vacuumDatabase: () => call<JobStatus>("/admin/db/vacuum", {method:"POST"}),
   users: () => call<User[]>("/admin/users"),
   createUser: (input:{login:string; role:Role; password:string}) =>
     call<User>("/admin/users", {method:"POST", body:JSON.stringify(input)}),
@@ -97,9 +98,10 @@ export const api = {
   filesystem: (path = "") => call<FilesystemListing>(`/admin/filesystem?path=${encodeURIComponent(path)}`),
   entries: (libraryId:ID) => call<Entry[]>(`/libraries/${libraryId}/entries`),
   folder: (libraryId:ID, folderId:ID) => call<MediaFolder>(`/libraries/${libraryId}/folders/${folderId}`),
-  folderEntries: (libraryId:ID, folderId:ID) => call<Entry[]>(`/libraries/${libraryId}/folders/${folderId}/entries`),
+  folderEntries: (libraryId:ID, folderId:ID) => call<FolderEntries>(`/libraries/${libraryId}/folders/${folderId}/entries`),
   libraryMedia: (libraryId:ID) => call<Media[]>(`/libraries/${libraryId}/media`),
   favoriteViews: () => call<FavoriteView[]>("/favorite-views"),
+  mediaFavoriteViews: (id:ID) => call<FavoriteViewMembership[]>(`/media/${id}/favorite-views`),
   createFavoriteView: (name:string) => call<FavoriteView>("/favorite-views", {method:"POST", body:JSON.stringify({name})}),
   updateFavoriteView: (id:ID, name:string) => call<FavoriteView>(`/favorite-views/${id}`, {method:"PUT", body:JSON.stringify({name})}),
   deleteFavoriteView: (id:ID) => call<void>(`/favorite-views/${id}`, {method:"DELETE"}),

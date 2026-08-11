@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrForbidden = errors.New("forbidden")
-	ErrConflict  = errors.New("conflict")
+	ErrNotFound   = errors.New("not found")
+	ErrForbidden  = errors.New("forbidden")
+	ErrConflict   = errors.New("conflict")
+	ErrNestedRoot = errors.New("nested root folders are not allowed")
 )
 
 type Store interface {
@@ -37,13 +38,17 @@ type Store interface {
 	Library(ctx context.Context, id int) (domain.Library, error)
 	LibraryStats(ctx context.Context, libraryID int) (domain.LibraryStats, error)
 	Folder(ctx context.Context, id int) (domain.MediaFolder, error)
+	FolderChain(ctx context.Context, libraryID, folderID int) ([]domain.MediaFolder, error)
+	FoldersByIDs(ctx context.Context, ids []int) (map[int]domain.MediaFolder, error)
 	CanRead(ctx context.Context, userID, libraryID int, admin bool) (bool, error)
 	CanReadMedia(ctx context.Context, userID, mediaID int, admin bool) (bool, error)
-	Entries(ctx context.Context, libraryID int, relativeDir string) ([]domain.Entry, error)
-	EntriesForFolder(ctx context.Context, libraryID, folderID int) ([]domain.Entry, error)
+	Entries(ctx context.Context, userID, libraryID int, relativeDir string) ([]domain.Entry, error)
+	EntriesForFolder(ctx context.Context, userID, libraryID, folderID int) (domain.FolderEntries, error)
 	Media(ctx context.Context, id int) (domain.Media, error)
+	MediaBatch(ctx context.Context, ids []int) ([]domain.Media, error)
 	MediaByPath(ctx context.Context, path string) (domain.Media, error)
 	FavoriteViews(ctx context.Context, userID int) ([]domain.FavoriteView, error)
+	FavoriteViewsForMedia(ctx context.Context, userID, mediaID int) ([]domain.FavoriteViewMembership, error)
 	CreateFavoriteView(ctx context.Context, userID int, name string) (domain.FavoriteView, error)
 	UpdateFavoriteView(ctx context.Context, userID, viewID int, name string) (domain.FavoriteView, error)
 	DeleteFavoriteView(ctx context.Context, userID, viewID int) error
@@ -54,7 +59,7 @@ type Store interface {
 	UpdateMediaDetails(ctx context.Context, id int, patch domain.MediaDetailsPatch) (domain.Media, error)
 	GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error)
 	MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID int, bounds domain.Bounds) ([]domain.MapMedia, error)
-	MediaForLibrary(ctx context.Context, libraryID int) ([]domain.Media, error)
+	MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error)
 	FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error)
 	ThumbnailCleanupRefsForLibrary(ctx context.Context, libraryID int) (domain.ThumbnailCleanupRefs, error)
 	SetMediaActionError(ctx context.Context, id int, action, message string) error

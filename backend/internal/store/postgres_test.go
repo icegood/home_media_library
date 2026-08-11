@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -126,6 +127,125 @@ func TestPostgresLibraryStatePersistsInternalPathsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestPostgresFolderChain(t *testing.T) {
+	repository := openPostgres(t, true)
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "photos")
+	library := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
+	library, err := repository.CreateLibrary(ctx, library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootFolder := library.Roots[0]
+	camera, err := repository.UpsertFolder(ctx, domain.MediaFolder{
+		ID: domain.InvalidID, ParentID: rootFolder.ID, Path: filepath.Join(root, "Camera"), RelativePath: "Camera",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day1, err := repository.UpsertFolder(ctx, domain.MediaFolder{
+		ID: domain.InvalidID, ParentID: camera.ID, Path: filepath.Join(root, "Camera", "Day1"), RelativePath: "Camera/Day1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain, err := repository.FolderChain(ctx, library.ID, day1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chain) != 3 {
+		t.Fatalf("FolderChain = %d items, want 3", len(chain))
+	}
+	if chain[0].ID != rootFolder.ID || chain[1].ID != camera.ID || chain[2].ID != day1.ID {
+		t.Fatalf("FolderChain order = [%d %d %d], want [%d %d %d]", chain[0].ID, chain[1].ID, chain[2].ID, rootFolder.ID, camera.ID, day1.ID)
+	}
+	if chain[0].RelativePath != "" || chain[1].RelativePath != "Camera" || chain[2].RelativePath != "Camera/Day1" {
+		t.Fatalf("FolderChain relative paths = [%q %q %q], want [\"\" Camera Camera/Day1]", chain[0].RelativePath, chain[1].RelativePath, chain[2].RelativePath)
+	}
+	if _, err := repository.FolderChain(ctx, library.ID, 999999); err != store.ErrNotFound {
+		t.Fatalf("FolderChain unknown folder err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPostgresCreateLibraryRejectsNestedRoots(t *testing.T) {
+	repository := openPostgres(t, true)
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "photos")
+	nested := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: root},
+		{ID: domain.InvalidID, Path: filepath.Join(root, "trips")},
+	}}
+	if _, err := repository.CreateLibrary(ctx, nested); !errors.Is(err, store.ErrNestedRoot) {
+		t.Fatalf("CreateLibrary nested roots err = %v, want ErrNestedRoot", err)
+	}
+
+	library := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
+	library, err := repository.CreateLibrary(ctx, library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	library.Roots = append(library.Roots, domain.LibraryRoot{ID: domain.InvalidID, Path: filepath.Join(root, "trips")})
+	if err := repository.UpdateLibrary(ctx, library); !errors.Is(err, store.ErrNestedRoot) {
+		t.Fatalf("UpdateLibrary nested roots err = %v, want ErrNestedRoot", err)
+	}
+	loaded, err := repository.Library(ctx, library.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Roots) != 1 || loaded.Roots[0].Path != root {
+		t.Fatalf("Library after rejected update = %#v, want single root %q", loaded.Roots, root)
+	}
+}
+
+func TestPostgresFolderChainNestedAcrossLibraries(t *testing.T) {
+	repository := openPostgres(t, true)
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "photos")
+	wide := domain.Library{ID: domain.InvalidID, Name: "Wide", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
+	wide, err := repository.CreateLibrary(ctx, wide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow := domain.Library{ID: domain.InvalidID, Name: "Narrow", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: filepath.Join(root, "trips")}}}
+	narrow, err = repository.CreateLibrary(ctx, narrow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trips, err := repository.UpsertFolder(ctx, domain.MediaFolder{
+		ID: domain.InvalidID, ParentID: wide.Roots[0].ID, Path: filepath.Join(root, "trips"), RelativePath: "trips",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day1, err := repository.UpsertFolder(ctx, domain.MediaFolder{
+		ID: domain.InvalidID, ParentID: trips.ID, Path: filepath.Join(root, "trips", "2024"), RelativePath: "trips/2024",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wideChain, err := repository.FolderChain(ctx, wide.ID, day1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wideChain) != 3 || wideChain[0].ID != wide.Roots[0].ID || wideChain[1].ID != trips.ID || wideChain[2].ID != day1.ID {
+		t.Fatalf("wide chain = %#v, want [%d trips %d]", wideChain, wide.Roots[0].ID, day1.ID)
+	}
+	if wideChain[1].RelativePath != "trips" || wideChain[2].RelativePath != "trips/2024" {
+		t.Fatalf("wide chain relative paths = [%q %q %q]", wideChain[0].RelativePath, wideChain[1].RelativePath, wideChain[2].RelativePath)
+	}
+
+	// Cross-library nesting is not rejected at create time, but a folder is
+	// reachable only through the library whose root is the tree top, so the
+	// inner library finds nothing under it.
+	if _, err := repository.FolderChain(ctx, narrow.ID, day1.ID); err != store.ErrNotFound {
+		t.Fatalf("narrow chain err = %v, want ErrNotFound", err)
+	}
+	if _, err := repository.FolderChain(ctx, narrow.ID, trips.ID); err != store.ErrNotFound {
+		t.Fatalf("narrow root chain err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestPostgresMediaForLibraryComputesRelativePaths(t *testing.T) {
 	repository := openPostgres(t, true)
 	root := filepath.Join(t.TempDir(), "photos")
@@ -142,7 +262,7 @@ func TestPostgresMediaForLibraryComputesRelativePaths(t *testing.T) {
 	if _, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folder.ID, Path: filepath.Join(root, "Camera", "one.jpg"), Name: "one.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg"}); err != nil {
 		t.Fatal(err)
 	}
-	list, err := repository.MediaForLibrary(context.Background(), library.ID)
+	list, err := repository.MediaForLibrary(context.Background(), 0, library.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,6 +527,62 @@ func TestPostgresFavoriteViewsAndRelativePaths(t *testing.T) {
 	isFavorite, err = repository.IsFavorite(context.Background(), 1, media.ID)
 	if err != nil || isFavorite {
 		t.Fatalf("media should no longer be favorite: %v, err=%v", isFavorite, err)
+	}
+}
+
+func TestPostgresMediaBatchAndFoldersByIDs(t *testing.T) {
+	repository := openPostgres(t, true)
+	root := filepath.Join(t.TempDir(), "photos")
+	library := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
+	var err error
+	library, err = repository.CreateLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subfolder, err := repository.UpsertFolder(context.Background(), domain.MediaFolder{
+		ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(root, "Camera"), RelativePath: "Camera",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := repository.UpsertMedia(context.Background(), domain.Media{
+		ID: domain.InvalidID, FolderID: subfolder.ID, Path: filepath.Join(root, "Camera", "one.jpg"), Name: "one.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := repository.UpsertMedia(context.Background(), domain.Media{
+		ID: domain.InvalidID, FolderID: subfolder.ID, Path: filepath.Join(root, "Camera", "two.jpg"), Name: "two.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := repository.MediaBatch(context.Background(), []int{first.ID, second.ID, first.ID, 999999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 2 {
+		t.Fatalf("MediaBatch = %d items, want 2 (missing and duplicate ids skipped)", len(batch))
+	}
+	byID := map[int]domain.Media{}
+	for _, item := range batch {
+		byID[item.ID] = item
+	}
+	if byID[first.ID].Name != "one.jpg" || byID[second.ID].RelativePath != "Camera/two.jpg" {
+		t.Fatalf("MediaBatch contents = %#v", batch)
+	}
+	if empty, err := repository.MediaBatch(context.Background(), nil); err != nil || len(empty) != 0 {
+		t.Fatalf("MediaBatch(nil) = %#v, err=%v", empty, err)
+	}
+	folders, err := repository.FoldersByIDs(context.Background(), []int{subfolder.ID, library.Roots[0].ID, subfolder.ID, 999999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folders) != 2 || folders[subfolder.ID].Path != filepath.Join(root, "Camera") || folders[library.Roots[0].ID].Name == "" {
+		t.Fatalf("FoldersByIDs = %#v", folders)
+	}
+	if empty, err := repository.FoldersByIDs(context.Background(), nil); err != nil || len(empty) != 0 {
+		t.Fatalf("FoldersByIDs(nil) = %#v, err=%v", empty, err)
 	}
 }
 

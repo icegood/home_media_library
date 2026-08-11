@@ -205,14 +205,10 @@ func namedValues(args []driver.NamedValue) []driver.Value {
 }
 
 func logQuery(label, query string, start time.Time, err error) {
-	truncated := query
-	if len(truncated) > 200 {
-		truncated = truncated[:200] + "…"
-	}
 	duration := time.Since(start).Round(time.Millisecond)
 	if err != nil {
-		applog.Printf(applog.Debug, "db %s: %s (%s): %v", label, truncated, duration, err)
+		applog.Printf(applog.Debug, "db %s: %s (%s): %v", label, query, duration, err)
 		return
 	}
-	applog.Printf(applog.Debug, "db %s: %s (%s)", label, truncated, duration)
+	applog.Printf(applog.Debug, "db %s: %s (%s)", label, query, duration)
 }

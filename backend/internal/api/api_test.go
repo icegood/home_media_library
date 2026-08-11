@@ -128,6 +128,39 @@ func TestLibraryAccessIsPerUser(t *testing.T) {
 	}
 }
 
+func TestFolderEntriesIncludeChain(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	bob := login(t, f.handler, "bob")
+	entriesURL := fmt.Sprintf("/api/v1/libraries/%d/folders/%d/entries", f.libraryID, f.folderID)
+
+	response := request(f.handler, http.MethodGet, entriesURL, alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("entries status = %d: %s", response.Code, response.Body)
+	}
+	var result domain.FolderEntries
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	library, err := f.store.Library(context.Background(), f.libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Chain) != 2 || result.Chain[0].ID != library.Roots[0].ID || result.Chain[1].ID != f.folderID {
+		t.Fatalf("chain = %#v, want [root %d] then %d", result.Chain, library.Roots[0].ID, f.folderID)
+	}
+	if result.Chain[1].RelativePath != "2025" {
+		t.Fatalf("chain leaf relative path = %q, want 2025", result.Chain[1].RelativePath)
+	}
+	if got := request(f.handler, http.MethodGet, entriesURL, bob, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("bob entries status = %d, want 403", got)
+	}
+	missing := fmt.Sprintf("/api/v1/libraries/%d/folders/999999/entries", f.libraryID)
+	if got := request(f.handler, http.MethodGet, missing, alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("missing folder entries status = %d, want 404", got)
+	}
+}
+
 func TestDeleteLibraryRemovesOrphanThumbnailFiles(t *testing.T) {
 	f := setup(t)
 	admin := login(t, f.handler, "admin")
@@ -232,6 +265,17 @@ func TestFavoritesArePerUserAndRespectReadAccess(t *testing.T) {
 	if response.Code != http.StatusNotFound || bytes.Contains(response.Body.Bytes(), []byte(fmt.Sprintf(`"id":%d`, f.photoID))) {
 		t.Fatalf("bob favorites should not include photo: status=%d body=%s", response.Code, response.Body)
 	}
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/favorite-views", f.photoID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("membership status = %d: %s", response.Code, response.Body)
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(fmt.Sprintf(`"id":%d`, view.ID))) || !bytes.Contains(response.Body.Bytes(), []byte(`"contains":true`)) {
+		t.Fatalf("membership should mark the view as containing the media: %s", response.Body)
+	}
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/favorite-views", f.photoID), bob, nil)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("bob membership status = %d: %s", response.Code, response.Body)
+	}
 }
 
 func TestOnlyAdminCanManageLibraries(t *testing.T) {
@@ -251,6 +295,20 @@ func TestOnlyAdminCanManageLibraries(t *testing.T) {
 	}
 	if got := request(f.handler, http.MethodDelete, fmt.Sprintf("/api/v1/admin/libraries/%d", f.libraryID), admin, nil).Code; got != http.StatusNoContent {
 		t.Fatalf("admin delete status = %d", got)
+	}
+}
+
+func TestCreateLibraryRejectsNestedRoots(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	payload := []byte(fmt.Sprintf(`{"name":"Nested","roots":[{"path":%q},{"path":%q}]}`,
+		f.mediaRoot, filepath.Join(f.mediaRoot, "archive")))
+	response := request(f.handler, http.MethodPost, "/api/v1/admin/libraries", admin, payload)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("nested roots status = %d: %s, want 409", response.Code, response.Body)
+	}
+	if !strings.Contains(response.Body.String(), "nested") {
+		t.Fatalf("expected nested-root message, got: %s", response.Body)
 	}
 }
 
@@ -660,7 +718,7 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 	if item, err = f.store.UpsertMedia(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	items, err := f.store.MediaForLibrary(context.Background(), f.libraryID)
+	items, err := f.store.MediaForLibrary(context.Background(), 0, f.libraryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +754,7 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 				t.Fatal(err)
 			}
 			if updated.ThumbnailError == "" {
-				allItems, _ := f.store.MediaForLibrary(context.Background(), f.libraryID)
+				allItems, _ := f.store.MediaForLibrary(context.Background(), 0, f.libraryID)
 				t.Fatalf("media not marked non-convertible: job=%#v media=%#v all=%#v", statuses[0], updated, allItems)
 			}
 			return
@@ -1104,4 +1162,38 @@ func TestAdminCanDownloadLogs(t *testing.T) {
 	if got := response.Body.String(); got != want {
 		t.Fatalf("downloaded content = %q, want %q", got, want)
 	}
+}
+
+func TestAdminCanVacuumDatabaseFromPanel(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	response := request(f.handler, http.MethodPost, "/api/v1/admin/db/vacuum", admin, nil)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("vacuum status = %d: %s", response.Code, response.Body)
+	}
+	var job api.JobStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.Category != "vacuum" || job.Status != "running" || job.Cancelable {
+		t.Fatalf("unexpected vacuum job: %#v", job)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		statuses := request(f.handler, http.MethodGet, "/api/v1/admin/jobs", admin, nil)
+		if statuses.Code != http.StatusOK {
+			t.Fatalf("jobs status = %d: %s", statuses.Code, statuses.Body)
+		}
+		var all []api.JobStatus
+		if err := json.Unmarshal(statuses.Body.Bytes(), &all); err != nil {
+			t.Fatal(err)
+		}
+		for _, candidate := range all {
+			if candidate.ID == job.ID && candidate.Status == "done" {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("vacuum job did not finish")
 }

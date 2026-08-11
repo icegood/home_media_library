@@ -6,16 +6,14 @@ USER_UID="${MEDIA_UID}"
 USER_GID="${MEDIA_GID}"
 DOCKER_SOCKET_GID="${DOCKER_GID}"
 
-# 2. Ensure all target runtime directories exist
+# 2. Ensure all target runtime directories exist (caddy state dirs are
+#    created by the gateway container itself, not by this container).
 mkdir -p \
   /runtime/app-data \
   /runtime/app-config/gateway \
   /runtime/app-config/logs \
   /runtime/thumbnails \
-  /runtime/caddy-data \
-  /runtime/caddy-config \
-  /data \
-  /gateway
+  /data
 
 # 3. Resolve or create Group by GID
 if ! getent group "$USER_GID" >/dev/null 2>&1; then
@@ -38,8 +36,14 @@ if [ -n "$DOCKER_SOCKET_GID" ]; then
     addgroup "$APP_USER" "$DOCKER_GROUP" >/dev/null 2>&1 || true
 fi
 
-# 6. Apply permissions & file mask
-chown -R "$USER_UID:$USER_GID" /runtime /data /gateway
+# 6. Apply permissions & file mask. Only the directories this container owns
+#    are chowned; caddy state dirs (/runtime/caddy-data, /runtime/caddy-config)
+#    are left to the gateway container.
+chown -R "$USER_UID:$USER_GID" \
+  /runtime/app-data \
+  /runtime/app-config \
+  /runtime/thumbnails \
+  /data
 find /runtime/thumbnails -type d -exec chmod 770 {} +
 find /runtime/thumbnails -type f -exec chmod 660 {} +
 

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { App } from "./App";
+import { App, resetFolderEntriesCache } from "./App";
 
 const mockApi = vi.hoisted(() => ({
   setupStatus: vi.fn(),
@@ -33,6 +33,7 @@ const mockApi = vi.hoisted(() => ({
   folderEntries: vi.fn(),
   libraryMedia: vi.fn(),
   favoriteViews: vi.fn(),
+  mediaFavoriteViews: vi.fn(),
   createFavoriteView: vi.fn(),
   updateFavoriteView: vi.fn(),
   deleteFavoriteView: vi.fn(),
@@ -52,6 +53,7 @@ const mockApi = vi.hoisted(() => ({
   resumeJob: vi.fn(),
   cancelJob: vi.fn(),
   cleanupOrphanThumbnails: vi.fn(),
+  vacuumDatabase: vi.fn(),
   shutdown: vi.fn(),
   importEmby: vi.fn(),
   filesystem: vi.fn(),
@@ -63,6 +65,7 @@ vi.mock("./api", () => ({ api: mockApi, MAX_VIDEO_THUMBNAILS: 100 }));
 
 beforeEach(() => {
   vi.resetAllMocks();
+  resetFolderEntriesCache();
   (window as any).matchMedia = undefined;
   localStorage.clear();
   delete document.documentElement.dataset.theme;
@@ -99,6 +102,7 @@ beforeEach(() => {
   mockApi.scanLibrary.mockResolvedValue({id:"job-1", category:"scan", status:"running"});
   mockApi.createThumbnails.mockResolvedValue({id:"job-3", category:"thumbnail-create", status:"running"});
   mockApi.cleanupOrphanThumbnails.mockResolvedValue({id:"job-4", category:"orphan-thumbnail-cleanup", status:"running"});
+  mockApi.vacuumDatabase.mockResolvedValue({id:"vacuum-1", category:"vacuum", status:"running"});
   mockApi.users.mockResolvedValue([{id:0, login:"admin", role:"admin"}, {id:2, login:"alice", role:"regular"}]);
   mockApi.createUser.mockResolvedValue({id:3, login:"bob", role:"regular"});
   mockApi.updateUser.mockResolvedValue({id:2, login:"alice", role:"regular"});
@@ -106,7 +110,7 @@ beforeEach(() => {
   mockApi.setLibraryAccess.mockResolvedValue(undefined);
   mockApi.entries.mockResolvedValue([]);
   mockApi.folder.mockResolvedValue({id:20, parentId:-1, relativePath:"Photos", name:"Photos"});
-  mockApi.folderEntries.mockResolvedValue([]);
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
   mockApi.libraryMedia.mockResolvedValue([]);
   mockApi.favoriteViews.mockResolvedValue([]);
   mockApi.createFavoriteView.mockResolvedValue({id:30, name:"Favorites", count:0});
@@ -641,6 +645,31 @@ test("library edit modal can grant regular user read access", async () => {
   await waitFor(() => expect(mockApi.setLibraryAccess).toHaveBeenCalledWith(1, 2, true));
 });
 
+test("admin can compact the database from the jobs section", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    render(<MemoryRouter initialEntries={["/admin?section=jobs"]}><App/></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", {name:"Compact database now"}));
+    await waitFor(() => expect(mockApi.vacuumDatabase).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Vacuum started in the background. Track it in the job list below.")).toBeInTheDocument();
+  } finally {
+    confirmSpy.mockRestore();
+  }
+});
+
+test("vacuum job appears under its category without controls and without a root path label", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.jobs.mockResolvedValue([{id:"vacuum-1", category:"vacuum", status:"running", cancelable:false, processed:1, total:1, libraryName:"Database maintenance"}]);
+  render(<MemoryRouter initialEntries={["/admin?section=jobs"]}><App/></MemoryRouter>);
+  expect(await screen.findByText("Vacuum")).toBeInTheDocument();
+  expect(screen.getAllByText("Database maintenance").length).toBeGreaterThan(0);
+  expect(screen.getByText("1/1")).toBeInTheDocument();
+  expect(screen.queryByText(/no root/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", {name:"Pause"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", {name:"Cancel"})).not.toBeInTheDocument();
+});
+
 test("admin can request docker or process server stop from top settings action", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -746,11 +775,11 @@ test("library browser renders folder entries", async () => {
   expect(await screen.findByRole("dialog", {name:"Refresh thumbnails Photos"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Missing only"}));
   await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:false}));
-  mockApi.folderEntries.mockResolvedValueOnce([
+  mockApi.folderEntries.mockResolvedValueOnce({entries:[
     {id:23, name:"Nested", relativePath:"Photos/Nested", type:"folder"},
     {id:101, name:"one.jpg", relativePath:"Photos/one.jpg", type:"media", media:{id:101, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
     {id:103, name:"two.mp4", relativePath:"Photos/two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:""}}
-  ]);
+  ], chain: []});
   fireEvent.click(screen.getAllByRole("button", {name:"Photos"})[0]);
   const dialog = await screen.findByRole("dialog", {name:"Folder statistics Photos"});
   expect(dialog).toBeInTheDocument();
@@ -770,25 +799,29 @@ test("favorite view renders media and star removes item from that view", async (
   expect(screen.queryByText("one.jpg")).not.toBeInTheDocument();
 });
 
-test("library media card asks which favorite view before adding", async () => {
+test("library media card shows favorite views with checkboxes and toggles membership", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
-  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:0}, {id:31, name:"Travel", count:0}]);
+  mockApi.mediaFavoriteViews.mockResolvedValue([
+    {id:30, name:"Best", count:2, contains:true},
+    {id:31, name:"Travel", count:0, contains:false}
+  ]);
   mockApi.entries.mockResolvedValue([{id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}]);
   render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByRole("button", {name:"Add one.jpg to favorite view"}));
-  expect(await screen.findByRole("dialog", {name:"Add one.jpg to favorite view"})).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText("Favorite view"), {target:{value:"31"}});
-  fireEvent.click(screen.getByRole("button", {name:"Add here"}));
+  fireEvent.click(await screen.findByRole("button", {name:"Manage favorite views for one.jpg"}));
+  expect(await screen.findByRole("dialog", {name:"Favorite views for one.jpg"})).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", {name:/Best/})).toBeChecked();
+  expect(screen.getByRole("checkbox", {name:/Travel/})).not.toBeChecked();
+  fireEvent.click(screen.getByRole("checkbox", {name:/Travel/}));
   await waitFor(() => expect(mockApi.favoriteMedia).toHaveBeenCalledWith(31, 100));
 });
 
 test("favorite add dialog can create a new favorite view first", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
-  mockApi.favoriteViews.mockResolvedValue([]);
+  mockApi.mediaFavoriteViews.mockResolvedValue([]);
   mockApi.createFavoriteView.mockResolvedValue({id:44, name:"New one", count:0});
   mockApi.entries.mockResolvedValue([{id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}]);
   render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByRole("button", {name:"Add one.jpg to favorite view"}));
+  fireEvent.click(await screen.findByRole("button", {name:"Manage favorite views for one.jpg"}));
   fireEvent.change(await screen.findByLabelText("New favorite view"), {target:{value:"New one"}});
   fireEvent.click(screen.getByRole("button", {name:"Create and add"}));
   await waitFor(() => expect(mockApi.createFavoriteView).toHaveBeenCalledWith("New one"));
@@ -859,9 +892,9 @@ test("long folder names are allowed to wrap inside the entry", async () => {
 
 test("media name and gps are saved only after explicit save", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
   const name = await screen.findByLabelText("Name");
@@ -878,9 +911,9 @@ test("media name and gps are saved only after explicit save", async () => {
 
 test("clearing gps in the info panel sends an empty string so the backend can NULL it", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""}}
+  ], chain: []});
   mockApi.updateMediaDetails.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
@@ -894,7 +927,7 @@ test("clearing gps in the info panel sends an empty string so the backend can NU
 
 test("media info shows full stored metadata as JSON under root nodes", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
-  mockApi.libraryMedia.mockResolvedValue([{id:100, folderId:20, relativePath:"DSC_5743.jpg", name:"DSC_5743.jpg", kind:"image", mimeType:"image/jpeg", size:10, gps:"", takenAt:"2010-08-23T17:54:08Z", metadata:{exif:{Make:"NIKON CORPORATION", Model:"NIKON D50", DateTimeOriginal:"2010:08:23 17:54:08", FNumber:3.5, ExposureTime:0.03333333333, ISO:"0 1600", FocalLength:18, HistoryParams:"darktable-noise", BlueTRC:"(Binary data)", FileModifyDate:"2026:07:29 06:12:16+00:00", MIMEType:"image/jpeg"}, ffprobe:{streams:[{codec_type:"video", codec_name:"mjpeg"}]}}}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[{id:100, name:"DSC_5743.jpg", relativePath:"DSC_5743.jpg", type:"media", media:{id:100, folderId:20, relativePath:"DSC_5743.jpg", name:"DSC_5743.jpg", kind:"image", mimeType:"image/jpeg", size:10, gps:"", takenAt:"2010-08-23T17:54:08Z", metadata:{exif:{Make:"NIKON CORPORATION", Model:"NIKON D50", DateTimeOriginal:"2010:08:23 17:54:08", FNumber:3.5, ExposureTime:0.03333333333, ISO:"0 1600", FocalLength:18, HistoryParams:"darktable-noise", BlueTRC:"(Binary data)", FileModifyDate:"2026:07:29 06:12:16+00:00", MIMEType:"image/jpeg"}, ffprobe:{streams:[{codec_type:"video", codec_name:"mjpeg"}]}}}}], chain: []});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Show info panel"));
   expect(await screen.findByText("Metadata")).toBeInTheDocument();
@@ -910,10 +943,10 @@ test("media info shows full stored metadata as JSON under root nodes", async () 
 
 test("media viewer uses side arrows and keyboard shortcuts for previous and next", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""},
-    {id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: [{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   expect(await screen.findByRole("link", {name:"Photos"})).toHaveAttribute("href", "/library/1/folder/20");
   expect(screen.getByRole("button", {name:"Show main menu"})).toHaveTextContent("vv");
@@ -941,13 +974,33 @@ test("media viewer uses side arrows and keyboard shortcuts for previous and next
   expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
 });
 
+test("media viewer does not refetch items already present in folder entries", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  await screen.findByRole("img", {name:"one.jpg"});
+  mockApi.media.mockClear();
+  fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+  await screen.findByRole("img", {name:"two.jpg"});
+  expect(mockApi.media).not.toHaveBeenCalled();
+});
+
+test("media viewer fetches an item that is not in folder entries", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=999"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.media).toHaveBeenCalledWith(999));
+  expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
+});
+
 test("media viewer up link goes to containing folder", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.folderEntries.mockResolvedValue([{id:100, name:"one.jpg", relativePath:"Trips/Day1/one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"Trips/Day1/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}]);
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"Trips/Day1/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""},
-    {id:101, folderId:20, relativePath:"Trips/Day1/two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[{id:100, name:"one.jpg", relativePath:"Trips/Day1/one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"Trips/Day1/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByRole("link", {name:"Photos"}));
   await waitFor(() => expect(mockApi.folderEntries).toHaveBeenCalledWith(1, 20));
@@ -955,8 +1008,10 @@ test("media viewer up link goes to containing folder", async () => {
 
 test("folder breadcrumb links go through the folder chain to the library root", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.folder.mockResolvedValueOnce({id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"});
-  mockApi.folder.mockResolvedValueOnce({id:20, parentId:-1, relativePath:"Photos", name:"Photos"});
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"},
+    {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}
+  ]});
   render(<MemoryRouter initialEntries={["/library/1/folder/21"]}><App/></MemoryRouter>);
   await waitFor(() => expect(screen.getByText("Nested")).toBeInTheDocument());
   expect(screen.getByRole("link", {name:"Photos"})).toHaveAttribute("href", "/library/1/folder/20");
@@ -966,7 +1021,7 @@ test("folder breadcrumb links go through the folder chain to the library root", 
 
 test("breadcrumb uses the real folder name even when relativePath is empty", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.folder.mockResolvedValueOnce({id:7, parentId:-1, relativePath:"", name:"Trip Photos"});
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[{id:7, parentId:-1, relativePath:"", name:"Trip Photos"}]});
   render(<MemoryRouter initialEntries={["/library/1/folder/7"]}><App/></MemoryRouter>);
   await waitFor(() => expect(screen.getByText("Trip Photos")).toBeInTheDocument());
   expect(screen.queryByText("Folder 7")).not.toBeInTheDocument();
@@ -978,7 +1033,7 @@ test("browser map button scopes to the library or current folder", async () => {
   const first = render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
   await waitFor(() => expect(first.getAllByRole("link", {name:"Map"}).some(link => link.getAttribute("href") === "/map?library=1")).toBe(true));
   first.unmount();
-  mockApi.folderEntries.mockResolvedValue([]);
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain: []});
   const second = render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
   await waitFor(() => expect(second.getAllByRole("link", {name:"Map"}).some(link => link.getAttribute("href") === "/map?library=1&folder=20")).toBe(true));
 });
@@ -993,10 +1048,10 @@ test("media viewer without item query redirects to library root", async () => {
 
 test("media info remounts metadata when navigating between neighboring files", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{exif:{FileName:"DSC06360.JPG"}}, gps:"", takenAt:""},
-    {id:101, folderId:20, relativePath:"DSC06361.JPG", name:"DSC06361.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{exif:{FileName:"DSC06361.JPG"}}, gps:"", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"DSC06360.JPG", relativePath:"DSC06360.JPG", type:"media", media:{id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{exif:{FileName:"DSC06360.JPG"}}, gps:"", takenAt:""}},
+    {id:101, name:"DSC06361.JPG", relativePath:"DSC06361.JPG", type:"media", media:{id:101, folderId:20, relativePath:"DSC06361.JPG", name:"DSC06361.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{exif:{FileName:"DSC06361.JPG"}}, gps:"", takenAt:""}}
+  ], chain: []});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Show info panel"));
   expect(await screen.findByRole("heading", {name:"DSC06360.JPG"})).toBeInTheDocument();
@@ -1015,9 +1070,9 @@ test("old admin settings route redirects to the admin panel", async () => {
 
 test("video player shows the real duration from ffprobe metadata for transcoded streams", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"Part1.avi", relativePath:"Part1.avi", type:"media", media:{id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}}
+  ], chain: []});
   mockApi.videoThumbnails.mockResolvedValue([
     {index:0, timeSeconds:1, url:"/thumb0.jpg"},
     {index:1, timeSeconds:404, url:"/thumb1.jpg"},
@@ -1033,9 +1088,9 @@ test("video player shows the real duration from ffprobe metadata for transcoded 
 
 test("seeking a transcoded video requests a server-side start offset instead of relying on browser seeking", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"Part1.avi", relativePath:"Part1.avi", type:"media", media:{id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}}
+  ], chain: []});
   mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   const slider = await screen.findByLabelText("Seek video");
@@ -1046,9 +1101,9 @@ test("seeking a transcoded video requests a server-side start offset instead of 
 
 test("transcoded video keeps showing the absolute position after a server-side seek", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryMedia.mockResolvedValue([
-    {id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}
-  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"Part1.avi", relativePath:"Part1.avi", type:"media", media:{id:100, folderId:20, relativePath:"Part1.avi", name:"Part1.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"4033.88"}}}, gps:"", takenAt:""}}
+  ], chain: []});
   mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   const slider = await screen.findByLabelText("Seek video");
@@ -1066,9 +1121,9 @@ test("transcode badge dropdown explains which parts are incompatible", async () 
   HTMLVideoElement.prototype.canPlayType = (type:string) => type.startsWith("video/webm") ? "maybe" : "";
   try {
     mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-    mockApi.libraryMedia.mockResolvedValue([
-      {id:100, folderId:20, relativePath:"clip.mkv", name:"clip.mkv", kind:"video", mimeType:"video/x-matroska", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"vp9"},{codec_type:"audio", codec_name:"mp3"}]}}, gps:"", takenAt:""}
-    ]);
+    mockApi.folderEntries.mockResolvedValue({entries:[
+      {id:100, name:"clip.mkv", relativePath:"clip.mkv", type:"media", media:{id:100, folderId:20, relativePath:"clip.mkv", name:"clip.mkv", kind:"video", mimeType:"video/x-matroska", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"vp9"},{codec_type:"audio", codec_name:"mp3"}]}}, gps:"", takenAt:""}}
+    ], chain: []});
     mockApi.videoThumbnails.mockResolvedValue([]);
     render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
     const badge = await screen.findByRole("button", {name:/Transcoded/});
@@ -1090,9 +1145,9 @@ test("video player shows no transcode badge when the video can be direct-played"
   HTMLVideoElement.prototype.canPlayType = () => "maybe";
   try {
     mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-    mockApi.libraryMedia.mockResolvedValue([
-      {id:100, folderId:20, relativePath:"clip.mp4", name:"clip.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"h264"},{codec_type:"audio", codec_name:"aac"}]}}, gps:"", takenAt:""}
-    ]);
+    mockApi.folderEntries.mockResolvedValue({entries:[
+      {id:100, name:"clip.mp4", relativePath:"clip.mp4", type:"media", media:{id:100, folderId:20, relativePath:"clip.mp4", name:"clip.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"h264"},{codec_type:"audio", codec_name:"aac"}]}}, gps:"", takenAt:""}}
+    ], chain: []});
     mockApi.videoThumbnails.mockResolvedValue([]);
     render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
     await screen.findByLabelText("Seek video");

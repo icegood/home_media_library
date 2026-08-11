@@ -28,6 +28,24 @@ var sqliteMigrations embed.FS
 
 const mediaColumns = `m.id, m.folder_id, m.path, m.name, m.mime_type, m.size, m.metadata_json, m.gps, m.taken_at, m.metadata_error, m.thumbnail_error`
 
+// favoriteExpr is a correlated EXISTS over the media alias m yielding whether
+// the row belongs to any favorite view owned by a user id bound as a query
+// parameter. It must be selected with a *bool scan destination.
+const favoriteExpr = `EXISTS(SELECT 1 FROM favorite_view_items fvi
+	JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
+	WHERE fv.user_id = ? AND fvi.media_id = m.id)`
+
+// folderEntriesSQL returns child folders and media rows of a folder in a single
+// result set, discriminated by a leading entry_kind column ('folder'/'media').
+// Column order: entry_kind, id, parent/folder_id, path, name, mime_type, size,
+// metadata_json, gps, taken_at, metadata_error, thumbnail_error, favorite.
+// Query arguments: parentID, userID, parentID.
+const folderEntriesSQL = `SELECT 'folder' AS entry_kind, f.id, f.parent_id, f.path, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0
+	FROM media_folders f WHERE f.parent_id = ?
+	UNION ALL
+	SELECT 'media' AS entry_kind, ` + mediaColumns + `, ` + favoriteExpr + `
+	FROM media m WHERE m.folder_id = ?`
+
 // SQLite is a full database-backed implementation of Store using modernc.org/sqlite.
 type SQLite struct {
 	db *sql.DB
@@ -146,17 +164,15 @@ func parentIDOrNull(id int) any {
 	return id
 }
 
-// scanMedia scans one media row. extra, when non-nil, is an additional trailing
-// scan destination (e.g. *int or *string) for a computed column such as the
-// library id or the on-the-fly relative path.
-func scanMedia(sc interface{ Scan(...any) error }, extra any) (domain.Media, error) {
+// scanMedia scans one media row. extras are additional trailing scan
+// destinations (e.g. *int or *string) for computed columns such as the
+// library id, the on-the-fly relative path, or the per-user favorite flag.
+func scanMedia(sc interface{ Scan(...any) error }, extras ...any) (domain.Media, error) {
 	var item domain.Media
 	var meta, mime string
 	args := []any{&item.ID, &item.FolderID, &item.Path, &item.Name, &mime, &item.Size,
 		&meta, &item.GPS, &item.TakenAt, &item.MetadataError, &item.ThumbnailError}
-	if extra != nil {
-		args = append(args, extra)
-	}
+	args = append(args, extras...)
 	if err := sc.Scan(args...); err != nil {
 		return item, err
 	}
@@ -169,6 +185,53 @@ func scanMedia(sc interface{ Scan(...any) error }, extra any) (domain.Media, err
 	return item, nil
 }
 
+// scanEntryRows scans rows of the merged folderEntriesSQL / folderEntriesPGSQL
+// query and builds folder and media entries. folderRel and mediaRel compute the
+// relative path for folder and media rows respectively.
+func scanEntryRows(rows *sql.Rows, folderRel func(domain.MediaFolder) string, mediaRel func(domain.Media) string) ([]domain.Entry, error) {
+	out := []domain.Entry{}
+	for rows.Next() {
+		var kind string
+		var id int
+		var secondID sql.NullInt64
+		var path, name, mime, metadataJSON, gps, takenAt, metadataError, thumbnailError sql.NullString
+		var size sql.NullInt64
+		var favorite bool
+		if err := rows.Scan(&kind, &id, &secondID, &path, &name, &mime, &size, &metadataJSON, &gps, &takenAt, &metadataError, &thumbnailError, &favorite); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if kind == "folder" {
+			folder := domain.MediaFolder{ID: id, Path: path.String}
+			if secondID.Valid {
+				folder.ParentID = int(secondID.Int64)
+			} else {
+				folder.ParentID = domain.InvalidID
+			}
+			copyFolder := folder
+			copyFolder.RelativePath = folderRel(folder)
+			out = append(out, domain.Entry{ID: folder.ID, Name: folderLabel(folder),
+				RelativePath: copyFolder.RelativePath, Type: "folder", Folder: &copyFolder,
+				FolderThumbnail: folder.ID})
+		} else {
+			item := domain.Media{ID: id, FolderID: int(secondID.Int64), Path: path.String, Name: name.String,
+				Kind: domain.KindFromMIME(mime.String), MIMEType: mime.String, Size: size.Int64,
+				GPS: gps.String, TakenAt: takenAt.String, MetadataError: metadataError.String,
+				ThumbnailError: thumbnailError.String, Favorite: favorite}
+			_ = json.Unmarshal([]byte(metadataJSON.String), &item.Metadata)
+			if item.Metadata == nil {
+				item.Metadata = map[string]any{}
+			}
+			copy := item
+			copy.RelativePath = mediaRel(item)
+			out = append(out, domain.Entry{ID: item.ID, Name: item.Name,
+				RelativePath: copy.RelativePath, Type: "media", Media: &copy})
+		}
+	}
+	rows.Close()
+	return out, nil
+}
+
 // relativePathExpr returns the on-the-fly relative path of a folder/media path
 // beneath a library root: the absolute path with the root prefix stripped.
 func relativePathExpr(pathExpr, rootPathExpr string) string {
@@ -176,14 +239,18 @@ func relativePathExpr(pathExpr, rootPathExpr string) string {
 }
 
 // rootPathForFolder returns the path of the nearest library-root ancestor of a
-// folder, or "" when the folder is not beneath any library root.
+// folder, or "" when the folder is not beneath any library root. Stored folder
+// paths are canonical absolute paths built from the resolved root, so the
+// nearest root is simply the library root whose path is the longest prefix of
+// the folder's own path; no ancestor walk is needed.
 func (s *SQLite) rootPathForFolder(ctx context.Context, folderID int) string {
-	query := `WITH RECURSIVE anc(id, parent_id, path) AS (
-		SELECT id, parent_id, path FROM media_folders WHERE id = ?
-		UNION ALL
-		SELECT f.id, f.parent_id, f.path FROM media_folders f JOIN anc ON f.id = anc.parent_id)
-	SELECT anc.path FROM anc JOIN library_roots lr ON lr.folder_id = anc.id
-	ORDER BY length(anc.path) DESC LIMIT 1`
+	query := `SELECT root.path
+		FROM library_roots lr
+		JOIN media_folders root ON root.id = lr.folder_id
+		JOIN media_folders folder ON folder.id = ?
+		WHERE root.path = folder.path
+		   OR substr(folder.path, 1, length(root.path) + 1) = root.path || '/'
+		ORDER BY length(root.path) DESC LIMIT 1`
 	var root string
 	if err := s.db.QueryRowContext(ctx, query, folderID).Scan(&root); err != nil {
 		return ""
@@ -202,6 +269,13 @@ func (s *SQLite) relativePath(ctx context.Context, folderID int, mediaPath strin
 
 func pathBelowRoot(root, value string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(value, root), "/")
+}
+
+// nestedPath reports whether child is a subfolder of parent. Paths are
+// canonical absolute paths with forward slashes, so the boundary check is a
+// simple prefix test.
+func nestedPath(child, parent string) bool {
+	return strings.HasPrefix(child, parent+"/")
 }
 
 // attachRelativePaths fills in the computed relative path for each media item,
@@ -736,41 +810,57 @@ func (s *SQLite) loadLibrary(ctx context.Context, id int) (domain.Library, error
 }
 
 func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) ([]domain.Library, error) {
-	var ids []int
 	var rows *sql.Rows
 	var err error
 	if admin {
-		rows, err = s.db.QueryContext(ctx, `SELECT id FROM libraries`)
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path
+			FROM libraries l
+			LEFT JOIN library_roots lr ON lr.library_id = l.id
+			LEFT JOIN media_folders f ON f.id = lr.folder_id
+			ORDER BY l.name, f.path`)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT DISTINCT l.id FROM libraries l
-			JOIN library_access la ON la.library_id = l.id WHERE la.user_id = ?`, userID)
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path
+			FROM libraries l
+			JOIN library_access la ON la.library_id = l.id AND la.user_id = ?
+			LEFT JOIN library_roots lr ON lr.library_id = l.id
+			LEFT JOIN media_folders f ON f.id = lr.folder_id
+			ORDER BY l.name, f.path`, userID)
 	}
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
+	libraries := map[int]*domain.Library{}
+	var order []int
 	for rows.Next() {
 		var id int
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+		var name string
+		var rootID sql.NullInt64
+		var rootPath sql.NullString
+		if err := rows.Scan(&id, &name, &rootID, &rootPath); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	out := make([]domain.Library, 0, len(ids))
-	for _, id := range ids {
-		library, err := s.loadLibrary(ctx, id)
-		if err != nil {
-			return nil, err
+		library, ok := libraries[id]
+		if !ok {
+			library = &domain.Library{ID: id, Name: name}
+			libraries[id] = library
+			order = append(order, id)
 		}
-		if !admin {
-			for index := range library.Roots {
-				library.Roots[index].Path = ""
+		if rootID.Valid && rootPath.Valid {
+			path := rootPath.String
+			if !admin {
+				path = ""
 			}
+			library.Roots = append(library.Roots, domain.LibraryRoot{ID: int(rootID.Int64), Path: path})
 		}
-		out = append(out, library)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Library, 0, len(order))
+	for _, id := range order {
+		out = append(out, *libraries[id])
+	}
 	return out, nil
 }
 
@@ -793,6 +883,90 @@ func (s *SQLite) Folder(ctx context.Context, id int) (domain.MediaFolder, error)
 	}
 	folder.Name = folderLabel(folder)
 	return folder, nil
+}
+
+// FolderChain returns the ancestor chain of folderID within libraryID, ordered
+// from the library root down to the folder itself. Library roots are always
+// top-level tree nodes, and roots added to the same library are validated not
+// to nest, so the folder belongs to this library exactly when the top of its
+// chain is one of the library's roots. The whole chain is resolved by a single
+// recursive walk; ErrNotFound is returned when the folder is not beneath any
+// root of this library.
+func (s *SQLite) FolderChain(ctx context.Context, libraryID, folderID int) ([]domain.MediaFolder, error) {
+	query := `WITH RECURSIVE chain(id, parent_id, path, depth) AS (
+			SELECT id, parent_id, path, 0 FROM media_folders WHERE id = ?
+			UNION ALL
+			SELECT f.id, f.parent_id, f.path, c.depth + 1
+			FROM media_folders f JOIN chain c ON f.id = c.parent_id)
+		SELECT c.id, c.parent_id, c.path
+		FROM chain c
+		WHERE (SELECT id FROM chain WHERE parent_id IS NULL)
+			IN (SELECT folder_id FROM library_roots WHERE library_id = ?)
+		ORDER BY c.depth DESC`
+	rows, err := s.db.QueryContext(ctx, query, folderID, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MediaFolder{}
+	for rows.Next() {
+		var folder domain.MediaFolder
+		var parentID sql.NullInt64
+		if err := rows.Scan(&folder.ID, &parentID, &folder.Path); err != nil {
+			return nil, err
+		}
+		if parentID.Valid {
+			folder.ParentID = int(parentID.Int64)
+		} else {
+			folder.ParentID = domain.InvalidID
+		}
+		out = append(out, folder)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	root := out[0].Path
+	for index := range out {
+		out[index].Name = folderLabel(out[index])
+		out[index].RelativePath = pathBelowRoot(root, out[index].Path)
+	}
+	return out, nil
+}
+
+func (s *SQLite) FoldersByIDs(ctx context.Context, ids []int) (map[int]domain.MediaFolder, error) {
+	out := map[int]domain.MediaFolder{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	unique := dedupeInts(ids)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, len(unique))
+	for index, id := range unique {
+		args[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, parent_id, path FROM media_folders WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var folder domain.MediaFolder
+		var parentID sql.NullInt64
+		if err := rows.Scan(&folder.ID, &parentID, &folder.Path); err != nil {
+			return nil, err
+		}
+		if parentID.Valid {
+			folder.ParentID = int(parentID.Int64)
+		} else {
+			folder.ParentID = domain.InvalidID
+		}
+		folder.Name = folderLabel(folder)
+		out[folder.ID] = folder
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLite) CanRead(ctx context.Context, userID, libraryID int, admin bool) (bool, error) {
@@ -828,7 +1002,7 @@ func (s *SQLite) CanReadMedia(ctx context.Context, userID, mediaID int, admin bo
 	return ok, err
 }
 
-func (s *SQLite) Entries(ctx context.Context, libraryID int, dir string) ([]domain.Entry, error) {
+func (s *SQLite) Entries(ctx context.Context, userID, libraryID int, dir string) ([]domain.Entry, error) {
 	dir = strings.Trim(path.Clean("/"+dir), "/")
 	library, err := s.loadLibrary(ctx, libraryID)
 	if err != nil {
@@ -840,8 +1014,7 @@ func (s *SQLite) Entries(ctx context.Context, libraryID int, dir string) ([]doma
 		mappingName := pathLabel(mapping.Path)
 		if showRootWrappers && dir == "" {
 			out = append(out, domain.Entry{ID: mapping.ID, Name: mappingName,
-				RelativePath: mappingName, Type: "folder",
-				FolderThumbnails: s.folderThumbnails(ctx, mapping.ID, 3), FolderThumbnail: mapping.ID})
+				RelativePath: mappingName, Type: "folder", FolderThumbnail: mapping.ID})
 			continue
 		}
 		folderDir := dir
@@ -860,50 +1033,17 @@ func (s *SQLite) Entries(ctx context.Context, libraryID int, dir string) ([]doma
 				continue
 			}
 		}
-		folderRows, err := s.db.QueryContext(ctx, `SELECT id, parent_id, path FROM media_folders WHERE parent_id = ?`, parentID)
+		rows, err := s.db.QueryContext(ctx, folderEntriesSQL, parentID, userID, parentID)
 		if err != nil {
 			return nil, err
 		}
-		folders := []domain.MediaFolder{}
-		for folderRows.Next() {
-			var folder domain.MediaFolder
-			var parentIDValue sql.NullInt64
-			if err := folderRows.Scan(&folder.ID, &parentIDValue, &folder.Path); err != nil {
-				folderRows.Close()
-				return nil, err
-			}
-			if parentIDValue.Valid {
-				folder.ParentID = int(parentIDValue.Int64)
-			} else {
-				folder.ParentID = domain.InvalidID
-			}
-			folders = append(folders, folder)
-		}
-		folderRows.Close()
-		for _, folder := range folders {
-			name := folderLabel(folder)
-			copyFolder := folder
-			copyFolder.RelativePath = path.Join(dir, name)
-			out = append(out, domain.Entry{ID: folder.ID, Name: name,
-				RelativePath: path.Join(dir, name), Type: "folder", Folder: &copyFolder,
-				FolderThumbnails: s.folderThumbnails(ctx, folder.ID, 3), FolderThumbnail: folder.ID})
-		}
-		mediaRows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.folder_id = ?`, parentID)
+		folderEntries, err := scanEntryRows(rows,
+			func(f domain.MediaFolder) string { return path.Join(dir, folderLabel(f)) },
+			func(m domain.Media) string { return path.Join(dir, m.Name) })
 		if err != nil {
 			return nil, err
 		}
-		for mediaRows.Next() {
-			item, err := scanMedia(mediaRows, nil)
-			if err != nil {
-				mediaRows.Close()
-				return nil, err
-			}
-			copy := item
-			copy.RelativePath = path.Join(dir, item.Name)
-			out = append(out, domain.Entry{ID: item.ID, Name: item.Name,
-				RelativePath: path.Join(dir, item.Name), Type: "media", Media: &copy})
-		}
-		mediaRows.Close()
+		out = append(out, folderEntries...)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type != out[j].Type {
@@ -914,87 +1054,29 @@ func (s *SQLite) Entries(ctx context.Context, libraryID int, dir string) ([]doma
 	return out, nil
 }
 
-func (s *SQLite) EntriesForFolder(ctx context.Context, libraryID, folderID int) ([]domain.Entry, error) {
-	library, err := s.loadLibrary(ctx, libraryID)
+func (s *SQLite) EntriesForFolder(ctx context.Context, userID, libraryID, folderID int) (domain.FolderEntries, error) {
+	chain, err := s.FolderChain(ctx, libraryID, folderID)
 	if err != nil {
-		return nil, err
+		return domain.FolderEntries{}, err
 	}
-	inLibrary := false
-	for _, root := range library.Roots {
-		if s.folderIsUnderRoot(ctx, root.ID, folderID) {
-			inLibrary = true
-			break
-		}
+	entries, err := s.entriesForParent(ctx, userID, folderID, chain[0].Path)
+	if err != nil {
+		return domain.FolderEntries{}, err
 	}
-	if !inLibrary {
-		return nil, ErrNotFound
-	}
-	return s.entriesForParent(ctx, folderID)
+	return domain.FolderEntries{Entries: entries, Chain: chain}, nil
 }
 
-func (s *SQLite) folderIsUnderRoot(ctx context.Context, rootID, folderID int) bool {
-	current := folderID
-	for current != domain.InvalidID {
-		if current == rootID {
-			return true
-		}
-		var parentID sql.NullInt64
-		err := s.db.QueryRowContext(ctx, `SELECT parent_id FROM media_folders WHERE id = ?`, current).Scan(&parentID)
-		if err != nil || !parentID.Valid {
-			return false
-		}
-		current = int(parentID.Int64)
-	}
-	return false
-}
-
-func (s *SQLite) entriesForParent(ctx context.Context, parentID int) ([]domain.Entry, error) {
-	out := []domain.Entry{}
-	root := s.rootPathForFolder(ctx, parentID)
-	folderRows, err := s.db.QueryContext(ctx, `SELECT id, parent_id, path FROM media_folders WHERE parent_id = ?`, parentID)
+func (s *SQLite) entriesForParent(ctx context.Context, userID, parentID int, root string) ([]domain.Entry, error) {
+	rows, err := s.db.QueryContext(ctx, folderEntriesSQL, parentID, userID, parentID)
 	if err != nil {
 		return nil, err
 	}
-	folders := []domain.MediaFolder{}
-	for folderRows.Next() {
-		var folder domain.MediaFolder
-		var parentIDValue sql.NullInt64
-		if err := folderRows.Scan(&folder.ID, &parentIDValue, &folder.Path); err != nil {
-			folderRows.Close()
-			return nil, err
-		}
-		if parentIDValue.Valid {
-			folder.ParentID = int(parentIDValue.Int64)
-		} else {
-			folder.ParentID = domain.InvalidID
-		}
-		folders = append(folders, folder)
-	}
-	folderRows.Close()
-	for _, folder := range folders {
-		name := folderLabel(folder)
-		copyFolder := folder
-		copyFolder.RelativePath = pathBelowRoot(root, folder.Path)
-		out = append(out, domain.Entry{ID: folder.ID, Name: name,
-			RelativePath: copyFolder.RelativePath, Type: "folder", Folder: &copyFolder,
-			FolderThumbnails: s.folderThumbnails(ctx, folder.ID, 3), FolderThumbnail: folder.ID})
-	}
-	mediaRows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.folder_id = ?`, parentID)
+	out, err := scanEntryRows(rows,
+		func(f domain.MediaFolder) string { return pathBelowRoot(root, f.Path) },
+		func(m domain.Media) string { return pathBelowRoot(root, m.Path) })
 	if err != nil {
 		return nil, err
 	}
-	for mediaRows.Next() {
-		item, err := scanMedia(mediaRows, nil)
-		if err != nil {
-			mediaRows.Close()
-			return nil, err
-		}
-		copy := item
-		copy.RelativePath = pathBelowRoot(root, item.Path)
-		out = append(out, domain.Entry{ID: item.ID, Name: item.Name,
-			RelativePath: copy.RelativePath, Type: "media", Media: &copy})
-	}
-	mediaRows.Close()
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type != out[j].Type {
 			return out[i].Type == "folder"
@@ -1072,7 +1154,7 @@ func (s *SQLite) FolderThumbnailRefs(ctx context.Context, folderID int, limit in
 
 func (s *SQLite) Media(ctx context.Context, id int) (domain.Media, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.id = ?`, id)
-	item, err := scanMedia(row, nil)
+	item, err := scanMedia(row)
 	if err != nil {
 		return item, translateErr(err)
 	}
@@ -1080,9 +1162,39 @@ func (s *SQLite) Media(ctx context.Context, id int) (domain.Media, error) {
 	return item, nil
 }
 
+func (s *SQLite) MediaBatch(ctx context.Context, ids []int) ([]domain.Media, error) {
+	if len(ids) == 0 {
+		return []domain.Media{}, nil
+	}
+	unique := dedupeInts(ids)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, len(unique))
+	for index, id := range unique {
+		args[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Media{}
+	for rows.Next() {
+		item, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	s.attachRelativePaths(ctx, out)
+	return out, nil
+}
+
 func (s *SQLite) MediaByPath(ctx context.Context, mediaPath string) (domain.Media, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.path = ?`, normalizePath(mediaPath))
-	item, err := scanMedia(row, nil)
+	item, err := scanMedia(row)
 	if err != nil {
 		return item, translateErr(err)
 	}
@@ -1101,6 +1213,26 @@ func (s *SQLite) FavoriteViews(ctx context.Context, userID int) ([]domain.Favori
 	for rows.Next() {
 		var view domain.FavoriteView
 		if err := rows.Scan(&view.ID, &view.Name, &view.Count); err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, rows.Err()
+}
+
+func (s *SQLite) FavoriteViewsForMedia(ctx context.Context, userID, mediaID int) ([]domain.FavoriteViewMembership, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT fv.id, fv.name, COUNT(fvi.media_id),
+		EXISTS(SELECT 1 FROM favorite_view_items fvi2 WHERE fvi2.favorite_view_id = fv.id AND fvi2.media_id = ?)
+		FROM favorite_views fv LEFT JOIN favorite_view_items fvi ON fvi.favorite_view_id = fv.id
+		WHERE fv.user_id = ? GROUP BY fv.id, fv.name ORDER BY fv.name`, mediaID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	views := []domain.FavoriteViewMembership{}
+	for rows.Next() {
+		var view domain.FavoriteViewMembership
+		if err := rows.Scan(&view.ID, &view.Name, &view.Count, &view.Contains); err != nil {
 			return nil, err
 		}
 		views = append(views, view)
@@ -1188,7 +1320,7 @@ func (s *SQLite) FavoriteMedia(ctx context.Context, userID, viewID int, admin bo
 	}
 	out := []domain.Media{}
 	for rows.Next() {
-		item, err := scanMedia(rows, nil)
+		item, err := scanMedia(rows)
 		if err != nil {
 			rows.Close()
 			return nil, err
@@ -1454,7 +1586,7 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 	return out, nil
 }
 
-func (s *SQLite) MediaForLibrary(ctx context.Context, libraryID int) ([]domain.Media, error) {
+func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error) {
 	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
 		return nil, err
 	}
@@ -1463,9 +1595,9 @@ func (s *SQLite) MediaForLibrary(ctx context.Context, libraryID int) ([]domain.M
 		SELECT lr.folder_id, f.path FROM library_roots lr JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = ?
 		UNION ALL
 		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-	SELECT ` + mediaColumns + `, ` + rel + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	SELECT ` + mediaColumns + `, ` + rel + `, ` + favoriteExpr + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
 	ORDER BY ` + rel
-	rows, err := s.db.QueryContext(ctx, query, libraryID)
+	rows, err := s.db.QueryContext(ctx, query, libraryID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1473,11 +1605,13 @@ func (s *SQLite) MediaForLibrary(ctx context.Context, libraryID int) ([]domain.M
 	out := []domain.Media{}
 	for rows.Next() {
 		var relativePath string
-		item, err := scanMedia(rows, &relativePath)
+		var favorite bool
+		item, err := scanMedia(rows, &relativePath, &favorite)
 		if err != nil {
 			return nil, err
 		}
 		item.RelativePath = relativePath
+		item.Favorite = favorite
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -1725,6 +1859,13 @@ func (s *SQLite) ensureRoots(ctx context.Context, roots []domain.LibraryRoot) ([
 		seen[folderID] = true
 		out = append(out, domain.LibraryRoot{ID: folderID, Path: root.Path})
 	}
+	for i := range out {
+		for j := range out {
+			if i != j && nestedPath(out[i].Path, out[j].Path) {
+				return nil, ErrNestedRoot
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -1919,7 +2060,7 @@ func (s *SQLite) mediaIDByPath(ctx context.Context, mediaPath string) (int, erro
 
 func (s *SQLite) mediaByPath(ctx context.Context, mediaPath string) (domain.Media, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.path = ?`, normalizePath(mediaPath))
-	return scanMedia(row, nil)
+	return scanMedia(row)
 }
 
 func (s *SQLite) Thumbnail(ctx context.Context, mediaID int, index int) (domain.Thumbnail, error) {

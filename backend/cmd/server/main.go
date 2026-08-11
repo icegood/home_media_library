@@ -15,7 +15,9 @@ import (
 
 	"media-library/backend/internal/api"
 	"media-library/backend/internal/applog"
+	"media-library/backend/internal/domain"
 	"media-library/backend/internal/gatewayconfig"
+	"media-library/backend/internal/jobpool"
 	"media-library/backend/internal/scanner"
 	"media-library/backend/internal/scheduler"
 	"media-library/backend/internal/store"
@@ -50,16 +52,22 @@ func main() {
 	default:
 		log.Fatalf("unknown DB_DRIVER %q (want sqlite or postgres)", driver)
 	}
+	poolCapacity := domain.DefaultServerSettings().WorkerPoolSize
 	if settings, err := repository.ServerSettings(context.Background()); err == nil {
 		if parsed, err := applog.ParseLevel(settings.LogLevel); err == nil {
 			applog.SetLevel(parsed)
 		}
+		if settings.WorkerPoolSize >= 1 {
+			poolCapacity = settings.WorkerPoolSize
+		}
 	}
+	workerPool := jobpool.New(64, poolCapacity)
+	defer workerPool.Close()
 	logPath := env("APP_LOG_FILE", "/runtime/app-config/logs/app.log")
 	if err := applog.ConfigureFile(logPath); err != nil {
 		log.Fatalf("configure app log: %v", err)
 	}
-	gatewayPath := env("GATEWAY_CONFIG_FILE", "/gateway/Caddyfile")
+	gatewayPath := env("GATEWAY_CONFIG_FILE", "/runtime/app-config/gateway/Caddyfile")
 	if err := gatewayconfig.Write(gatewayPath, gatewayconfig.Load(context.Background(), repository)); err != nil {
 		log.Fatalf("write gateway config: %v", err)
 	}
@@ -77,6 +85,7 @@ func main() {
 		LogFile:           logPath,
 		Shutdown:          stop,
 		ContainerStop:     dockerStopSelf,
+		WorkerPool:        workerPool,
 	}
 	handler := apiInstance.Handler()
 

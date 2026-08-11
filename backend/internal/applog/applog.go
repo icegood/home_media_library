@@ -1,6 +1,7 @@
 package applog
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -66,6 +67,26 @@ func ConfigureFile(path string) error {
 	logFile = file
 	log.SetOutput(io.MultiWriter(os.Stderr, file))
 	return nil
+}
+
+// ErrNotConfigured is returned by ClearFile when no file logger is configured
+// in this process, so there is no handle to clear.
+var ErrNotConfigured = errors.New("applog: no log file configured")
+
+// ClearFile truncates the application log file to zero length through the
+// writer's own open handle and resets its offset, so the next log line
+// appends at the start of a clean file. The handle stays open for appending.
+func ClearFile() error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	if logFile == nil {
+		return ErrNotConfigured
+	}
+	if err := logFile.Truncate(0); err != nil {
+		return err
+	}
+	_, err := logFile.Seek(0, io.SeekStart)
+	return err
 }
 
 func LevelString(level Level) string {

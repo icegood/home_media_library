@@ -29,6 +29,7 @@ import (
 	"media-library/backend/internal/domain"
 	"media-library/backend/internal/embyimport"
 	"media-library/backend/internal/gatewayconfig"
+	"media-library/backend/internal/jobpool"
 	"media-library/backend/internal/scanner"
 	"media-library/backend/internal/scheduler"
 	"media-library/backend/internal/store"
@@ -47,11 +48,21 @@ type API struct {
 	LogFile           string
 	Shutdown          func()
 	ContainerStop     func(context.Context) error
+	WorkerPool        *jobpool.Pool
 	jobMu             sync.Mutex
 	jobs              map[string]*JobStatus
 	jobCancels        map[string]context.CancelFunc
 	jobContexts       map[string]context.Context
+	folderRefsMu      sync.Mutex
+	folderRefs        map[int]folderRefsEntry
 }
+
+type folderRefsEntry struct {
+	refs []domain.ThumbnailRef
+	at   time.Time
+}
+
+const folderRefsCacheTTL = time.Minute
 
 type JobStatus = domain.BackgroundJob
 
@@ -97,6 +108,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/favorite-views/{viewId}", a.auth(http.HandlerFunc(a.deleteFavoriteView)))
 	mux.Handle("GET /api/v1/favorite-views/{viewId}/media", a.auth(http.HandlerFunc(a.favoriteViewMedia)))
 	mux.Handle("GET /api/v1/media/{id}", a.auth(http.HandlerFunc(a.media)))
+	mux.Handle("GET /api/v1/media/{id}/favorite-views", a.auth(http.HandlerFunc(a.mediaFavoriteViews)))
 	mux.Handle("PUT /api/v1/favorite-views/{viewId}/media/{id}", a.auth(http.HandlerFunc(a.favoriteMedia)))
 	mux.Handle("DELETE /api/v1/favorite-views/{viewId}/media/{id}", a.auth(http.HandlerFunc(a.unfavoriteMedia)))
 	mux.Handle("GET /api/v1/media/{id}/content", a.auth(http.HandlerFunc(a.content)))
@@ -125,6 +137,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/jobs/{id}/resume", a.auth(a.admin(http.HandlerFunc(a.resumeJob))))
 	mux.Handle("POST /api/v1/admin/jobs/{id}/cancel", a.auth(a.admin(http.HandlerFunc(a.cancelJob))))
 	mux.Handle("POST /api/v1/admin/thumbnails/orphans", a.auth(a.admin(http.HandlerFunc(a.cleanupOrphanThumbnails))))
+	mux.Handle("POST /api/v1/admin/db/vacuum", a.auth(a.admin(http.HandlerFunc(a.vacuumDB))))
 	mux.Handle("POST /api/v1/admin/shutdown", a.auth(a.admin(http.HandlerFunc(a.shutdown))))
 	mux.Handle("GET /api/v1/admin/users", a.auth(a.admin(http.HandlerFunc(a.users))))
 	mux.Handle("POST /api/v1/admin/users", a.auth(a.admin(http.HandlerFunc(a.createUser))))
@@ -531,16 +544,10 @@ func (a *API) entries(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRead(w, r, p, id) {
 		return
 	}
-	items, err := a.Store.Entries(r.Context(), id, "")
+	items, err := a.Store.Entries(r.Context(), p.ID, id, "")
 	if err != nil {
 		problem(w, 500, err.Error())
 		return
-	}
-	for i := range items {
-		if items[i].Media != nil {
-			item := a.withFavorite(r.Context(), p, *items[i].Media)
-			items[i].Media = &item
-		}
 	}
 	writeJSON(w, 200, items)
 }
@@ -558,7 +565,7 @@ func (a *API) folderEntries(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRead(w, r, p, id) {
 		return
 	}
-	items, err := a.Store.EntriesForFolder(r.Context(), id, folderID)
+	result, err := a.Store.EntriesForFolder(r.Context(), p.ID, id, folderID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			problem(w, http.StatusNotFound, "folder not found in library")
@@ -567,13 +574,7 @@ func (a *API) folderEntries(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for i := range items {
-		if items[i].Media != nil {
-			item := a.withFavorite(r.Context(), p, *items[i].Media)
-			items[i].Media = &item
-		}
-	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *API) folder(w http.ResponseWriter, r *http.Request) {
@@ -589,7 +590,7 @@ func (a *API) folder(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRead(w, r, p, id) {
 		return
 	}
-	if _, err := a.Store.EntriesForFolder(r.Context(), id, folderID); err != nil {
+	if _, err := a.Store.FolderChain(r.Context(), id, folderID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			problem(w, http.StatusNotFound, "folder not found in library")
 			return
@@ -614,13 +615,10 @@ func (a *API) libraryMedia(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRead(w, r, p, id) {
 		return
 	}
-	items, err := a.Store.MediaForLibrary(r.Context(), id)
+	items, err := a.Store.MediaForLibrary(r.Context(), p.ID, id)
 	if err != nil {
 		problem(w, 500, err.Error())
 		return
-	}
-	for i := range items {
-		items[i] = a.withFavorite(r.Context(), p, items[i])
 	}
 	writeJSON(w, 200, items)
 }
@@ -646,6 +644,23 @@ func (a *API) media(w http.ResponseWriter, r *http.Request) {
 func (a *API) favoriteViews(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	views, err := a.Store.FavoriteViews(r.Context(), p.ID)
+	if err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, views)
+}
+
+func (a *API) mediaFavoriteViews(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	mediaID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if !a.requireMediaRead(w, r, p, mediaID) {
+		return
+	}
+	views, err := a.Store.FavoriteViewsForMedia(r.Context(), p.ID, mediaID)
 	if err != nil {
 		problem(w, 500, err.Error())
 		return
@@ -995,12 +1010,6 @@ func (a *API) thumbnail(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "thumbnail not configured for this video")
 		return
 	}
-	if err := a.Store.UpsertThumbnail(r.Context(), domain.Thumbnail{
-		MediaID: item.ID, Index: index, Path: target, MIMEType: "image/jpeg",
-	}); err != nil {
-		problem(w, http.StatusInternalServerError, "could not save thumbnail record")
-		return
-	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeFile(w, r, target)
@@ -1052,31 +1061,35 @@ func parseIndexedThumbnailName(name string) (int, int, bool) {
 
 func (a *API) cleanupThumbnailRefs(ctx context.Context, refs domain.ThumbnailCleanupRefs) {
 	mediaDirs := map[string]bool{}
-	for _, ref := range refs.Media {
-		if _, err := a.Store.Media(ctx, ref.MediaID); err == nil {
-			continue
-		} else if !errors.Is(err, store.ErrNotFound) {
-			applog.Printf(applog.Warn, "could not verify thumbnail media owner %d: %s", ref.MediaID, err)
-			continue
+	existingMedia, err := a.mediaForRefs(ctx, refs.Media)
+	if err != nil {
+		applog.Printf(applog.Warn, "could not verify thumbnail media owners, keeping thumbnails: %s", err)
+	} else {
+		for _, ref := range refs.Media {
+			if _, ok := existingMedia[ref.MediaID]; ok {
+				continue
+			}
+			target := a.thumbnailPath(ref.MediaID, ref.Index)
+			if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+				applog.Printf(applog.Warn, "could not delete thumbnail file %s: %s", target, err)
+				continue
+			}
+			mediaDirs[filepath.Dir(target)] = true
+			applog.Printf(applog.Info, "deleted thumbnail file %s", target)
 		}
-		target := a.thumbnailPath(ref.MediaID, ref.Index)
-		if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
-			applog.Printf(applog.Warn, "could not delete thumbnail file %s: %s", target, err)
-			continue
-		}
-		mediaDirs[filepath.Dir(target)] = true
-		applog.Printf(applog.Info, "deleted thumbnail file %s", target)
 	}
 	for dir := range mediaDirs {
 		if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTEMPTY) {
 			applog.Printf(applog.Warn, "could not delete thumbnail folder %s: %s", dir, err)
 		}
 	}
+	existingFolders, err := a.Store.FoldersByIDs(ctx, refs.Folders)
+	if err != nil {
+		applog.Printf(applog.Warn, "could not verify folder thumbnail owners, keeping thumbnails: %s", err)
+		return
+	}
 	for _, folderID := range refs.Folders {
-		if _, err := a.Store.Folder(ctx, folderID); err == nil {
-			continue
-		} else if !errors.Is(err, store.ErrNotFound) {
-			applog.Printf(applog.Warn, "could not verify folder thumbnail owner %d: %s", folderID, err)
+		if _, ok := existingFolders[folderID]; ok {
 			continue
 		}
 		target := a.folderThumbnailPath(folderID)
@@ -1267,14 +1280,7 @@ func (a *API) folderThumbnail(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "folder not found")
 		return
 	}
-	provider, ok := a.Store.(interface {
-		FolderThumbnailRefs(context.Context, int, int) ([]domain.ThumbnailRef, error)
-	})
-	if !ok {
-		problem(w, http.StatusNotFound, "folder thumbnail unavailable")
-		return
-	}
-	refs, _ := provider.FolderThumbnailRefs(r.Context(), folder.ID, 3)
+	refs := a.folderThumbnailRefs(r.Context(), folder.ID, 3)
 	if len(refs) == 0 {
 		problem(w, http.StatusNotFound, "folder thumbnail unavailable")
 		return
@@ -1296,6 +1302,33 @@ func (a *API) folderThumbnail(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, target)
 }
 
+func (a *API) folderThumbnailRefs(ctx context.Context, folderID, limit int) []domain.ThumbnailRef {
+	provider, ok := a.Store.(interface {
+		FolderThumbnailRefs(context.Context, int, int) ([]domain.ThumbnailRef, error)
+	})
+	if !ok {
+		return nil
+	}
+	a.folderRefsMu.Lock()
+	if entry, hit := a.folderRefs[folderID]; hit && time.Since(entry.at) < folderRefsCacheTTL {
+		refs := entry.refs
+		a.folderRefsMu.Unlock()
+		return refs
+	}
+	a.folderRefsMu.Unlock()
+	refs, err := provider.FolderThumbnailRefs(ctx, folderID, limit)
+	if err != nil {
+		return nil
+	}
+	a.folderRefsMu.Lock()
+	if a.folderRefs == nil {
+		a.folderRefs = map[int]folderRefsEntry{}
+	}
+	a.folderRefs[folderID] = folderRefsEntry{refs: refs, at: time.Now()}
+	a.folderRefsMu.Unlock()
+	return refs
+}
+
 func (a *API) generateFolderThumbnail(ctx context.Context, folderID int, refs []domain.ThumbnailRef, target string) error {
 	width, height := a.thumbnailDimensions(ctx)
 	part := width / 3
@@ -1307,11 +1340,19 @@ func (a *API) generateFolderThumbnail(ctx context.Context, folderID int, refs []
 		return err
 	}
 	_ = os.Chmod(targetDir, 0o770)
+	items, err := a.mediaForRefs(ctx, refs)
+	if err != nil {
+		return err
+	}
 	inputs := []string{}
 	filters := []string{}
 	for index := 0; index < 3; index++ {
 		ref := refs[index%len(refs)]
-		sourceThumb, err := a.ensureThumbnail(ctx, ref)
+		item, ok := items[ref.MediaID]
+		if !ok {
+			return fmt.Errorf("source media %d for folder thumbnail not found", ref.MediaID)
+		}
+		sourceThumb, err := a.ensureThumbnailForItem(ctx, item, ref.Index)
 		if err != nil {
 			return err
 		}
@@ -1342,19 +1383,28 @@ func (a *API) generateFolderThumbnail(ctx context.Context, folderID int, refs []
 	return nil
 }
 
-func (a *API) ensureThumbnail(ctx context.Context, ref domain.ThumbnailRef) (string, error) {
-	target := a.thumbnailPath(ref.MediaID, ref.Index)
-	if usableThumbnail(target) {
-		_ = a.Store.UpsertThumbnail(ctx, domain.Thumbnail{
-			MediaID: ref.MediaID, Index: ref.Index, Path: target, MIMEType: "image/jpeg",
-		})
-		return target, nil
+func (a *API) mediaForRefs(ctx context.Context, refs []domain.ThumbnailRef) (map[int]domain.Media, error) {
+	if len(refs) == 0 {
+		return map[int]domain.Media{}, nil
 	}
-	item, err := a.Store.Media(ctx, ref.MediaID)
+	ids := make([]int, 0, len(refs))
+	seen := make(map[int]bool, len(refs))
+	for _, ref := range refs {
+		if seen[ref.MediaID] {
+			continue
+		}
+		seen[ref.MediaID] = true
+		ids = append(ids, ref.MediaID)
+	}
+	items, err := a.Store.MediaBatch(ctx, ids)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return a.ensureThumbnailForItem(ctx, item, ref.Index)
+	out := make(map[int]domain.Media, len(items))
+	for _, item := range items {
+		out[item.ID] = item
+	}
+	return out, nil
 }
 
 func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, index int) (string, error) {
@@ -1453,7 +1503,7 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusBadRequest, "folder requires library")
 			return
 		}
-		if _, err := a.Store.EntriesForFolder(r.Context(), libraryID, fid); err != nil {
+		if _, err := a.Store.EntriesForFolder(r.Context(), p.ID, libraryID, fid); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				problem(w, http.StatusNotFound, "folder not found in library")
 				return
@@ -1657,8 +1707,13 @@ func (a *API) runScanJob(job *JobStatus, library domain.Library) error {
 	}
 	a.updateJob(job.ID, func(job *JobStatus) { job.Total = total })
 	scanner := a.Scanner.WithProgress(func(path string, media bool) error {
-		if err := a.waitJobRunnable(context.Background(), job.ID); err != nil {
-			return err
+		// The walk (media=false) blocks while the job is paused. Media imports
+		// run on the shared worker pool, which parks paused jobs' work, so they
+		// must not block here.
+		if !media {
+			if err := a.waitJobRunnable(context.Background(), job.ID); err != nil {
+				return err
+			}
 		}
 		a.updateJob(job.ID, func(job *JobStatus) {
 			job.CurrentPath = path
@@ -1667,8 +1722,9 @@ func (a *API) runScanJob(job *JobStatus, library domain.Library) error {
 			}
 		})
 		return nil
+	}).WithPool(job.ID, a.WorkerPool, func() bool {
+		return a.jobPaused(job.ID)
 	})
-	scanner.Workers = a.serverSettings(ctx).WorkerPoolSize
 	if err := scanner.Scan(ctx, library); err != nil {
 		return err
 	}
@@ -1800,7 +1856,7 @@ func (a *API) runOrphanThumbnailCleanupJob(job *JobStatus) error {
 
 func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate bool) error {
 	ctx := a.jobContext(context.Background(), job.ID)
-	items, err := a.Store.MediaForLibrary(ctx, library.ID)
+	items, err := a.Store.MediaForLibrary(ctx, 0, library.ID)
 	if err != nil {
 		return err
 	}
@@ -1836,29 +1892,11 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 			tasks = append(tasks, thumbnailTask{item: item, index: index})
 		}
 	}
-	workers := a.serverSettings(ctx).WorkerPoolSize
-	if workers < 1 {
-		workers = 1
-	}
-	if workers > len(tasks) && len(tasks) > 0 {
-		workers = len(tasks)
-	}
-	if workers == 0 {
-		return nil
-	}
-	taskCh := make(chan thumbnailTask, len(tasks))
-	for _, task := range tasks {
-		taskCh <- task
-	}
-	close(taskCh)
-	errCh := make(chan error, workers)
-	for worker := 0; worker < workers; worker++ {
-		go func() {
-			for task := range taskCh {
-				if err := a.waitJobRunnable(ctx, job.ID); err != nil {
-					errCh <- err
-					return
-				}
+	if len(tasks) > 0 {
+		work := make([]jobpool.Work, len(tasks))
+		for i, task := range tasks {
+			task := task
+			work[i] = func(ctx context.Context) error {
 				item := task.item
 				index := task.index
 				a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = item.RelativePath })
@@ -1867,7 +1905,7 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 						job.Error = fmt.Sprintf("%s: skipped thumbnail because previous error is not cleared: %s", item.RelativePath, item.ThumbnailError)
 						job.Processed++
 					})
-					continue
+					return nil
 				}
 				if recreate {
 					_ = os.Remove(a.thumbnailPath(item.ID, index))
@@ -1879,15 +1917,13 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 						job.Error = fmt.Sprintf("%s: %v", item.RelativePath, err)
 						job.Processed++
 					})
-					continue
+					return nil
 				}
 				a.updateJob(job.ID, func(job *JobStatus) { job.Processed++ })
+				return nil
 			}
-			errCh <- nil
-		}()
-	}
-	for range workers {
-		if err := <-errCh; err != nil {
+		}
+		if err := a.runWork(job.ID, ctx, work); err != nil {
 			return err
 		}
 	}
@@ -2076,6 +2112,30 @@ func (a *API) waitJobRunnable(ctx context.Context, id string) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+// jobPaused reports the job's current pause state.
+func (a *API) jobPaused(id string) bool {
+	a.jobMu.Lock()
+	defer a.jobMu.Unlock()
+	job := a.jobs[id]
+	return job != nil && job.Paused
+}
+
+// runWork runs work on the shared worker pool, or sequentially when no pool is
+// configured (e.g. in tests). It returns when all work finished, the first
+// work item failed, or the job's context was cancelled.
+func (a *API) runWork(jobID string, ctx context.Context, work []jobpool.Work) error {
+	if a.WorkerPool == nil {
+		for _, fn := range work {
+			if err := fn(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	a.WorkerPool.Submit(jobID, ctx, a.jobPaused(jobID), work)
+	return a.WorkerPool.Wait(ctx, jobID)
 }
 
 func (a *API) updateJob(id string, update func(*JobStatus)) {
@@ -2267,26 +2327,42 @@ func (a *API) StartThumbnails(library domain.Library) error {
 }
 
 func (a *API) StartVacuum() error {
-	return a.startVacuumJob()
+	if _, ok := a.startVacuumJob(); !ok {
+		applog.Printf(applog.Warn, "vacuum is not supported by the configured database store; skipping scheduled vacuum")
+	}
+	return nil
 }
 
-func (a *API) startVacuumJob() error {
+// vacuumDB starts a database vacuum in the background, like the scheduled
+// vacuum task, but on demand from the admin panel.
+func (a *API) vacuumDB(w http.ResponseWriter, r *http.Request) {
+	job, ok := a.startVacuumJob()
+	if !ok {
+		problem(w, http.StatusBadRequest, "vacuum is not supported by the configured database store")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+// startVacuumJob starts a database vacuum background job. The second return
+// value is false when the configured store does not support vacuuming.
+func (a *API) startVacuumJob() (JobStatus, bool) {
 	provider, ok := a.Store.(interface {
 		Vacuum(context.Context) error
 	})
 	if !ok {
-		applog.Printf(applog.Warn, "vacuum is not supported by the configured database store; skipping scheduled vacuum")
-		return nil
+		return JobStatus{}, false
 	}
-	a.startJob(a.newJob("vacuum", domain.Library{ID: 0, Name: "Database maintenance"}, nil), func(job *JobStatus) error {
+	job := a.newJob("vacuum", domain.Library{ID: 0, Name: "Database maintenance"}, nil)
+	job.Cancelable = false
+	return a.startJob(job, func(job *JobStatus) error {
 		job.Total = 1
 		if err := provider.Vacuum(context.Background()); err != nil {
 			return err
 		}
 		job.Processed = 1
 		return nil
-	})
-	return nil
+	}), true
 }
 
 func (a *API) logs(w http.ResponseWriter, r *http.Request) {
@@ -2334,19 +2410,26 @@ func (a *API) clearLogs(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(path) == "" {
 		path = "/runtime/app-config/logs/app.log"
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		problem(w, http.StatusInternalServerError, "could not open log file")
-		return
-	}
-	if err := file.Truncate(0); err != nil {
-		_ = file.Close()
+	err := applog.ClearFile()
+	if err != nil && !errors.Is(err, applog.ErrNotConfigured) {
 		problem(w, http.StatusInternalServerError, "could not clear log file")
 		return
 	}
-	if err := file.Close(); err != nil {
-		problem(w, http.StatusInternalServerError, "could not close log file")
-		return
+	if errors.Is(err, applog.ErrNotConfigured) {
+		file, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
+		if openErr != nil {
+			problem(w, http.StatusInternalServerError, "could not open log file")
+			return
+		}
+		if err := file.Truncate(0); err != nil {
+			_ = file.Close()
+			problem(w, http.StatusInternalServerError, "could not clear log file")
+			return
+		}
+		if err := file.Close(); err != nil {
+			problem(w, http.StatusInternalServerError, "could not close log file")
+			return
+		}
 	}
 	applog.Printf(applog.Info, "application logs cleared by admin user %d", current(r).ID)
 	writeJSON(w, http.StatusOK, map[string]any{"path": path})
@@ -2445,6 +2528,7 @@ func (a *API) pauseJob(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusConflict, "job cannot be paused")
 		return
 	}
+	a.WorkerPool.SetJobPaused(job.ID, true)
 	writeJSON(w, http.StatusOK, job)
 }
 
@@ -2465,6 +2549,7 @@ func (a *API) resumeJob(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusConflict, "job cannot be resumed")
 		return
 	}
+	a.WorkerPool.SetJobPaused(job.ID, false)
 	writeJSON(w, http.StatusOK, job)
 }
 
@@ -2491,6 +2576,7 @@ func (a *API) cancelJob(w http.ResponseWriter, r *http.Request) {
 	if cancel != nil {
 		cancel()
 	}
+	a.WorkerPool.CancelJob(id)
 	writeJSON(w, http.StatusOK, job)
 }
 
@@ -2782,6 +2868,9 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, "could not save settings")
 		return
 	}
+	if a.WorkerPool != nil {
+		a.WorkerPool.SetCapacity(input.WorkerPoolSize)
+	}
 	if a.GatewayConfigPath != "" {
 		if err := gatewayconfig.Write(a.GatewayConfigPath, transport); err != nil {
 			problem(w, http.StatusInternalServerError, "settings saved but gateway could not be reconfigured")
@@ -2969,17 +3058,20 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
-// logRequests writes one debug line per request so the log file shows live
-// activity instead of appearing dead during normal use.
+// logRequests writes one debug line per API call so the log file shows live
+// activity instead of appearing dead during normal use. The line is emitted via
+// defer so every call is logged, including handlers that fail or panic.
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: w}
 		start := time.Now()
+		defer func() {
+			status := recorder.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			applog.Printf(applog.Debug, "http %s %s -> %d (%s)", r.Method, r.URL.RequestURI(), status, time.Since(start).Round(time.Millisecond))
+		}()
 		next.ServeHTTP(recorder, r)
-		status := recorder.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		applog.Printf(applog.Debug, "http %s %s -> %d (%s)", r.Method, r.URL.RequestURI(), status, time.Since(start).Round(time.Millisecond))
 	})
 }

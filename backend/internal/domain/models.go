@@ -174,6 +174,13 @@ type FavoriteView struct {
 	Count int    `json:"count"`
 }
 
+// FavoriteViewMembership is a favorite view annotated with whether a specific
+// media item belongs to it.
+type FavoriteViewMembership struct {
+	FavoriteView
+	Contains bool `json:"contains"`
+}
+
 type LibraryStats struct {
 	Folders int `json:"folders"`
 	Files   int `json:"files"`
@@ -264,6 +271,11 @@ type Entry struct {
 	Folder           *MediaFolder   `json:"folder,omitempty"`
 	FolderThumbnails []ThumbnailRef `json:"folderThumbnails,omitempty"`
 	FolderThumbnail  int            `json:"folderThumbnail,omitempty"`
+}
+
+type FolderEntries struct {
+	Entries []Entry       `json:"entries"`
+	Chain   []MediaFolder `json:"chain"`
 }
 
 type GPSPatch struct {

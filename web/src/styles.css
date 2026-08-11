@@ -242,6 +242,11 @@ button.danger { color:#b42318; border-color:#f3b7b0; background:#fff3f0; }
 .favorite-button.active { background:#f59e0b; color:#111827; border-color:#fde68a; }
 .list-view .favorite-button { top:50%; transform:translateY(-50%); }
 .favorite-picker { max-width:520px; }
+.favorite-picker-list { display:grid; gap:6px; margin-top:14px; max-height:320px; overflow:auto; }
+.favorite-picker-item { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; padding:9px 12px; border:1px solid #1e293b; border-radius:10px; background:#0f172a; cursor:pointer; }
+.favorite-picker-item:hover { border-color:#334155; }
+.favorite-picker-item input { width:18px; height:18px; accent-color:#f59e0b; }
+.favorite-picker-item small { color:#94a3b8; }
 .favorite-picker-form { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:12px; margin-top:14px; }
 .favorite-picker-form label { margin:0; }
 @media (max-width:640px) { .favorite-picker-form { grid-template-columns:1fr; } }

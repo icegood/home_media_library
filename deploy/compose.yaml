@@ -36,6 +36,8 @@ services:
       - -c
       - |
         set -eu
+        # The gateway owns its state directories; create them before caddy runs.
+        mkdir -p "$${XDG_DATA_HOME:-/runtime/caddy-data}" "$${XDG_CONFIG_HOME:-/runtime/caddy-config}"
         config="$${CADDY_CONFIG_FILE:-/runtime/app-config/gateway/Caddyfile}"
         while [ ! -s "$$config" ]; do sleep 1; done
         caddy run --config "$$config" --adapter caddyfile &

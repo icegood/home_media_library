@@ -22,7 +22,7 @@ LABEL org.opencontainers.image.title="Media Library API" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.source="${SOURCE_URL}"
 RUN apk add --no-cache exiftool ffmpeg docker-cli su-exec \
-    && mkdir -p /data /gateway
+    && mkdir -p /data
 COPY --from=build /media-api /usr/local/bin/media-api
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

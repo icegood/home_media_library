@@ -37,3 +37,17 @@ func folderLabel(folder domain.MediaFolder) string {
 	}
 	return pathLabel(folder.RelativePath)
 }
+
+// dedupeInts returns the input in input order with duplicates removed.
+func dedupeInts(ids []int) []int {
+	out := make([]int, 0, len(ids))
+	seen := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
