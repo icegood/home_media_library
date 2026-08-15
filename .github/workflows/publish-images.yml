@@ -23,8 +23,8 @@ on:
         default: linux/amd64,linux/arm64
         type: string
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths: [VERSION]
 
 env:
   IMAGE_REGISTRY: ghcr.io
@@ -50,8 +50,6 @@ jobs:
             version="$requested"
           elif [ -f VERSION ]; then
             version="$(sed -n '1p' VERSION)"
-          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
           else
             version="0.1.0"
           fi
@@ -190,7 +188,31 @@ jobs:
             BUILD_DATE=${{ steps.meta.outputs.build_date }}
             SOURCE_URL=https://github.com/${{ github.repository }}
 
+      - name: Check release tag exists
+        id: tagcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push git tag
+        if: steps.tagcheck.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "Media Library ${{ steps.version.outputs.version }}"
+          git push origin "${tag}"
+
       - name: Create GitHub release
+        if: steps.tagcheck.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}

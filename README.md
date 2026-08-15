@@ -339,7 +339,10 @@ linux/amd64
 linux/arm64
 ```
 
-Run it in GitHub from **Actions → Publish Docker images → Run workflow**.
+Publishing starts automatically when a commit to `main` changes the
+[`VERSION`](VERSION) file, or manually from
+**Actions → Publish Docker images → Run workflow**. A successful publish also
+creates and pushes the `v<version>` git tag and a matching GitHub release.
 
 To run the same workflow locally, use [`act`](https://github.com/nektos/act).
 Create a local token file; do not commit it:
