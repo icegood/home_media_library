@@ -17,6 +17,13 @@ export interface Media {
 export interface MapMedia extends Media {
   libraryId:ID;
 }
+export interface GeocodeResult {
+  place_id:number;
+  display_name:string;
+  lat:string;
+  lon:string;
+  boundingbox:[string, string, string, string];
+}
 export interface MediaFolder {
   id:ID; parentId:ID; relativePath:string; name:string;
 }

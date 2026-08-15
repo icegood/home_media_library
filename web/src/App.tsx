@@ -4,7 +4,7 @@ import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export function App() {
   const [user, setUser] = useState<User|null>(null);
@@ -99,6 +99,7 @@ export function App() {
       <Route path="/library/:id" element={<Browser/>}/>
       <Route path="/library/:id/folder/:folderId" element={<Browser/>}/>
       <Route path="/library/:id/timeline" element={<LibraryTimeline/>}/>
+      <Route path="/library/:id/timeline/:folderId" element={<LibraryTimeline/>}/>
       <Route path="/library/:id/view/:folderId" element={<MediaViewerPage/>}/>
       <Route path="/favorites" element={<Favorites/>}/>
       <Route path="/favorites/:viewId" element={<FavoriteViewPage/>}/>
@@ -181,8 +182,10 @@ function useBreadcrumb(): Crumb[] | null {
   const rootMatch = pathname.match(/^\/library\/([^/]+)$/);
   const folderMatch = pathname.match(/^\/library\/([^/]+)\/folder\/([^/]+)$/);
   const viewerMatch = pathname.match(/^\/library\/([^/]+)\/view\/([^/]+)$/);
-  const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : NaN;
-  const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : null;
+  const timelineMatch = pathname.match(/^\/library\/([^/]+)\/timeline$/);
+  const timelineFolderMatch = pathname.match(/^\/library\/([^/]+)\/timeline\/([^/]+)$/);
+  const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : timelineMatch ? Number(timelineMatch[1]) : timelineFolderMatch ? Number(timelineFolderMatch[1]) : NaN;
+  const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : timelineFolderMatch ? Number(timelineFolderMatch[2]) : null;
   const folderData = useFolderEntries(folderID != null ? libraryID : NaN, folderID);
   const [libraries, setLibraries] = useState<Library[]|null>(null);
   useEffect(() => {
@@ -196,12 +199,13 @@ function useBreadcrumb(): Crumb[] | null {
     if (favoritesMatch) return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
     if (!Number.isFinite(libraryID) || !libraries) return null;
     const library = libraries.find(item => item.id === libraryID);
-    const base: Crumb[] = [{label:"Libraries", to:"/"}];
-    if (library) base.push({label:library.name, to:`/library/${libraryID}`});
+    const timeline = timelineMatch || timelineFolderMatch;
+    const base: Crumb[] = [{label: timeline ? "Timeline of Libraries" : "Libraries", to:"/"}];
+    if (library) base.push({label:library.name, to: timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`});
     if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
-      base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:`/library/${libraryID}/folder/${folder.id}`})));
+      base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`})));
     }
-    if ((rootMatch || folderMatch) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
+    if ((rootMatch || folderMatch || timeline) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
     return base;
   }, [libraries, folderData, pathname]);
 }
@@ -1256,6 +1260,8 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"system">(theme);
   const [draftZoom, setDraftZoom] = useState(zoom);
   const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264-aac-mp4");
+  const [codecOpen, setCodecOpen] = useState(false);
+  const [thumbPickerOpen, setThumbPickerOpen] = useState<"image"|"video"|"folder"|null>(null);
   const [defaultThumbImage, setDefaultThumbImage] = useState("mountains");
   const [defaultThumbVideo, setDefaultThumbVideo] = useState("mountains");
   const [defaultThumbFolder, setDefaultThumbFolder] = useState("mountains");
@@ -1279,6 +1285,16 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   useEffect(() => {
     document.documentElement.style.fontSize = `${draftZoom}%`;
   }, [draftZoom]);
+  useEffect(() => {
+    if (!codecOpen && !thumbPickerOpen) return;
+    function closeDropdowns(event:Event) {
+      if (!(event.target as HTMLElement).closest(".select-wrap")) { setCodecOpen(false); setThumbPickerOpen(null); }
+    }
+    function closeOnEscape(event:KeyboardEvent) { if (event.key === "Escape") { setCodecOpen(false); setThumbPickerOpen(null); } }
+    document.addEventListener("click", closeDropdowns);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => { document.removeEventListener("click", closeDropdowns); document.removeEventListener("keydown", closeOnEscape); };
+  }, [codecOpen, thumbPickerOpen]);
   function close() {
     document.documentElement.dataset.theme = resolvedTheme;
     document.documentElement.style.fontSize = `${zoom}%`;
@@ -1307,7 +1323,9 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   }
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="User settings" onClick={event => closeOnBackdropClick(event, close)}>
     <div className="card settings modal user-settings-modal">
-      <div className="panel-title"><h2>User settings</h2><button type="button" className="secondary" onClick={close}>Close</button></div>
+      <div className="panel-title"><h2>User settings</h2>
+        <button type="button" className="secondary" onClick={close}>Close</button>
+      </div>
       <p className="muted">Preferences for {user.login}. These apply only to your account.</p>
       <fieldset><legend>Appearance</legend>
         <label>Theme<select value={draftTheme} onChange={event => { setDraftTheme(event.target.value as "light"|"dark"|"system"); setSaved(false); }}>
@@ -1326,12 +1344,21 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
         <small>Scales the whole interface, including folder and file names.</small>
       </fieldset>
       <fieldset><legend>Video fallback profile</legend>
-        <label>Transcode schema<select value={codec} disabled={!loaded} onChange={event => { setCodec(event.target.value as UserSettingsPayload["codec"]); setSaved(false); }}>
-          {(Object.keys(TRANSCODE_SCHEMAS) as UserSettingsPayload["codec"][]).map(id => {
-            const schema = TRANSCODE_SCHEMAS[id];
-            return <option key={id} value={id}>{schema.videoLabel} + {schema.audioLabel} → {schema.containerLabel} — {schema.compressionLabel} compression — browser: {schema.supportLabel}</option>;
-          })}
-        </select></label>
+        <span className="settings-label">Transcode schema</span>
+        <div className="select-wrap">
+          <button type="button" className="select-button" disabled={!loaded} aria-label="Transcode schema" aria-haspopup="listbox" aria-expanded={codecOpen} onClick={() => { setCodecOpen(value => !value); setThumbPickerOpen(null); }}>
+            <span>{transcodeShortLabel(codec)}</span><span className="select-caret" aria-hidden="true">▾</span>
+          </button>
+          {codecOpen && <ul className="select-listbox" role="listbox" aria-label="Transcode schema">
+            {(Object.keys(TRANSCODE_SCHEMAS) as UserSettingsPayload["codec"][]).map(id => {
+              const schema = TRANSCODE_SCHEMAS[id];
+              return <li key={id} role="option" aria-selected={codec === id} onClick={() => { setCodec(id); setCodecOpen(false); setSaved(false); }}>
+                <strong>{schema.videoLabel} + {schema.audioLabel} → {schema.containerLabel}</strong>
+                <small>{schema.compressionLabel} compression — browser: {schema.supportLabel}</small>
+              </li>;
+            })}
+          </ul>}
+        </div>
         <small>Used when your browser cannot play the original video. Choose the profile your devices support best.</small>
         <small>Your browser plays directly without transcoding: {supportedVideoFormats().join(", ") || "none"}.</small>
       </fieldset>
@@ -1340,17 +1367,31 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
         {(["image","video","folder"] as const).map(kind => {
           const value = kind === "image" ? defaultThumbImage : kind === "video" ? defaultThumbVideo : defaultThumbFolder;
           const onChange = kind === "image" ? setDefaultThumbImage : kind === "video" ? setDefaultThumbVideo : setDefaultThumbFolder;
+          const open = thumbPickerOpen === kind;
+          const current = defaultThumbPicture(kind);
           return <div className="thumb-picker" key={kind}>
             <span className="thumb-picker-label">{kind === "image" ? "Images" : kind === "video" ? "Videos" : "Folders"}</span>
-            <div className="thumb-picker-grid" role="radiogroup" aria-label={`Default picture for ${kind === "image" ? "images" : kind === "video" ? "videos" : "folders"}`}>
-              {DEFAULT_THUMB_PICTURES.map(picture => (
-                <button key={picture.id} type="button" role="radio" aria-checked={value === picture.id} title={picture.name}
-                  className={`thumb-picker-option${value === picture.id ? " selected" : ""}`}
-                  onClick={() => { onChange(picture.id); setSaved(false); }}>
-                  <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(picture.svg)}")`}}/>
+            <div className="select-wrap">
+              <button type="button" className="select-button thumb-picker-button" aria-haspopup="listbox" aria-expanded={open} onClick={() => { setThumbPickerOpen(open ? null : kind); setCodecOpen(false); }}>
+                <span className="thumb-picker-current">
+                  <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(current.svg)}")`}}/>
                   {kind !== "image" && <span className={`thumb-kind-badge thumb-kind-badge-sm ${kind === "folder" ? "thumb-kind-folder" : "thumb-kind-video"}`}>{kind === "video" ? "▶" : "▰"}</span>}
-                </button>
-              ))}
+                  <span>{current.name}</span>
+                </span>
+                <span className="select-caret" aria-hidden="true">▾</span>
+              </button>
+              {open && <ul className="select-listbox" role="listbox" aria-label={`Default picture for ${kind === "image" ? "images" : kind === "video" ? "videos" : "folders"}`}>
+                {DEFAULT_THUMB_PICTURES.map(picture => (
+                  <li key={picture.id} role="option" aria-selected={value === picture.id} className={`thumb-picker-option-row${value === picture.id ? " selected" : ""}`}
+                    onClick={() => { onChange(picture.id); setThumbPickerOpen(null); setSaved(false); }}>
+                    <span className="thumb-picker-option-picture">
+                      <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(picture.svg)}")`}}/>
+                      {kind !== "image" && <span className={`thumb-kind-badge thumb-kind-badge-sm ${kind === "folder" ? "thumb-kind-folder" : "thumb-kind-video"}`}>{kind === "video" ? "▶" : "▰"}</span>}
+                    </span>
+                    <span>{picture.name}</span>
+                  </li>
+                ))}
+              </ul>}
             </div>
           </div>;
         })}
@@ -1439,7 +1480,7 @@ function ChangePasswordModal({onClose}:{onClose:()=>void}) {
     } catch (cause) { setError((cause as Error).message); } finally { setBusy(false); }
   }
   return <div className="modal-backdrop nested" role="dialog" aria-modal="true" aria-label="Change password" onClick={event => closeOnBackdropClick(event, onClose)}>
-    <div className="card settings modal user-settings-modal">
+    <div className="card settings modal">
       <div className="panel-title"><h2>Change password</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
       <form onSubmit={submit}>
         <label>Current password<input type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} autoComplete="current-password" required/></label>
@@ -1534,18 +1575,26 @@ function Browser() {
     setSelected([]);
   }
   return <main className="browser-page"><div className="browser-bar">
-    <div className="view-toggle"><Link className="button-like active" to={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}>Folders</Link><Link className="button-like" to={`/library/${id}/timeline`}>Timeline</Link><Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div></div>
+    <div className="view-toggle"><Link className="button-like active" to={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}>Folders</Link><Link className="button-like" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link><Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div></div>
     <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
     <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} onToggleSelected={toggleSelected(setSelected)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
 }
 
 function LibraryTimeline() {
-  const {id=""} = useParams();
+  const {id="", folderId} = useParams();
   const libraryId = Number(id);
+  const currentFolderId = folderId == null ? null : Number(folderId);
   const [items, setItems] = useState<Media[]>([]);
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
   const [sort, setSort] = useState<"desc"|"asc">("desc");
-  useEffect(() => { if (Number.isFinite(libraryId)) api.libraryMedia(libraryId).then(setItems); }, [libraryId]);
+  useEffect(() => {
+    if (!Number.isFinite(libraryId)) return;
+    if (currentFolderId == null) {
+      api.libraryMedia(libraryId).then(setItems);
+    } else {
+      api.folderMedia(libraryId, currentFolderId).then(setItems);
+    }
+  }, [libraryId, currentFolderId]);
   const filtered = items.filter(item => kind === "all" || item.kind === kind);
   const sorted = sortMedia(filtered, sort);
   const [selected, setSelected] = useState<ID[]>([]);
@@ -1554,15 +1603,16 @@ function LibraryTimeline() {
     setSelected([]);
   }
   return <main className="browser-page">
-    <div className="browser-bar"><div className="crumbs"><Link to="/">Libraries</Link> / Timeline</div>
-      <div className="view-toggle"><Link className="button-like" to={`/library/${id}`}>Folders</Link><Link className="button-like active" to={`/library/${id}/timeline`}>Timeline</Link>
+    <div className="browser-bar">
+      <div className="view-toggle"><Link className="button-like" to={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</Link><Link className="button-like active" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link>
+        <Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link>
         <button className={kind === "all" ? "active" : ""} onClick={() => setKind("all")}>All</button>
         <button className={kind === "image" ? "active" : ""} onClick={() => setKind("image")}>Images</button>
         <button className={kind === "video" ? "active" : ""} onClick={() => setKind("video")}>Videos</button>
         <button onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
       </div></div>
     <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
-    {sorted.length === 0 ? <div className="empty-state"><p>No dated items in this library yet.</p></div> :
+    {sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
       <div className="timeline-grid">{groupByDate(sorted).map(group =>
         <div className="timeline-group" key={group.label}>
           <span className="timeline-group-date">{group.label}</span>
@@ -2306,6 +2356,11 @@ function normalizeSchemaId(value:string): UserSettingsPayload["codec"] {
   return legacy[value] ?? "h264-aac-mp4";
 }
 
+function transcodeShortLabel(id:UserSettingsPayload["codec"]) {
+  const schema = TRANSCODE_SCHEMAS[id];
+  return `${schema.videoLabel} + ${schema.audioLabel} → ${schema.containerLabel}`;
+}
+
 function codecLabel(codecName:string) {
   const names:Record<string,string> = {h264:"H.264", h265:"H.265 / HEVC", hevc:"H.265 / HEVC", vp9:"VP9", vp8:"VP8", av1:"AV1", mpeg1video:"MPEG-1", mpeg2video:"MPEG-2", msmpeg4v3:"MPEG-4 Part 2 (msmpeg4v3)", aac:"AAC", mp3:"MP3", mp2:"MP2", opus:"Opus", vorbis:"Vorbis", ac3:"AC-3", eac3:"E-AC-3", flac:"FLAC"};
   return names[codecName] ?? codecName;
@@ -2571,6 +2626,7 @@ function GeoMap({theme}:{theme:"light"|"dark"}) {
       <MapContainer center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className="map">
         <TileLayer key={theme} attribution='&copy; OpenStreetMap contributors' url={theme === "dark" ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png" : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}/>
         <ScaleControl position="bottomleft" imperial={false}/>
+        <PlaceSearch/>
         <MapItems items={items} focused={focused} pickedGPS={pickedGPS} copyStatus={copyStatus} selectMode={selectMode} onCopyStatus={setCopyStatus} onPick={value => { setPickedGPS(value); setCopyStatus(""); }} onSelectCluster={selectCluster} onRenderProgress={setRendering}/>
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
@@ -2583,6 +2639,72 @@ function GeoMap({theme}:{theme:"light"|"dark"}) {
     </div>
     {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
   </main>;
+}
+
+function PlaceSearch() {
+  const map = useMap();
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<GeocodeResult[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<GeocodeResult|null>(null);
+  useEffect(() => {
+    if (query.trim() === "") {
+      setResults([]);
+      setOpen(false);
+      setError("");
+      setPicked(null);
+    }
+  }, [query]);
+  async function search(event:FormEvent) {
+    event.preventDefault();
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setBusy(true); setError(""); setOpen(false);
+    try {
+      const found = await api.geocode(trimmed);
+      const center = map.getCenter();
+      const sorted = [...found].sort((left, right) => haversineKm(Number(left.lat), Number(left.lon), center.lat, center.lng) - haversineKm(Number(right.lat), Number(right.lon), center.lat, center.lng));
+      setResults(sorted);
+      setOpen(true);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function select(result:GeocodeResult) {
+    setPicked(result);
+    setOpen(false);
+    map.flyTo([Number(result.lat), Number(result.lon)], Math.max(map.getZoom(), 16));
+  }
+  const pickedGPS = picked ? [Number(picked.lat), Number(picked.lon)] as [number,number] : null;
+  return <>
+    <form className="map-search" aria-label="Search a place" onSubmit={search}>
+      <input aria-label="Place search query" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search by street or place…"/>
+      <button type="submit" disabled={busy || query.trim() === ""}>{busy ? "…" : "Search"}</button>
+    </form>
+    {error && <div className="map-search-error" role="alert">{error}</div>}
+    {open && <div className="map-search-results" role="listbox" aria-label="Search results">
+      {results.length === 0 ? <div className="map-search-empty">No places found.</div> : results.map((result, index) =>
+        <button key={result.place_id} role="option" aria-selected={index === 0} onClick={() => select(result)}>
+          <strong>{index === 0 ? "Nearest: " : ""}{result.display_name}</strong>
+        </button>
+      )}
+    </div>}
+    {pickedGPS && <Marker position={pickedGPS} icon={searchedPointIcon()}>
+      <Popup><strong>{picked?.display_name}</strong><small>{pickedGPS[0].toFixed(5)}, {pickedGPS[1].toFixed(5)}</small></Popup>
+    </Marker>}
+  </>;
+}
+
+function haversineKm(lat1:number, lon1:number, lat2:number, lon2:number) {
+  const toRad = (degrees:number) => degrees * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(a));
 }
 
 function AreaSelector({enabled,onArea}:{enabled:boolean; onArea:(start:L.LatLng,end:L.LatLng)=>void}) {
@@ -2758,6 +2880,10 @@ function clusterIcon(count:number) {
 
 function pickedPointIcon() {
   return L.divIcon({className:"picked-point-marker", html:"<span></span>", iconSize:[28,28], iconAnchor:[14,14]});
+}
+
+function searchedPointIcon() {
+  return L.divIcon({className:"searched-point-marker", html:"<span></span>", iconSize:[30,30], iconAnchor:[15,15]});
 }
 
 function mediaPointIcon() {

@@ -1612,6 +1612,37 @@ func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]
 	return out, rows.Err()
 }
 
+func (s *SQLite) MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error) {
+	if _, err := s.FolderChain(ctx, libraryID, folderID); err != nil {
+		return nil, err
+	}
+	rel := relativePathExpr("m.path", "covers.root_path")
+	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
+		SELECT f.id, f.path FROM media_folders f WHERE f.id = ?
+		UNION ALL
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+	SELECT ` + mediaColumns + `, ` + rel + `, ` + favoriteExpr + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	ORDER BY ` + rel
+	rows, err := s.db.QueryContext(ctx, query, folderID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Media{}
+	for rows.Next() {
+		var relativePath string
+		var favorite bool
+		item, err := scanMedia(rows, &relativePath, &favorite)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = relativePath
+		item.Favorite = favorite
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLite) FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error) {
 	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
 		return nil, err

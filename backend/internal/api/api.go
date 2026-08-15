@@ -109,6 +109,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/libraries/{id}/entries", a.auth(http.HandlerFunc(a.entries)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}", a.auth(http.HandlerFunc(a.folder)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}/entries", a.auth(http.HandlerFunc(a.folderEntries)))
+	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}/media", a.auth(http.HandlerFunc(a.folderMedia)))
 	mux.Handle("GET /api/v1/libraries/{id}/media", a.auth(http.HandlerFunc(a.libraryMedia)))
 	mux.Handle("GET /api/v1/favorite-views", a.auth(http.HandlerFunc(a.favoriteViews)))
 	mux.Handle("POST /api/v1/favorite-views", a.auth(http.HandlerFunc(a.createFavoriteView)))
@@ -528,6 +529,31 @@ func (a *API) libraries(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	items, err := a.Store.LibrariesForUser(r.Context(), p.ID, p.Role == domain.RoleAdmin)
 	if err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (a *API) folderMedia(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	folderID, ok := pathID(w, r, "folderId")
+	if !ok {
+		return
+	}
+	if !a.requireRead(w, r, p, id) {
+		return
+	}
+	items, err := a.Store.MediaForFolder(r.Context(), p.ID, id, folderID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "folder not found in library")
+			return
+		}
 		problem(w, 500, err.Error())
 		return
 	}

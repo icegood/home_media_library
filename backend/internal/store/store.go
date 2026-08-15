@@ -60,6 +60,7 @@ type Store interface {
 	GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error)
 	MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID int, bounds domain.Bounds) ([]domain.MapMedia, error)
 	MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error)
+	MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error)
 	FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error)
 	ThumbnailCleanupRefsForLibrary(ctx context.Context, libraryID int) (domain.ThumbnailCleanupRefs, error)
 	SetMediaActionError(ctx context.Context, id int, action, message string) error

@@ -1,4 +1,4 @@
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -101,6 +101,7 @@ export const api = {
   folder: (libraryId:ID, folderId:ID) => call<MediaFolder>(`/libraries/${libraryId}/folders/${folderId}`),
   folderEntries: (libraryId:ID, folderId:ID) => call<FolderEntries>(`/libraries/${libraryId}/folders/${folderId}/entries`),
   libraryMedia: (libraryId:ID) => call<Media[]>(`/libraries/${libraryId}/media`),
+  folderMedia: (libraryId:ID, folderId:ID) => call<Media[]>(`/libraries/${libraryId}/folders/${folderId}/media`),
   favoriteViews: () => call<FavoriteView[]>("/favorite-views"),
   mediaFavoriteViews: (id:ID) => call<FavoriteViewMembership[]>(`/media/${id}/favorite-views`),
   createFavoriteView: (name:string) => call<FavoriteView>("/favorite-views", {method:"POST", body:JSON.stringify({name})}),
@@ -127,6 +128,19 @@ export const api = {
   thumbnailUrl: (id:ID, index = 0) => authUrl(`/media/${id}/thumbnail?index=${index}`),
   folderThumbnailUrl: (id:ID) => authUrl(`/folders/${id}/thumbnail`),
   videoThumbnails: (id:ID) => call<VideoThumbnail[]>(`/media/${id}/thumbnails`),
+  async geocode(query:string) {
+    const params = new URLSearchParams({q:query, format:"jsonv2", limit:"5", "accept-language":navigator.language ?? "en"});
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {headers:{Accept:"application/json"}});
+    if (!response.ok) throw new Error(`Geocoder returned HTTP ${response.status}`);
+    let results: unknown;
+    try {
+      results = JSON.parse(await response.text());
+    } catch {
+      throw new Error("Geocoder returned an invalid response");
+    }
+    if (!Array.isArray(results)) throw new Error("Geocoder returned an invalid response");
+    return results as GeocodeResult[];
+  },
   contentUrl: (id:ID, download = false) => authUrl(`/media/${id}/content${download ? "?download=1" : ""}`),
   async downloadArchive(ids:ID[]) {
     const response = await fetch(`${base}/archive`, {

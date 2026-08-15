@@ -416,6 +416,30 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/libraries/{id}/folders/{folderId}/media:
+    get:
+      tags: [Library]
+      summary: All media under a folder (recursively, relative to that folder)
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+        - $ref: "#/components/parameters/FolderID"
+      responses:
+        "200":
+          description: Media in the folder and all its subfolders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Media"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/libraries/{id}/folders/{folderId}:
     get:
       tags: [Library]

@@ -15,6 +15,7 @@ const mockApi = vi.hoisted(() => ({
   libraries: vi.fn(),
   libraryStats: vi.fn(),
   map: vi.fn(),
+  geocode: vi.fn(),
   settings: vi.fn(),
   updateSettings: vi.fn(),
   createLibrary: vi.fn(),
@@ -31,6 +32,7 @@ const mockApi = vi.hoisted(() => ({
   entries: vi.fn(),
   folder: vi.fn(),
   folderEntries: vi.fn(),
+  folderMedia: vi.fn(),
   libraryMedia: vi.fn(),
   favoriteViews: vi.fn(),
   mediaFavoriteViews: vi.fn(),
@@ -464,7 +466,8 @@ test("user settings modal changes codec email and password", async () => {
   expect(await within(dialog).findByText(/Your browser plays directly without transcoding/)).toBeInTheDocument();
 
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Transcode schema"}), {target:{value:"vp9-opus-webm"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Transcode schema"}));
+  fireEvent.click(await within(dialog).findByRole("option", {name:/VP9 \+ Opus → WebM/}));
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
   await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
@@ -904,6 +907,23 @@ test("selected media items can receive the same gps in bulk", async () => {
   expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(101, {name:"two.jpg", gps:"50.45,30.52", takenAt:null});
 });
 
+test("folder timeline loads media for that folder and links back to it", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderMedia.mockResolvedValue([
+    {id:200, folderId:20, relativePath:"day/two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2022-05-05T05:05:05Z"},
+    {id:201, folderId:20, relativePath:"day/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2021-04-04T04:04:04Z"}
+  ]);
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.folderMedia).toHaveBeenCalledWith(1, 20));
+  expect(screen.getByText("two.jpg")).toBeInTheDocument();
+  expect(screen.getByText("one.jpg")).toBeInTheDocument();
+  const toggle = within(document.querySelector(".view-toggle") as HTMLElement);
+  expect(toggle.getByRole("link", {name:"Folders"})).toHaveAttribute("href", "/library/1/folder/20");
+  expect(toggle.getByRole("link", {name:"Map"})).toHaveAttribute("href", "/map?library=1&folder=20");
+  expect(screen.getByRole("link", {name:"Timeline of Libraries"})).toHaveAttribute("href", "/");
+  expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1/timeline");
+});
+
 test("library timeline groups media by date along a vertical ruler", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.libraryMedia.mockResolvedValue([
@@ -1269,6 +1289,32 @@ test("map area selection fetches media inside the rectangle from the server and 
   expect(document.querySelector(".map-timeline-panel .timeline-grid")).not.toBeNull();
   fireEvent.click(screen.getByRole("button", {name:"Clear"}));
   expect(screen.queryByRole("complementary", {name:"Selected area"})).not.toBeInTheDocument();
+});
+
+test("map place search geocodes and orders results nearest first", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.map.mockResolvedValue([]);
+  mockApi.geocode.mockResolvedValue([
+    {place_id:1, display_name:"Far Street, City", lat:"21.0000", lon:"0.0000", boundingbox:["21.1","20.9","0.1","-0.1"]},
+    {place_id:2, display_name:"Near Street, City", lat:"20.1000", lon:"0.0000", boundingbox:["20.2","20.0","0.1","-0.1"]}
+  ]);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.map).toHaveBeenCalled());
+  fireEvent.change(screen.getByLabelText("Place search query"), {target:{value:"street"}});
+  fireEvent.click(screen.getByRole("button", {name:"Search"}));
+  await waitFor(() => expect(mockApi.geocode).toHaveBeenCalledWith("street"));
+  const results = screen.getAllByRole("option");
+  expect(results.length).toBe(2);
+  expect(results[0]).toHaveTextContent(/Nearest: .*Near Street, City/);
+  expect(results[1]).toHaveTextContent(/Far Street, City/);
+  expect(results[1]).not.toHaveTextContent("Nearest");
+  fireEvent.click(results[0]);
+  await waitFor(() => expect(document.querySelector(".searched-point-marker")).toBeInTheDocument());
+  fireEvent.change(screen.getByLabelText("Place search query"), {target:{value:""}});
+  await waitFor(() => expect(screen.queryByRole("listbox", {name:"Search results"})).not.toBeInTheDocument());
+  expect(document.querySelector(".searched-point-marker")).not.toBeInTheDocument();
 });
 
 test("map renders many markers progressively instead of all at once", async () => {

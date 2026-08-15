@@ -546,6 +546,55 @@ func TestVisibleUserCanReadLibraryTimelineMedia(t *testing.T) {
 	}
 }
 
+func TestVisibleUserCanReadFolderTimelineMediaRecursively(t *testing.T) {
+	f := setup(t)
+	library, err := f.store.Library(context.Background(), f.libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tripFolder, err := f.store.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(f.mediaRoot, "family", "2026"), RelativePath: "2026"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subFolder, err := f.store.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: tripFolder.ID, Path: filepath.Join(f.mediaRoot, "family", "2026", "07"), RelativePath: "07"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tripPhoto, err := f.store.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: subFolder.ID, Path: filepath.Join(f.mediaRoot, "family", "2026", "07", "trip2.jpg"), RelativePath: "2026/07/trip2.jpg", Name: "trip2.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg", TakenAt: "2026-07-07T07:08:09Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := login(t, f.handler, "alice")
+	var items []domain.Media
+	response := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/folders/%d/media", f.libraryID, tripFolder.ID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("folder media status = %d: %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != tripPhoto.ID {
+		t.Fatalf("folder media = %#v, want only the nested %d (recursive)", items, tripPhoto.ID)
+	}
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/folders/%d/media", f.libraryID, subFolder.ID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("subfolder media status = %d: %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != tripPhoto.ID {
+		t.Fatalf("subfolder media = %#v, want only %d", items, tripPhoto.ID)
+	}
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/folders/999999/media", f.libraryID), alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("missing folder media status = %d, want 404", got)
+	}
+	bob := login(t, f.handler, "bob")
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/folders/%d/media", f.libraryID, tripFolder.ID), bob, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("bob folder media status = %d, want 403", got)
+	}
+}
+
 func TestMediaContentServes(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")

@@ -1395,6 +1395,41 @@ func (s *Postgres) MediaForLibrary(ctx context.Context, userID, libraryID int) (
 	return out, rows.Err()
 }
 
+func (s *Postgres) MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error) {
+	if _, err := s.FolderChain(ctx, libraryID, folderID); err != nil {
+		return nil, err
+	}
+	rel := relativePathExpr("m.path", "covers.root_path")
+	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
+		SELECT f.id, f.path FROM media_folders f WHERE f.id = $1
+		UNION ALL
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path,
+		EXISTS(SELECT 1 FROM favorite_view_items fvi
+			JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
+			WHERE fv.user_id = $2 AND fvi.media_id = m.id)
+	FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	ORDER BY relative_path`
+	rows, err := s.db.QueryContext(ctx, query, folderID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Media{}
+	for rows.Next() {
+		var relativePath string
+		var favorite bool
+		item, err := scanMedia(rows, &relativePath, &favorite)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = relativePath
+		item.Favorite = favorite
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Postgres) FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error) {
 	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
 		return nil, err
