@@ -1,4 +1,4 @@
-import type { EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -59,6 +59,7 @@ export const api = {
   userSettings: () => call<UserSettings>("/settings"),
   updateUserSettings: (settings:UserSettings) =>
     call<UserSettings>("/settings", {method:"PUT", body:JSON.stringify(settings)}),
+  about: () => call<About>("/about"),
   libraries: () => call<Library[]>("/libraries"),
   libraryStats: (id:ID) => call<LibraryStats>(`/libraries/${id}/stats`),
   createLibrary: (input:{name:string; roots:{path:string}[]}) =>

@@ -15,7 +15,8 @@ Workspace: self-hosted multi-user media library (`media_library`).
 
 ## Architecture
 
-Three-container Compose stack with one host bind `./runtime` → `/runtime`:
+Compose stack with one host bind `./runtime` → `/runtime`: api + web always run;
+the Caddy gateway runs only when the `https` compose profile is active.
 
 - `backend/` — Go 1.23 REST API (`cmd/server/main.go`). Backed by a full SQLite
   store (`store.NewSQLite`, `DB_DRIVER=sqlite` default) or a Postgres store
@@ -38,10 +39,12 @@ Key facts:
 - Auth: HttpOnly `media_session` JWT cookie (claims `uid`+`role`). Setup endpoint
   creates the initial admin once, then is disabled forever.
 - Every library/media/map/thumbnail/content request passes the same access check.
-- Thumbnails are files at `THUMBNAIL_DIR/<media_id>/<index>.jpg`, not in DB or
+- Thumbnails are files at `THUMBNAIL_DIR/media/<id/1000>/<id>_<index>.jpg` (folder
+  covers at `THUMBNAIL_DIR/folders/<id/1000>/<id>_0.jpg`), not in DB or
   cache; folder covers are 3-way ffmpeg hstack JPEGs.
 - Video: `/play` direct-plays if browser codecs + container/audio allow, else FFmpeg
-  transcodes to admin-chosen fallback (h264/h265/vp9).
+  transcodes to the requesting user's chosen fallback codec (h264/h265/vp9, set per
+  account in user settings).
 - Scanner: background job walks folder (progress, pause/cancel), upserts folders +
   media, extracts ExifTool/FFprobe metadata, then a thumbnail-create job runs.
 - Settings → Network access toggles HTTP/HTTPS; gateway config regenerates and
@@ -54,22 +57,22 @@ Key facts:
 - `/runtime/caddy-data`, `/runtime/caddy-config` — Caddy/ACME state
 - `/runtime/thumbnails` — generated thumbnails
 
-Container user: the backend image runs as `app` with build args `UID`/`GID`
-(default 1000) so the process can write the host-mounted runtime volume. Build with
-`docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t media-library-api ./backend`.
+Container user: the backend image runs as an unprivileged host user resolved at
+container start by `docker-entrypoint.sh` from the `MEDIA_UID`/`MEDIA_GID`
+environment variables, so the process can write the host-mounted runtime volume.
+No UID/GID build arguments exist. Keep `MEDIA_UID`/`MEDIA_GID` in `.env` equal to
+the host user.
 
 ## Repository hygiene
 
 Commit (source): `backend/` (`cmd/ internal/ migrations/ go.mod go.sum Dockerfile
-.dockerignore`), `web/` (`src/ package.json package-lock.json Dockerfile nginx.conf
+.dockerignore`), `web/` (`src/ package.json package-lock.json Dockerfile nginx.conf.template
 index.html vite.config.ts tsconfig*.json capacitor.config.ts .dockerignore`, plus
-`web/android/` if present), `compose.local.yaml`, `deploy/`, `docs/`,
+`web/android/` if present), `deploy/` (including `compose.local.yaml`), `docs/`,
 `.github/`, `AGENTS.md`, `README.md`, `LICENSE`.
 
-Ignore (generated/output): `.env` (secrets), `runtime/`, `thumbnails/`,
-`runtime.discarded-*/`, `thumbnails.discarded-*/`, `sample-media/`, `web/node_modules/`,
-`web/dist/`, `*.tsbuildinfo`, `backend/bin/`, `web/android/.gradle/`,
-`web/android/app/build/`, `*.db`, `*.db-shm`, `*.db-wal`, `.idea/`, `.vscode/`.
+Ignore (generated/output): `deploy/.env` (secrets), `.github-token`, `runtime/`,
+`web/android/.gradle/`, `web/android/app/build/`, `.idea/`, `.vscode/`.
 
 ## Verification
 

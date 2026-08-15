@@ -58,7 +58,8 @@ const mockApi = vi.hoisted(() => ({
   importEmby: vi.fn(),
   filesystem: vi.fn(),
   videoThumbnails: vi.fn(),
-  playbackUrl: vi.fn()
+  playbackUrl: vi.fn(),
+  about: vi.fn()
 }));
 
 vi.mock("./api", () => ({ api: mockApi, MAX_VIDEO_THUMBNAILS: 100 }));
@@ -296,6 +297,47 @@ test("authenticated header renders user menu and clicking logout logs out", asyn
   expect(userMenu.closest("details")).not.toHaveAttribute("open");
   await waitFor(() => expect(mockApi.logout).toHaveBeenCalledTimes(1));
   expect(await screen.findByRole("button", {name:"Sign in"})).toBeInTheDocument();
+});
+
+test("user menu opens About dialog with version information", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:true});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
+  const dialog = await screen.findByRole("dialog", {name:"About"});
+  expect(dialog).toBeInTheDocument();
+  expect(screen.getByText("Media Library — self-hosted, multi-user photo and video library.")).toBeInTheDocument();
+  expect(screen.getByText("0.1.0")).toBeInTheDocument();
+  expect(screen.getByText("go1.23.4 · v0.1.0")).toBeInTheDocument();
+  expect(within(dialog).getByText("Gateway")).toBeInTheDocument();
+  await waitFor(() => expect(mockApi.about).toHaveBeenCalledTimes(1));
+});
+
+test("About dialog omits the gateway entry in an HTTP-only deployment", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:false});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
+  const dialog = await screen.findByRole("dialog", {name:"About"});
+  expect(within(dialog).queryByText("Gateway")).not.toBeInTheDocument();
+});
+
+test("About dialog Copy button copies the version info", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:true});
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {value:{writeText}, configurable:true});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
+  await screen.findByRole("dialog", {name:"About"});
+  fireEvent.click(screen.getByRole("button", {name:"Copy"}));
+  await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Media Library 0.1.0"));
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Gateway: Caddy"));
+  expect(await screen.findByText("Copied.")).toBeInTheDocument();
 });
 
 test("admin settings menu duplicates settings sections and opens selected section", async () => {

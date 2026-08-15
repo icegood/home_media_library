@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,22 @@ func FromServerSettings(settings domain.ServerSettings) Settings {
 	}
 }
 
+// webInternalPort returns the port the web container's nginx listens on, from
+// the WEB_INTERNAL_PORT environment variable (default 8080). The api writes the
+// gateway Caddyfile, so it must agree with the port configured on the web
+// service in compose.yaml.
+func webInternalPort() (string, error) {
+	port := strings.TrimSpace(os.Getenv("WEB_INTERNAL_PORT"))
+	if port == "" {
+		return "8080", nil
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", fmt.Errorf("invalid WEB_INTERNAL_PORT %q (want a port between 1 and 65535)", port)
+	}
+	return port, nil
+}
+
 func Validate(settings Settings) error {
 	if !settings.HTTPEnabled && !settings.HTTPSEnabled {
 		return fmt.Errorf("at least one of HTTP or HTTPS must be enabled")
@@ -66,6 +83,10 @@ func Write(path string, settings Settings) error {
 	if err := Validate(settings); err != nil {
 		return err
 	}
+	webPort, err := webInternalPort()
+	if err != nil {
+		return err
+	}
 	var config strings.Builder
 	config.WriteString("{\n\tauto_https disable_redirects\n")
 	if settings.HTTPSEnabled {
@@ -73,10 +94,10 @@ func Write(path string, settings Settings) error {
 	}
 	config.WriteString("}\n\n")
 	if settings.HTTPEnabled {
-		config.WriteString("http://:80 {\n\treverse_proxy web:8080 {\n\t\tflush_interval -1\n\t}\n}\n\n")
+		fmt.Fprintf(&config, "http://:80 {\n\treverse_proxy web:%s {\n\t\tflush_interval -1\n\t}\n}\n\n", webPort)
 	}
 	if settings.HTTPSEnabled {
-		fmt.Fprintf(&config, "%s {\n\ttls %s\n\theader {\n\t\tStrict-Transport-Security \"max-age=31536000; includeSubDomains\"\n\t\tX-Frame-Options \"DENY\"\n\t\t-Server\n\t}\n\treverse_proxy web:8080 {\n\t\tflush_interval -1\n\t}\n}\n", settings.PublicDNS, settings.ACMEEmail)
+		fmt.Fprintf(&config, "%s {\n\ttls %s\n\theader {\n\t\tStrict-Transport-Security \"max-age=31536000; includeSubDomains\"\n\t\tX-Frame-Options \"DENY\"\n\t\t-Server\n\t}\n\treverse_proxy web:%s {\n\t\tflush_interval -1\n\t}\n}\n", settings.PublicDNS, settings.ACMEEmail, webPort)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

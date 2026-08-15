@@ -5,3 +5,4 @@ android/app/build
 .git
 .vite
 coverage
+src/generated-version.ts

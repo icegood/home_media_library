@@ -310,6 +310,21 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/about:
+    get:
+      tags: [System]
+      summary: Product and build version information
+      description: Software versions of the running product, the Go backend runtime,
+        and the source revision the image was built from.
+      responses:
+        "200":
+          description: Version information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/About"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/v1/libraries:
     get:
       tags: [Library]
@@ -1648,6 +1663,35 @@ components:
       properties:
         error:
           type: string
+    About:
+      type: object
+      required: [product, version, revision, buildDate, goVersion, gatewayEnabled]
+      properties:
+        product:
+          type: string
+          example: Media Library
+        version:
+          type: string
+          description: Image/project version, from the VERSION build argument.
+          example: 0.1.0
+        revision:
+          type: string
+          description: Git revision the backend image was built from.
+          example: 1a2b3c4
+        buildDate:
+          type: string
+          description: ISO 8601 build timestamp.
+          example: 2026-01-02T03:04:05Z
+        goVersion:
+          type: string
+          description: Go toolchain the backend was compiled with.
+          example: go1.23.4
+        gatewayEnabled:
+          type: boolean
+          description: Whether the optional Caddy gateway is running (https compose
+            profile active). When false the app serves HTTP-only and the About
+            dialog omits the gateway entry.
+          example: false
     Credentials:
       type: object
       required: [login, password]

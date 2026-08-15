@@ -1,0 +1,28 @@
+services:
+  api:
+    build:
+      context: ../backend
+      # x-bake disables BuildKit provenance/SBOM attestations for local builds.
+      # Generating them (the "resolving provenance for metadata file" step) is
+      # slow and never cached; local images don't need attestations.
+      # NOTE: x-bake is honored ONLY by `docker buildx bake` (which deploy/start.sh
+      # uses for local builds); `docker compose build` silently ignores it.
+      x-bake:
+        provenance: false
+        sbom: false
+      args:
+        VERSION: ${PROJECT_VERSION:-0.1.0}
+        VCS_REF: ${VCS_REF:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    volumes:
+      - /media/ice/backup/backup_photos/phones:/media:ro
+  web:
+    build:
+      context: ../web
+      x-bake:
+        provenance: false
+        sbom: false
+      args:
+        VERSION: ${PROJECT_VERSION:-0.1.0}
+        VCS_REF: ${VCS_REF:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}

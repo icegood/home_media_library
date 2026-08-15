@@ -86,6 +86,7 @@ func setup(t *testing.T) fixture {
 	return fixture{handler: (&api.API{
 		Store: repository, Scanner: scanner.Scanner{Store: repository},
 		JWTSecret: []byte(secret), ThumbnailDir: thumbnailDir,
+		Version: "0.1.0-test", Revision: "abc123", BuildDate: "2026-01-02T03:04:05Z",
 	}).Handler(), store: repository, mediaRoot: mediaRoot, thumbnailDir: thumbnailDir, libraryID: library.ID, folderID: folder.ID, photoID: photo.ID, aliceID: aliceID}
 }
 
@@ -504,8 +505,8 @@ func TestLibraryStatsEndpoint(t *testing.T) {
 	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/stats", f.libraryID), bob, nil).Code; got != http.StatusForbidden {
 		t.Fatalf("bob stats status = %d, want 403", got)
 	}
-	if got := request(f.handler, http.MethodGet, "/api/v1/libraries/999999/stats", alice, nil).Code; got != http.StatusNotFound {
-		t.Fatalf("missing library stats status = %d, want 404", got)
+	if got := request(f.handler, http.MethodGet, "/api/v1/libraries/999999/stats", alice, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("missing library stats status = %d, want 403", got)
 	}
 }
 
@@ -1196,4 +1197,40 @@ func TestAdminCanVacuumDatabaseFromPanel(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("vacuum job did not finish")
+}
+
+func TestAboutExposesBuildAndRuntimeVersions(t *testing.T) {
+	f := setup(t)
+	unauthorized := request(f.handler, http.MethodGet, "/api/v1/about", "", nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("about without auth status = %d, want 401", unauthorized.Code)
+	}
+	session := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodGet, "/api/v1/about", session, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("about status = %d: %s", response.Code, response.Body)
+	}
+	var info struct {
+		Product        string `json:"product"`
+		Version        string `json:"version"`
+		Revision       string `json:"revision"`
+		BuildDate      string `json:"buildDate"`
+		GoVersion      string `json:"goVersion"`
+		GatewayEnabled bool   `json:"gatewayEnabled"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Product != "Media Library" {
+		t.Errorf("product = %q, want Media Library", info.Product)
+	}
+	if info.Version != "0.1.0-test" || info.Revision != "abc123" || info.BuildDate != "2026-01-02T03:04:05Z" {
+		t.Errorf("unexpected build info: %+v", info)
+	}
+	if !strings.HasPrefix(info.GoVersion, "go") {
+		t.Errorf("goVersion = %q, want a go1.x version", info.GoVersion)
+	}
+	if info.GatewayEnabled {
+		t.Errorf("gatewayEnabled = true, want false in the test fixture (gateway not enabled)")
+	}
 }

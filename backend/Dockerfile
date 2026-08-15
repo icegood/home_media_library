@@ -1,14 +1,26 @@
+# syntax=docker/dockerfile:1
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
 ARG VERSION
+ARG VCS_REF
+ARG BUILD_DATE
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+# Download modules in their own layer (reused unless go.mod/go.sum change) and
+# keep both module and build caches in BuildKit cache mounts so repeat
+# `deploy/start.sh local-build` runs recompile only what actually changed.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY . .
-RUN go mod tidy \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go mod tidy \
     && gofmt -w . \
     && go test ./... \
-    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /media-api ./cmd/server
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+       -ldflags "-X main.version=${VERSION} -X main.revision=${VCS_REF} -X main.buildDate=${BUILD_DATE}" \
+       -o /media-api ./cmd/server
 
 FROM alpine:3.21
 ARG VERSION

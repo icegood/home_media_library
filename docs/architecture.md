@@ -32,7 +32,8 @@ directory layout.
   the same access check.
 - Media folders are mounted into the API container by the operator and added
   as libraries in the admin UI.
-- Passwords use bcrypt; sessions are signed, expiring bearer tokens.
+- Passwords use bcrypt; sessions are signed, expiring JWT cookies (`media_session`,
+  HttpOnly).
 - HTTPS deployment terminates TLS at Caddy, which obtains and renews its
   certificate directly through Let's Encrypt ACME. API and web containers are
   private on the Compose network.
@@ -67,10 +68,11 @@ stream details. Metadata is stored in `metadata_json` under `exif` and
 string so map queries do not need to parse JSON.
 
 Thumbnails are not stored in the database and are not kept in a transient cache.
-They live under `THUMBNAIL_DIR` using `<media_id>/<thumbnail_index>.jpg`.
+They live under `THUMBNAIL_DIR/media/<media_id/1000>/<media_id>_<index>.jpg`; folder
+covers under `THUMBNAIL_DIR/folders/<folder_id/1000>/<folder_id>_0.jpg`.
 `thumbnails` is a child table of `media`: image files use thumbnail index `0`;
 videos may have many indexed thumbnails such as `0`, `1`, `2`, etc, but never
-more than ten. Video thumbnail timing is globally configurable: the default
+more than 100. Video thumbnail timing is globally configurable: the default
 first frame is at 5 seconds and the default/minimum interval is 120 seconds.
 Thumbnail width and height are global admin settings, not per-thumbnail columns.
 Folders expose one derived JPEG cover made by horizontally concatenating three
@@ -88,6 +90,6 @@ thumbnail-sized tiles.
 - Add HTTP range requests, cache headers and optional HLS transcoding.
 - Add segment caching/HLS for arbitrary seeking within on-the-fly transcodes;
   direct-play video already supports HTTP byte-range seeking.
-- Add user-management screens, password reset and token revocation.
+- Add token revocation.
 - Add offline Android caching and background uploads if write support is added.
 - Add end-to-end browser/Android tests and backup/restore commands.

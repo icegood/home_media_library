@@ -3,7 +3,8 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type UserSettings as UserSettingsPayload } from "./api";
-import type { EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export function App() {
   const [user, setUser] = useState<User|null>(null);
@@ -13,6 +14,7 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [zoom, setZoom] = useState(100);
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const shellRef = useRef<HTMLDivElement|null>(null);
   useEffect(() => {
     api.setupStatus()
@@ -86,10 +88,12 @@ export function App() {
         <summary className="menu-trigger" aria-label="User menu">{user.login}</summary>
         <div className="user-submenu" role="menu" onClick={closeParentDetails}>
           <button type="button" className="submenu-button" role="menuitem" onClick={() => setUserSettingsOpen(true)}>User settings</button>
+          <button type="button" className="submenu-button" role="menuitem" onClick={() => setAboutOpen(true)}>About</button>
           <button type="button" className="logout-button" role="menuitem" onClick={handleLogout}>Logout</button>
         </div>
       </details></header>
     {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
+    {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)}/>}
     <Routes>
       <Route path="/" element={<Libraries/>}/>
       <Route path="/library/:id" element={<Browser/>}/>
@@ -1354,6 +1358,53 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
       <button type="button" className="settings-save" onClick={() => void saveSettings()} disabled={saving || !loaded}>{saving ? "Saving…" : "Save settings"}</button>
     </div>
     {passwordModalOpen && <ChangePasswordModal onClose={() => setPasswordModalOpen(false)}/>}
+  </div>;
+}
+
+function AboutModal({onClose}:{onClose:()=>void}) {
+  const [info, setInfo] = useState<About|null>(null);
+  const [error, setError] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  useEffect(() => {
+    api.about().then(setInfo).catch((cause:unknown) => setError((cause as Error).message));
+  }, []);
+  const version = info && info.version !== "dev" ? info.version : appVersion;
+  const revision = info?.revision || appRevision;
+  const buildDate = info?.buildDate || appBuildDate;
+  async function copyAbout() {
+    const lines = [
+      `${info ? info.product : "Media Library"} ${version}`,
+      `Git revision: ${revision}`,
+      `Build date: ${buildDate}`,
+      `Backend: ${info ? `${info.goVersion} · v${info.version}` : ""}`.trim(),
+      `Frontend: React ${appStack.react} · TypeScript ${appStack.typescript} · Vite ${appStack.vite}`,
+    ];
+    if (info?.gatewayEnabled) lines.push(`Gateway: Caddy ${appStack.caddy}`);
+    try {
+      await copyText(lines.join("\n"));
+      setCopyStatus("Copied.");
+    } catch {
+      setCopyStatus("Could not copy automatically.");
+    }
+  }
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="About" onClick={event => closeOnBackdropClick(event, onClose)}>
+    <div className="card settings modal about-modal">
+      <div className="panel-title"><h2>About</h2>
+        <button type="button" className="secondary" onClick={copyAbout} disabled={!info}>Copy</button>
+        <button type="button" className="secondary" onClick={onClose}>Close</button>
+      </div>
+      <p className="muted">Media Library — self-hosted, multi-user photo and video library.</p>
+      {copyStatus && <p className={copyStatus === "Copied." ? "success" : "error"}>{copyStatus}</p>}
+      <dl className="about-table">
+        <div><dt>Version</dt><dd>{version}</dd></div>
+        <div><dt>Git revision</dt><dd>{revision}</dd></div>
+        <div><dt>Build date</dt><dd>{buildDate}</dd></div>
+        <div><dt>Backend</dt><dd>{info ? info.goVersion : "…"}{info ? ` · v${info.version}` : ""}</dd></div>
+        <div><dt>Frontend</dt><dd>React {appStack.react} · TypeScript {appStack.typescript} · Vite {appStack.vite}</dd></div>
+        {info?.gatewayEnabled && <div><dt>Gateway</dt><dd>Caddy {appStack.caddy}</dd></div>}
+      </dl>
+      {error && <p className="error">Could not read backend version: {error}</p>}
+    </div>
   </div>;
 }
 

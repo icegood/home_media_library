@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,9 @@ type API struct {
 	Shutdown          func()
 	ContainerStop     func(context.Context) error
 	WorkerPool        *jobpool.Pool
+	Version           string
+	Revision          string
+	BuildDate         string
 	jobMu             sync.Mutex
 	jobs              map[string]*JobStatus
 	jobCancels        map[string]context.CancelFunc
@@ -96,6 +100,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/me/email", a.auth(http.HandlerFunc(a.setEmail)))
 	mux.Handle("GET /api/v1/settings", a.auth(http.HandlerFunc(a.userSettings)))
 	mux.Handle("PUT /api/v1/settings", a.auth(http.HandlerFunc(a.updateUserSettings)))
+	mux.Handle("GET /api/v1/about", a.auth(http.HandlerFunc(a.about)))
 	mux.Handle("GET /api/v1/libraries", a.auth(http.HandlerFunc(a.libraries)))
 	mux.Handle("GET /api/v1/libraries/{id}/stats", a.auth(http.HandlerFunc(a.libraryStats)))
 	mux.Handle("GET /api/v1/libraries/{id}/entries", a.auth(http.HandlerFunc(a.entries)))
@@ -237,6 +242,17 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, user)
+}
+
+func (a *API) about(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"product":        "Media Library",
+		"version":        a.Version,
+		"revision":       a.Revision,
+		"buildDate":      a.BuildDate,
+		"goVersion":      runtime.Version(),
+		"gatewayEnabled": a.GatewayEnabled,
+	})
 }
 
 func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
@@ -546,6 +562,10 @@ func (a *API) entries(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.Store.Entries(r.Context(), p.ID, id, "")
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "library not found")
+			return
+		}
 		problem(w, 500, err.Error())
 		return
 	}
@@ -617,6 +637,10 @@ func (a *API) libraryMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.Store.MediaForLibrary(r.Context(), p.ID, id)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "library not found")
+			return
+		}
 		problem(w, 500, err.Error())
 		return
 	}

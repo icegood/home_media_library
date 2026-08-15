@@ -58,9 +58,9 @@ case "$mode" in
     ;;
 
   local-build | local | build)
-    ensure_env ../.env .env.default
+    ensure_env .env .env.default
     set -a
-    . ../.env
+    . ./.env
     set +a
 
     if [ "${RUNTIME_DIR:-}" = "./runtime" ]; then
@@ -80,11 +80,11 @@ case "$mode" in
       BUILD_DATE="$(git -C .. show -s --format=%cI "$VCS_REF" 2>/dev/null || printf unknown)"
     fi
     BUILD_DATE="${BUILD_DATE:-unknown}"
-    ENV_FILE="${ENV_FILE:-../.env}"
+    ENV_FILE="${ENV_FILE:-.env}"
     export PROJECT_VERSION API_IMAGE WEB_IMAGE VCS_REF BUILD_DATE ENV_FILE RUNTIME_DIR
 
-    docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml build
-    docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml up -d --remove-orphans
+    docker buildx bake --allow=fs.read=../backend --allow=fs.read=../web --load -f compose.yaml -f compose.local.yaml
+    docker compose --env-file .env -f compose.yaml -f compose.local.yaml up -d --remove-orphans
     ;;
 
   *)
