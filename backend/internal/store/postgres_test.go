@@ -235,14 +235,24 @@ func TestPostgresFolderChainNestedAcrossLibraries(t *testing.T) {
 		t.Fatalf("wide chain relative paths = [%q %q %q]", wideChain[0].RelativePath, wideChain[1].RelativePath, wideChain[2].RelativePath)
 	}
 
-	// Cross-library nesting is not rejected at create time, but a folder is
-	// reachable only through the library whose root is the tree top, so the
-	// inner library finds nothing under it.
-	if _, err := repository.FolderChain(ctx, narrow.ID, day1.ID); err != store.ErrNotFound {
-		t.Fatalf("narrow chain err = %v, want ErrNotFound", err)
+	// Cross-library nesting is not rejected at create time: the inner library's
+	// root is nested beneath the outer one, and the chain is cut at the nearest
+	// ancestor that is a root of the requested library.
+	narrowChain, err := repository.FolderChain(ctx, narrow.ID, day1.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := repository.FolderChain(ctx, narrow.ID, trips.ID); err != store.ErrNotFound {
-		t.Fatalf("narrow root chain err = %v, want ErrNotFound", err)
+	if len(narrowChain) != 2 || narrowChain[0].ID != trips.ID || narrowChain[1].ID != day1.ID {
+		t.Fatalf("narrow chain = %#v, want [trips %d]", narrowChain, day1.ID)
+	}
+	if narrowChain[0].RelativePath != "" || narrowChain[1].RelativePath != "2024" {
+		t.Fatalf("narrow chain relative paths = [%q %q], want [\"\" 2024]", narrowChain[0].RelativePath, narrowChain[1].RelativePath)
+	}
+	if narrowRootChain, err := repository.FolderChain(ctx, narrow.ID, trips.ID); err != nil || len(narrowRootChain) != 1 || narrowRootChain[0].ID != trips.ID {
+		t.Fatalf("narrow root chain = %#v err=%v, want just trips", narrowRootChain, err)
+	}
+	if _, err := repository.FolderChain(ctx, narrow.ID, wide.Roots[0].ID); err != store.ErrNotFound {
+		t.Fatalf("narrow foreign folder err = %v, want ErrNotFound", err)
 	}
 }
 

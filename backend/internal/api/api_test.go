@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -86,6 +88,7 @@ func setup(t *testing.T) fixture {
 	return fixture{handler: (&api.API{
 		Store: repository, Scanner: scanner.Scanner{Store: repository},
 		JWTSecret: []byte(secret), ThumbnailDir: thumbnailDir,
+		Version: "0.1.0-test", Revision: "abc123", BuildDate: "2026-01-02T03:04:05Z",
 	}).Handler(), store: repository, mediaRoot: mediaRoot, thumbnailDir: thumbnailDir, libraryID: library.ID, folderID: folder.ID, photoID: photo.ID, aliceID: aliceID}
 }
 
@@ -504,8 +507,8 @@ func TestLibraryStatsEndpoint(t *testing.T) {
 	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/stats", f.libraryID), bob, nil).Code; got != http.StatusForbidden {
 		t.Fatalf("bob stats status = %d, want 403", got)
 	}
-	if got := request(f.handler, http.MethodGet, "/api/v1/libraries/999999/stats", alice, nil).Code; got != http.StatusNotFound {
-		t.Fatalf("missing library stats status = %d, want 404", got)
+	if got := request(f.handler, http.MethodGet, "/api/v1/libraries/999999/stats", alice, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("missing library stats status = %d, want 403", got)
 	}
 }
 
@@ -549,6 +552,94 @@ func TestMediaContentServes(t *testing.T) {
 	response := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/content", f.photoID), alice, nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("content status = %d: %s", response.Code, response.Body)
+	}
+}
+
+func TestMediaContentDownloadSetsAttachmentHeader(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/content?download=1", f.photoID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("content status = %d: %s", response.Code, response.Body)
+	}
+	disposition := response.Header().Get("Content-Disposition")
+	if !strings.HasPrefix(disposition, "attachment;") {
+		t.Fatalf("Content-Disposition = %q, want attachment", disposition)
+	}
+	if !strings.Contains(disposition, "trip.jpg") {
+		t.Fatalf("Content-Disposition = %q, want the media filename", disposition)
+	}
+}
+
+func TestMediaArchiveDownloadsZip(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	body, _ := json.Marshal(map[string]any{"ids": []int{f.photoID, f.photoID, 999999}})
+	response := request(f.handler, http.MethodPost, "/api/v1/archive", alice, body)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("archive with a missing id status = %d: %s", response.Code, response.Body)
+	}
+	body, _ = json.Marshal(map[string]any{"ids": []int{f.photoID}})
+	response = request(f.handler, http.MethodPost, "/api/v1/archive", alice, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("archive status = %d: %s", response.Code, response.Body)
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/zip" {
+		t.Fatalf("Content-Type = %q, want application/zip", got)
+	}
+	if !strings.HasPrefix(response.Header().Get("Content-Disposition"), "attachment;") {
+		t.Fatalf("Content-Disposition = %q, want attachment", response.Header().Get("Content-Disposition"))
+	}
+	reader, err := zip.NewReader(bytes.NewReader(response.Body.Bytes()), int64(response.Body.Len()))
+	if err != nil {
+		t.Fatalf("response is not a valid zip: %v", err)
+	}
+	if len(reader.File) != 1 {
+		t.Fatalf("zip entries = %d, want 1", len(reader.File))
+	}
+	if reader.File[0].Name != "trip.jpg" {
+		t.Fatalf("zip entry name = %q, want trip.jpg", reader.File[0].Name)
+	}
+	rc, err := reader.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "image" {
+		t.Fatalf("zip content = %q, want %q", content, "image")
+	}
+}
+
+func TestMediaArchiveRequiresAccessToEveryItem(t *testing.T) {
+	f := setup(t)
+	bob := login(t, f.handler, "bob")
+	body, _ := json.Marshal(map[string]any{"ids": []int{f.photoID}})
+	response := request(f.handler, http.MethodPost, "/api/v1/archive", bob, body)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("archive status = %d: %s", response.Code, response.Body)
+	}
+}
+
+func TestMediaArchiveRejectsEmptyOrOversizedRequests(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	if got := request(f.handler, http.MethodPost, "/api/v1/archive", alice, []byte(`{"ids":[]}`)).Code; got != http.StatusBadRequest {
+		t.Fatalf("empty ids status = %d", got)
+	}
+	if got := request(f.handler, http.MethodPost, "/api/v1/archive", alice, []byte(`{}`)).Code; got != http.StatusBadRequest {
+		t.Fatalf("missing ids status = %d", got)
+	}
+	tooMany := make([]int, 1001)
+	for index := range tooMany {
+		tooMany[index] = f.photoID
+	}
+	body, _ := json.Marshal(map[string]any{"ids": tooMany})
+	if got := request(f.handler, http.MethodPost, "/api/v1/archive", alice, body).Code; got != http.StatusBadRequest {
+		t.Fatalf("oversized ids status = %d", got)
 	}
 }
 
@@ -1196,4 +1287,40 @@ func TestAdminCanVacuumDatabaseFromPanel(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("vacuum job did not finish")
+}
+
+func TestAboutExposesBuildAndRuntimeVersions(t *testing.T) {
+	f := setup(t)
+	unauthorized := request(f.handler, http.MethodGet, "/api/v1/about", "", nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("about without auth status = %d, want 401", unauthorized.Code)
+	}
+	session := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodGet, "/api/v1/about", session, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("about status = %d: %s", response.Code, response.Body)
+	}
+	var info struct {
+		Product        string `json:"product"`
+		Version        string `json:"version"`
+		Revision       string `json:"revision"`
+		BuildDate      string `json:"buildDate"`
+		GoVersion      string `json:"goVersion"`
+		GatewayEnabled bool   `json:"gatewayEnabled"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Product != "Media Library" {
+		t.Errorf("product = %q, want Media Library", info.Product)
+	}
+	if info.Version != "0.1.0-test" || info.Revision != "abc123" || info.BuildDate != "2026-01-02T03:04:05Z" {
+		t.Errorf("unexpected build info: %+v", info)
+	}
+	if !strings.HasPrefix(info.GoVersion, "go") {
+		t.Errorf("goVersion = %q, want a go1.x version", info.GoVersion)
+	}
+	if info.GatewayEnabled {
+		t.Errorf("gatewayEnabled = true, want false in the test fixture (gateway not enabled)")
+	}
 }

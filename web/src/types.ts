@@ -45,3 +45,11 @@ export interface ScheduledTask {
   cron:string; enabled:boolean; lastRunAt?:string; nextRunAt:string;
 }
 export interface LogTail { path:string; lines:string[] }
+export interface About {
+  product:string;
+  version:string;
+  revision:string;
+  buildDate:string;
+  goVersion:string;
+  gatewayEnabled:boolean;
+}

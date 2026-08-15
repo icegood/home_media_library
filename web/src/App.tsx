@@ -3,7 +3,8 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type UserSettings as UserSettingsPayload } from "./api";
-import type { EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export function App() {
   const [user, setUser] = useState<User|null>(null);
@@ -13,6 +14,7 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [zoom, setZoom] = useState(100);
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const shellRef = useRef<HTMLDivElement|null>(null);
   useEffect(() => {
     api.setupStatus()
@@ -86,10 +88,12 @@ export function App() {
         <summary className="menu-trigger" aria-label="User menu">{user.login}</summary>
         <div className="user-submenu" role="menu" onClick={closeParentDetails}>
           <button type="button" className="submenu-button" role="menuitem" onClick={() => setUserSettingsOpen(true)}>User settings</button>
+          <button type="button" className="submenu-button" role="menuitem" onClick={() => setAboutOpen(true)}>About</button>
           <button type="button" className="logout-button" role="menuitem" onClick={handleLogout}>Logout</button>
         </div>
       </details></header>
     {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
+    {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)}/>}
     <Routes>
       <Route path="/" element={<Libraries/>}/>
       <Route path="/library/:id" element={<Browser/>}/>
@@ -130,10 +134,20 @@ function folderCrumbName(folder:MediaFolder) {
   return parts[parts.length - 1] || folder.relativePath || `Folder ${folder.id}`;
 }
 
-const folderEntriesCache = new Map<string, Promise<FolderEntries>>();
+const FOLDER_ENTRIES_TTL_MS = 5000;
+type CachedEntries = {promise: Promise<FolderEntries>; expires: number};
+const folderEntriesCache = new Map<string, CachedEntries>();
 
 export function resetFolderEntriesCache() {
   folderEntriesCache.clear();
+}
+
+function cachedFolderEntries(key: string): Promise<FolderEntries> | undefined {
+  const entry = folderEntriesCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expires > Date.now()) return entry.promise;
+  folderEntriesCache.delete(key);
+  return undefined;
 }
 
 function useFolderEntries(libraryId:number, folderId:number|null): FolderEntries | null {
@@ -143,16 +157,18 @@ function useFolderEntries(libraryId:number, folderId:number|null): FolderEntries
     if (!Number.isFinite(libraryId)) return;
     let cancelled = false;
     setData(null);
-    let promise = folderEntriesCache.get(key);
+    let promise = cachedFolderEntries(key);
     if (!promise) {
       promise = folderId == null
         ? api.entries(libraryId).then(entries => ({entries, chain: []}))
         : api.folderEntries(libraryId, folderId);
-      folderEntriesCache.set(key, promise);
+      folderEntriesCache.set(key, {promise, expires: Date.now() + FOLDER_ENTRIES_TTL_MS});
     }
     promise.then(result => { if (!cancelled) setData(result); })
-      .catch(() => { if (!cancelled) setData(null); })
-      .finally(() => { if (folderEntriesCache.get(key) === promise) folderEntriesCache.delete(key); });
+      .catch(() => {
+        folderEntriesCache.delete(key);
+        if (!cancelled) setData(null);
+      });
     return () => { cancelled = true; };
   }, [key]);
   return data;
@@ -1357,6 +1373,53 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   </div>;
 }
 
+function AboutModal({onClose}:{onClose:()=>void}) {
+  const [info, setInfo] = useState<About|null>(null);
+  const [error, setError] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  useEffect(() => {
+    api.about().then(setInfo).catch((cause:unknown) => setError((cause as Error).message));
+  }, []);
+  const version = info && info.version !== "dev" ? info.version : appVersion;
+  const revision = info?.revision || appRevision;
+  const buildDate = info?.buildDate || appBuildDate;
+  async function copyAbout() {
+    const lines = [
+      `${info ? info.product : "Media Library"} ${version}`,
+      `Git revision: ${revision}`,
+      `Build date: ${buildDate}`,
+      `Backend: ${info ? `${info.goVersion} · v${info.version}` : ""}`.trim(),
+      `Frontend: React ${appStack.react} · TypeScript ${appStack.typescript} · Vite ${appStack.vite}`,
+    ];
+    if (info?.gatewayEnabled) lines.push(`Gateway: Caddy ${appStack.caddy}`);
+    try {
+      await copyText(lines.join("\n"));
+      setCopyStatus("Copied.");
+    } catch {
+      setCopyStatus("Could not copy automatically.");
+    }
+  }
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="About" onClick={event => closeOnBackdropClick(event, onClose)}>
+    <div className="card settings modal about-modal">
+      <div className="panel-title"><h2>About</h2>
+        <button type="button" className="secondary" onClick={copyAbout} disabled={!info}>Copy</button>
+        <button type="button" className="secondary" onClick={onClose}>Close</button>
+      </div>
+      <p className="muted">Media Library — self-hosted, multi-user photo and video library.</p>
+      {copyStatus && <p className={copyStatus === "Copied." ? "success" : "error"}>{copyStatus}</p>}
+      <dl className="about-table">
+        <div><dt>Version</dt><dd>{version}</dd></div>
+        <div><dt>Git revision</dt><dd>{revision}</dd></div>
+        <div><dt>Build date</dt><dd>{buildDate}</dd></div>
+        <div><dt>Backend</dt><dd>{info ? info.goVersion : "…"}{info ? ` · v${info.version}` : ""}</dd></div>
+        <div><dt>Frontend</dt><dd>React {appStack.react} · TypeScript {appStack.typescript} · Vite {appStack.vite}</dd></div>
+        {info?.gatewayEnabled && <div><dt>Gateway</dt><dd>Caddy {appStack.caddy}</dd></div>}
+      </dl>
+      {error && <p className="error">Could not read backend version: {error}</p>}
+    </div>
+  </div>;
+}
+
 function ChangePasswordModal({onClose}:{onClose:()=>void}) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -1681,11 +1744,26 @@ function BulkGPSBar({items,selectedIds,onSelectedIds,onUpdated}:{items:Media[]; 
       setBusy(false);
     }
   }
+  async function download() {
+    if (selected.length === 0) {
+      setError("Select at least one item");
+      return;
+    }
+    setBusy(true); setError("");
+    try {
+      await api.downloadArchive(selected.map(item => item.id));
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   return <form className="bulk-toolbar" aria-label="Bulk edit selected media" onSubmit={save}>
     <label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label>
     <span>{selected.length} selected</span>
     <label>GPS for selected<input value={gps} onChange={event => setGPS(event.target.value)} placeholder="50.45,30.52"/></label>
     <button type="submit" disabled={busy || selected.length === 0}>{busy ? "Saving…" : "Apply GPS"}</button>
+    <button type="button" className="secondary" disabled={busy || selected.length === 0} onClick={download}>{busy ? "Zipping…" : "Download selected"}</button>
     {selected.length > 0 && <button type="button" className="secondary" disabled={busy} onClick={() => onSelectedIds([])}>Clear</button>}
     {error && <small className="error">{error}</small>}
   </form>;
@@ -2069,7 +2147,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
   const [imageZoom, setImageZoom] = useState(1);
   const [imagePan, setImagePan] = useState({x:0, y:0});
   const [drag, setDrag] = useState<{pointerId:number; startX:number; startY:number; originX:number; originY:number}|null>(null);
-  useEffect(() => { setImageZoom(1); setImagePan({x:0, y:0}); setDrag(null); }, [item.id]);
+  useEffect(() => { setImagePan({x:0, y:0}); setDrag(null); }, [item.id]);
   useEffect(() => { if (imageZoom === 1) { setImagePan({x:0, y:0}); setDrag(null); } }, [imageZoom]);
   function adjustImageZoom(delta:number) {
     setImageZoom(value => clampZoom(Math.round((value + delta) * 100) / 100));
@@ -2103,6 +2181,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
   return <div className="viewer-stage" aria-label={item.name}>
     <div className="viewer-media" onWheel={onImageWheel}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
+      <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
       {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported}/> :
         <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{transform:`translate(${imagePan.x}px, ${imagePan.y}px) scale(${imageZoom})`}} src={api.contentUrl(item.id)} alt={item.name}

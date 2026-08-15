@@ -4,7 +4,7 @@ map $http_x_forwarded_proto $media_forwarded_proto {
 }
 
 server {
-  listen 8080;
+  listen ${WEB_INTERNAL_PORT};
   server_name _;
   root /usr/share/nginx/html;
   resolver 127.0.0.11 ipv6=off valid=10s;

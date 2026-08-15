@@ -32,6 +32,7 @@ func TestTransportValidation(t *testing.T) {
 }
 
 func TestWriteGeneratesSelectedListeners(t *testing.T) {
+	t.Setenv("WEB_INTERNAL_PORT", "8080")
 	path := filepath.Join(t.TempDir(), "Caddyfile")
 	settings := Settings{
 		HTTPEnabled: true, HTTPSEnabled: true,
@@ -45,10 +46,34 @@ func TestWriteGeneratesSelectedListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := string(data)
-	for _, expected := range []string{"http://:80", "media.example.com", letsEncryptCA} {
+	for _, expected := range []string{"http://:80", "media.example.com", letsEncryptCA, "reverse_proxy web:8080"} {
 		if !strings.Contains(config, expected) {
 			t.Fatalf("generated config does not contain %q:\n%s", expected, config)
 		}
+	}
+}
+
+func TestWriteUsesConfiguredInternalPort(t *testing.T) {
+	t.Setenv("WEB_INTERNAL_PORT", "18080")
+	path := filepath.Join(t.TempDir(), "Caddyfile")
+	settings := Settings{HTTPEnabled: true}
+	if err := Write(path, settings); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "reverse_proxy web:18080") {
+		t.Fatalf("generated config does not proxy to the configured internal port:\n%s", data)
+	}
+}
+
+func TestWriteRejectsInvalidInternalPort(t *testing.T) {
+	t.Setenv("WEB_INTERNAL_PORT", "not-a-port")
+	path := filepath.Join(t.TempDir(), "Caddyfile")
+	if err := Write(path, Settings{HTTPEnabled: true}); err == nil {
+		t.Fatal("invalid WEB_INTERNAL_PORT must be rejected")
 	}
 }
 

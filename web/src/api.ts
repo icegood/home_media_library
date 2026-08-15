@@ -1,4 +1,4 @@
-import type { EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, ID, JobStatus, Library, LibraryStats, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -59,6 +59,7 @@ export const api = {
   userSettings: () => call<UserSettings>("/settings"),
   updateUserSettings: (settings:UserSettings) =>
     call<UserSettings>("/settings", {method:"PUT", body:JSON.stringify(settings)}),
+  about: () => call<About>("/about"),
   libraries: () => call<Library[]>("/libraries"),
   libraryStats: (id:ID) => call<LibraryStats>(`/libraries/${id}/stats`),
   createLibrary: (input:{name:string; roots:{path:string}[]}) =>
@@ -126,7 +127,35 @@ export const api = {
   thumbnailUrl: (id:ID, index = 0) => authUrl(`/media/${id}/thumbnail?index=${index}`),
   folderThumbnailUrl: (id:ID) => authUrl(`/folders/${id}/thumbnail`),
   videoThumbnails: (id:ID) => call<VideoThumbnail[]>(`/media/${id}/thumbnails`),
-  contentUrl: (id:ID) => authUrl(`/media/${id}/content`),
+  contentUrl: (id:ID, download = false) => authUrl(`/media/${id}/content${download ? "?download=1" : ""}`),
+  async downloadArchive(ids:ID[]) {
+    const response = await fetch(`${base}/archive`, {
+      method:"POST",
+      credentials:"same-origin",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ids})
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      let message = `${response.status} ${response.statusText || "HTTP error"}`;
+      try {
+        const parsed: {error?:string}|null = JSON.parse(body);
+        if (parsed && parsed.error) message = parsed.error;
+      } catch {
+        // Non-JSON error body; keep the status-based message.
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "media-archive.zip";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  },
   playbackUrl: (id:ID, codecs:string[], start = 0) =>
     authUrl(`/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}${start > 0 ? `&start=${start}` : ""}`)
 };

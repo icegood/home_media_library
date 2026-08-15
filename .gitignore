@@ -1,20 +1,15 @@
-.env
-.continue/
-runtime/
-thumbnails/
-runtime.discarded-*/
-thumbnails.discarded-*/
-sample-media/
-*.db
-*.db-shm
-*.db-wal
+# Secrets (local only)
+deploy/.env
 .github-token
-backend/bin/
-web/node_modules/
-web/dist/
-*.tsbuildinfo
-web/android/.gradle/
-web/android/app/build/
+
+# Runtime data (single bind mount)
+runtime/
+
+# Local tooling / editors
+.continue/
 .idea/
 .vscode/
 
+# Host Android/Capacitor build output (only when web/android/ is present)
+web/android/.gradle/
+web/android/app/build/

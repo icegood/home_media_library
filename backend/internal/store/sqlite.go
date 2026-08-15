@@ -886,12 +886,11 @@ func (s *SQLite) Folder(ctx context.Context, id int) (domain.MediaFolder, error)
 }
 
 // FolderChain returns the ancestor chain of folderID within libraryID, ordered
-// from the library root down to the folder itself. Library roots are always
-// top-level tree nodes, and roots added to the same library are validated not
-// to nest, so the folder belongs to this library exactly when the top of its
-// chain is one of the library's roots. The whole chain is resolved by a single
-// recursive walk; ErrNotFound is returned when the folder is not beneath any
-// root of this library.
+// from the library root down to the folder itself. The recursive walk climbs
+// to the top of the folder tree; the chain is then cut at the nearest ancestor
+// that is a root of this library (a library root may itself be nested beneath
+// another library's root). ErrNotFound is returned when the folder is not
+// beneath any root of this library.
 func (s *SQLite) FolderChain(ctx context.Context, libraryID, folderID int) ([]domain.MediaFolder, error) {
 	query := `WITH RECURSIVE chain(id, parent_id, path, depth) AS (
 			SELECT id, parent_id, path, 0 FROM media_folders WHERE id = ?
@@ -900,8 +899,8 @@ func (s *SQLite) FolderChain(ctx context.Context, libraryID, folderID int) ([]do
 			FROM media_folders f JOIN chain c ON f.id = c.parent_id)
 		SELECT c.id, c.parent_id, c.path
 		FROM chain c
-		WHERE (SELECT id FROM chain WHERE parent_id IS NULL)
-			IN (SELECT folder_id FROM library_roots WHERE library_id = ?)
+		WHERE c.depth <= (SELECT MIN(depth) FROM chain
+			WHERE id IN (SELECT folder_id FROM library_roots WHERE library_id = ?))
 		ORDER BY c.depth DESC`
 	rows, err := s.db.QueryContext(ctx, query, folderID, libraryID)
 	if err != nil {
@@ -970,10 +969,6 @@ func (s *SQLite) FoldersByIDs(ctx context.Context, ids []int) (map[int]domain.Me
 }
 
 func (s *SQLite) CanRead(ctx context.Context, userID, libraryID int, admin bool) (bool, error) {
-	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM libraries WHERE id = ?`, libraryID).Scan(&exists); err != nil {
-		return false, translateErr(err)
-	}
 	if admin {
 		return true, nil
 	}

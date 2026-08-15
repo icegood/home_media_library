@@ -44,7 +44,7 @@ unchanged by the API.
 Copy the configuration and replace the secrets first:
 
 ```sh
-cp deploy/.env.default .env
+cp deploy/.env.default deploy/.env
 ```
 
 Start the system:
@@ -53,7 +53,7 @@ Start the system:
 sh deploy/start.sh prod
 ```
 
-This pulls the versioned production images from `.env` / `deploy/.env.default`.
+This pulls the versioned production images from `deploy/.env`.
 To build local source instead, run:
 
 ```sh
@@ -61,7 +61,11 @@ sh deploy/start.sh local-build
 ```
 
 The stack runs HTTP-only out of the box: the web service publishes `WEB_PORT`
-directly and no gateway container is started. To serve HTTPS from the app
+directly and no gateway container is started. `WEB_PORT` is the host mapping
+(IP:port or bare port) while `WEB_INTERNAL_PORT` (default 8080) is the port
+nginx listens on inside the web container; set it to a non-default value when an
+external reverse proxy forwards to the container so it does not collide with
+other services on the common port 8080. To serve HTTPS from the app
 itself, enable the optional Caddy gateway once by setting `COMPOSE_PROFILES=https`
 in `deploy/.env` and restarting the stack, then open **Admin panel → System →
 Network** to enable HTTPS. At least one protocol must remain enabled. Changes are
@@ -132,7 +136,8 @@ prefixes.
 
 - Docker with Compose v2 (for the containerized setup).
 - Media folders mounted into the API container (see below).
-- A `.env` file with `JWT_SECRET` set to 32+ random characters.
+- A `deploy/.env` file (copied from `deploy/.env.default`) with `JWT_SECRET` set
+  to 32+ random characters.
 
 ### Production deployment from release artifact
 
@@ -176,7 +181,10 @@ Edit `.env`:
 - `JWT_SECRET` — replace with a real 32+ character secret.
 - `MEDIA_UID` / `MEDIA_GID` — host user/group id that should own runtime files.
 - `DOCKER_GID` — host docker socket group id, if you want the admin stop button.
-- `HTTP_PORT` / `HTTPS_PORT` — host ports to expose.
+- `WEB_PORT` / `WEB_INTERNAL_PORT` — host mapping and in-container nginx port for
+  the web UI (see "Quick start" above).
+- `GATEWAY_HTTP_PORT` / `GATEWAY_HTTPS_PORT` — host ports for the optional Caddy
+  gateway, when `COMPOSE_PROFILES=https` is set.
 - `RUNTIME_DIR` — host folder for database, config, certificates and thumbnails.
 
 Useful commands:
@@ -202,7 +210,7 @@ sh start.sh prod
 Open:
 
 ```text
-http://<host>:<HTTP_PORT>
+http://<host>:<WEB_PORT>
 ```
 
 The first browser visit creates the initial administrator login/password. Runtime
@@ -219,10 +227,10 @@ sh start.sh prod
 ### Local source build with Compose
 
 ```sh
-cp deploy/.env.default .env
+cp deploy/.env.default deploy/.env
 ```
 
-Edit `.env`: set `JWT_SECRET`, and `MEDIA_UID`/`MEDIA_GID` to your host user and
+Edit `deploy/.env`: set `JWT_SECRET`, and `MEDIA_UID`/`MEDIA_GID` to your host user and
 group IDs — the API container runs as that user (the access boundary), so it can
 read the mounted media and write the host-mounted `RUNTIME_DIR`. Mount your media
 folders into the API container manually (e.g. add a volume in
@@ -234,14 +242,14 @@ container** action can call Docker and stop the API container for real:
 getent group docker | cut -d: -f3
 ```
 
-All api container settings are read from `.env` (via `env_file`); libraries
+All api container settings are read from `deploy/.env` (via `env_file`); libraries
 reference explicit absolute paths. Then build and run from source:
 
 ```sh
 sh deploy/start.sh local-build
 ```
 
-Open `http://localhost:${HTTP_PORT:-8080}` and complete the first-run
+Open `http://localhost:${WEB_PORT:-8080}` and complete the first-run
 administrator setup. After changing source, use the same starter so old containers
 cannot keep serving stale API or UI code. It removes only Compose containers;
 bind-mounted runtime data, database, thumbnails, Caddy/Let’s Encrypt state, and
@@ -254,14 +262,13 @@ that is useful for container-less deployments, but in Docker it looks like a
 process exit and `restart: unless-stopped` can start the API again.
 
 The local-build starter derives `API_IMAGE`, `WEB_IMAGE`, `ENV_FILE` and runtime
-paths from `.env`, then runs Compose with the production file plus the local
+paths from `deploy/.env`, then runs Compose with the production file plus the local
 build overlay:
 
 ```sh
 cd deploy
-docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml build
-docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml rm -sf
-docker compose --env-file ../.env -f compose.yaml -f ../compose.local.yaml up -d --remove-orphans
+docker compose --env-file .env -f compose.yaml -f compose.local.yaml build
+docker compose --env-file .env -f compose.yaml -f compose.local.yaml up -d --remove-orphans
 ```
 
 Prefer `sh deploy/start.sh local-build`; raw Compose intentionally fails unless
@@ -310,7 +317,7 @@ It contains only:
 
 [`deploy/compose.yaml`](deploy/compose.yaml) is production-only and contains
 versioned images, not local build contexts. Local source builds add
-[`compose.local.yaml`](compose.local.yaml) through `sh deploy/start.sh local-build`.
+[`deploy/compose.local.yaml`](deploy/compose.local.yaml) through `sh deploy/start.sh local-build`.
 Published deployments use only the files under `deploy/`, so the server does
 not need `backend/` or `web/`.
 
@@ -332,7 +339,10 @@ linux/amd64
 linux/arm64
 ```
 
-Run it in GitHub from **Actions → Publish Docker images → Run workflow**.
+Publishing starts automatically when a commit to `main` changes the
+[`VERSION`](VERSION) file, or manually from
+**Actions → Publish Docker images → Run workflow**. A successful publish also
+creates and pushes the `v<version>` git tag and a matching GitHub release.
 
 To run the same workflow locally, use [`act`](https://github.com/nektos/act).
 Create a local token file; do not commit it:
@@ -368,22 +378,24 @@ docker build -t media-library-api ./backend   # go test ./... then compile
 docker build -t media-library-web ./web       # npm test && npm run build
 ```
 
-For the backend image, pass your host UID/GID so the bind-mounted runtime stays
-writable (the same values as `MEDIA_UID`/`MEDIA_GID` above):
-
-```sh
-docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t media-library-api ./backend
-```
+No UID/GID build arguments are needed: the API image resolves its runtime user
+from the `MEDIA_UID`/`MEDIA_GID` environment variables at container start (via
+`docker-entrypoint.sh`), so just keep those values in `.env` equal to your host
+user/group to keep the bind-mounted runtime writable.
 
 ## API documentation
 
 The complete HTTP API is documented as an OpenAPI 3.0 spec:
 
 - **Interactive Swagger UI** — served by the API at `/swagger`
-  (`http://localhost:8080/swagger` directly, or your host's HTTP/HTTPS port
-  through the gateway).
+  (`http://<host>:<WEB_PORT>/swagger`, or your host's HTTPS port through the
+  gateway).
 - **Spec file** — [`docs/openapi.yaml`](docs/openapi.yaml), the canonical
   document embedded in the backend binary.
+
+The running product's version and build information (project version, git
+revision, build date, Go toolchain) is available to any signed-in user via
+`GET /api/v1/about` and is shown in the UI under **User menu → About**.
 
 See [`docs/architecture.md`](docs/architecture.md) for boundaries and the
 production roadmap, and [`docs/https-domain-setup.md`](docs/https-domain-setup.md)

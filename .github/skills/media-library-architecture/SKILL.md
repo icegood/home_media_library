@@ -36,7 +36,7 @@ The web app also packages as an Android app via Capacitor.
 - `gateway` — Caddy 2.10. The deploy compose inlines a small watcher for the
   generated Caddyfile and reloads Caddy on change; certs via Let's Encrypt.
 - `deploy/compose.yaml` — production api + web + gateway services; single bind
-  mount `./runtime` -> `/runtime` plus read-only media sources (user defined). `compose.local.yaml` adds local source build contexts for dev.
+  mount `./runtime` -> `/runtime` plus read-only media sources (user defined). `deploy/compose.local.yaml` adds local source build contexts for dev.
 
 ## Data model
 
@@ -46,7 +46,8 @@ The web app also packages as an Android app via Capacitor.
 - `MediaFolder` = global scanned directory tree (incl. empty folders), reused
   across libraries -> no media duplication. `Media` = one physical file leaf,
   keyed by folder; image/video derived from `media_mime_types.media_type`.
-- Thumbnails are files under `THUMBNAIL_DIR/<media_id>/<index>.jpg` (not DB,
+- Thumbnails are files under `THUMBNAIL_DIR/media/<id/1000>/<id>_<index>.jpg`
+  (folder covers under `THUMBNAIL_DIR/folders/<id/1000>/<id>_0.jpg`), not in DB,
   not in-memory cache); `thumbnails`/`folder_thumbnails`/`folder_thumbnail_files`
   are cross-reference tables. Folder covers = 3-way hstack JPEG from descendant
   thumbnails.
@@ -64,7 +65,8 @@ The web app also packages as an Android app via Capacitor.
   media, extracts metadata/GPS, then a thumbnail-create job runs.
 - **Playback**: `/play` probes source; if browser-advertised codecs match and
   container/audio are direct-play safe, serves original bytes; otherwise FFmpeg
-  transcodes to the admin-configured fallback codec.
+  transcodes to the requesting user's configured fallback codec (set per account
+  in user settings).
 - **Settings → Network access** toggles HTTP/HTTPS; gateway config is
   regenerated and Caddy hot-reloads without a container restart.
 
@@ -74,20 +76,16 @@ The web app also packages as an Android app via Capacitor.
 - `/runtime/app-config` — generated Caddyfile + app.log
 - `/runtime/caddy-data`, `/runtime/caddy-config` — Caddy/ACME state
 - `/runtime/thumbnails` — generated thumbnails
-- `/runtime/emby-import` — optional read-only Emby source
 
 ## Repository hygiene
 
 Commit (source): `backend/` (`cmd/ internal/ migrations/ go.mod go.sum Dockerfile`),
-`web/` (`src/ package.json package-lock.json Dockerfile nginx.conf index.html
+`web/` (`src/ package.json package-lock.json Dockerfile nginx.conf.template index.html
 vite.config.ts tsconfig*.json capacitor.config.ts`, plus `web/android/` shell if
-present), `compose.local.yaml`, `deploy/`, `docs/`, `.github/`.
+present), `deploy/` (including `compose.local.yaml`), `docs/`, `.github/`.
 
-Ignore (generated/output): `.env` (secrets), `runtime/`, `thumbnails/`,
-`runtime.discarded-*/`, `thumbnails.discarded-*/`, `web/node_modules/`,
-`web/dist/`, `*.tsbuildinfo`, `backend/bin/`, `web/android/.gradle/`,
-`web/android/app/build/`, `*.db`, `*.db-shm`, `*.db-wal`, `sample-media/`
-(empty per-user placeholder), `.idea/`, `.vscode/`.
+Ignore (generated/output): `deploy/.env` (secrets), `.github-token`, `runtime/`,
+`web/android/.gradle/`, `web/android/app/build/`, `.idea/`, `.vscode/`.
 
 ## Verification
 

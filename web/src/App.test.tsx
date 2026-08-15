@@ -44,6 +44,7 @@ const mockApi = vi.hoisted(() => ({
   unfavoriteMedia: vi.fn(),
   thumbnailUrl: vi.fn(),
   contentUrl: vi.fn(),
+  downloadArchive: vi.fn(),
   folderThumbnailUrl: vi.fn(),
   jobs: vi.fn(),
   logs: vi.fn(),
@@ -58,7 +59,8 @@ const mockApi = vi.hoisted(() => ({
   importEmby: vi.fn(),
   filesystem: vi.fn(),
   videoThumbnails: vi.fn(),
-  playbackUrl: vi.fn()
+  playbackUrl: vi.fn(),
+  about: vi.fn()
 }));
 
 vi.mock("./api", () => ({ api: mockApi, MAX_VIDEO_THUMBNAILS: 100 }));
@@ -296,6 +298,47 @@ test("authenticated header renders user menu and clicking logout logs out", asyn
   expect(userMenu.closest("details")).not.toHaveAttribute("open");
   await waitFor(() => expect(mockApi.logout).toHaveBeenCalledTimes(1));
   expect(await screen.findByRole("button", {name:"Sign in"})).toBeInTheDocument();
+});
+
+test("user menu opens About dialog with version information", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:true});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
+  const dialog = await screen.findByRole("dialog", {name:"About"});
+  expect(dialog).toBeInTheDocument();
+  expect(screen.getByText("Media Library — self-hosted, multi-user photo and video library.")).toBeInTheDocument();
+  expect(screen.getByText("0.1.0")).toBeInTheDocument();
+  expect(screen.getByText("go1.23.4 · v0.1.0")).toBeInTheDocument();
+  expect(within(dialog).getByText("Gateway")).toBeInTheDocument();
+  await waitFor(() => expect(mockApi.about).toHaveBeenCalledTimes(1));
+});
+
+test("About dialog omits the gateway entry in an HTTP-only deployment", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:false});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
+  const dialog = await screen.findByRole("dialog", {name:"About"});
+  expect(within(dialog).queryByText("Gateway")).not.toBeInTheDocument();
+});
+
+test("About dialog Copy button copies the version info", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:true});
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {value:{writeText}, configurable:true});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
+  await screen.findByRole("dialog", {name:"About"});
+  fireEvent.click(screen.getByRole("button", {name:"Copy"}));
+  await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Media Library 0.1.0"));
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Gateway: Caddy"));
+  expect(await screen.findByText("Copied.")).toBeInTheDocument();
 });
 
 test("admin settings menu duplicates settings sections and opens selected section", async () => {
@@ -828,6 +871,19 @@ test("favorite add dialog can create a new favorite view first", async () => {
   await waitFor(() => expect(mockApi.favoriteMedia).toHaveBeenCalledWith(44, 100));
 });
 
+test("selected media items can be downloaded as a zip archive", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.entries.mockResolvedValue([
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:20, metadata:{}, gps:"", takenAt:""}}
+  ]);
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Select one.jpg"));
+  fireEvent.click(screen.getByLabelText("Select two.jpg"));
+  fireEvent.click(screen.getByRole("button", {name:"Download selected"}));
+  await waitFor(() => expect(mockApi.downloadArchive).toHaveBeenCalledWith([100, 101]));
+});
+
 test("selected media items can receive the same gps in bulk", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
   mockApi.entries.mockResolvedValue([
@@ -998,6 +1054,15 @@ test("media viewer fetches an item that is not in folder entries", async () => {
   expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
 });
 
+test("media viewer offers a download link for the current item", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[{id:100, name:"one.jpg", relativePath:"Trips/Day1/one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"Trips/Day1/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  mockApi.contentUrl.mockReturnValue("/api/v1/media/100/content?download=1");
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(screen.getByRole("img", {name:"one.jpg"})).toBeInTheDocument());
+  expect(screen.getByRole("link", {name:"Download"})).toHaveAttribute("href", "/api/v1/media/100/content?download=1");
+});
+
 test("media viewer up link goes to containing folder", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[{id:100, name:"one.jpg", relativePath:"Trips/Day1/one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"Trips/Day1/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
@@ -1044,6 +1109,22 @@ test("media viewer without item query redirects to library root", async () => {
   render(<MemoryRouter initialEntries={["/library/1/view/20"]}><App/></MemoryRouter>);
   await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Libraries / Family"));
   await waitFor(() => expect(mockApi.entries).toHaveBeenCalledWith(1));
+});
+
+test("image zoom is preserved when navigating between neighboring files", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"DSC06360.JPG", relativePath:"DSC06360.JPG", type:"media", media:{id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"DSC06361.JPG", relativePath:"DSC06361.JPG", type:"media", media:{id:101, folderId:20, relativePath:"DSC06361.JPG", name:"DSC06361.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(screen.getByRole("img", {name:"DSC06360.JPG"})).toBeInTheDocument());
+  fireEvent.click(screen.getByRole("button", {name:"Zoom in"}));
+  fireEvent.click(screen.getByRole("button", {name:"Zoom in"}));
+  expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("150%");
+  fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+  await waitFor(() => expect(screen.getByRole("img", {name:"DSC06361.JPG"})).toBeInTheDocument());
+  expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("150%");
 });
 
 test("media info remounts metadata when navigating between neighboring files", async () => {

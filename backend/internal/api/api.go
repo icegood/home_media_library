@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,13 +9,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +53,9 @@ type API struct {
 	Shutdown          func()
 	ContainerStop     func(context.Context) error
 	WorkerPool        *jobpool.Pool
+	Version           string
+	Revision          string
+	BuildDate         string
 	jobMu             sync.Mutex
 	jobs              map[string]*JobStatus
 	jobCancels        map[string]context.CancelFunc
@@ -96,6 +103,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/me/email", a.auth(http.HandlerFunc(a.setEmail)))
 	mux.Handle("GET /api/v1/settings", a.auth(http.HandlerFunc(a.userSettings)))
 	mux.Handle("PUT /api/v1/settings", a.auth(http.HandlerFunc(a.updateUserSettings)))
+	mux.Handle("GET /api/v1/about", a.auth(http.HandlerFunc(a.about)))
 	mux.Handle("GET /api/v1/libraries", a.auth(http.HandlerFunc(a.libraries)))
 	mux.Handle("GET /api/v1/libraries/{id}/stats", a.auth(http.HandlerFunc(a.libraryStats)))
 	mux.Handle("GET /api/v1/libraries/{id}/entries", a.auth(http.HandlerFunc(a.entries)))
@@ -112,6 +120,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/favorite-views/{viewId}/media/{id}", a.auth(http.HandlerFunc(a.favoriteMedia)))
 	mux.Handle("DELETE /api/v1/favorite-views/{viewId}/media/{id}", a.auth(http.HandlerFunc(a.unfavoriteMedia)))
 	mux.Handle("GET /api/v1/media/{id}/content", a.auth(http.HandlerFunc(a.content)))
+	mux.Handle("POST /api/v1/archive", a.auth(http.HandlerFunc(a.archive)))
 	mux.Handle("GET /api/v1/media/{id}/play", a.auth(http.HandlerFunc(a.play)))
 	mux.Handle("GET /api/v1/media/{id}/thumbnail", a.auth(http.HandlerFunc(a.thumbnail)))
 	mux.Handle("GET /api/v1/media/{id}/thumbnails", a.auth(http.HandlerFunc(a.videoThumbnails)))
@@ -237,6 +246,17 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, user)
+}
+
+func (a *API) about(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"product":        "Media Library",
+		"version":        a.Version,
+		"revision":       a.Revision,
+		"buildDate":      a.BuildDate,
+		"goVersion":      runtime.Version(),
+		"gatewayEnabled": a.GatewayEnabled,
+	})
 }
 
 func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
@@ -546,6 +566,10 @@ func (a *API) entries(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.Store.Entries(r.Context(), p.ID, id, "")
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "library not found")
+			return
+		}
 		problem(w, 500, err.Error())
 		return
 	}
@@ -617,6 +641,10 @@ func (a *API) libraryMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.Store.MediaForLibrary(r.Context(), p.ID, id)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "library not found")
+			return
+		}
 		problem(w, 500, err.Error())
 		return
 	}
@@ -895,7 +923,72 @@ func (a *API) content(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", item.MIMEType)
+	if r.URL.Query().Get("download") != "" {
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": item.Name}))
+	}
 	http.ServeContent(w, r, item.Name, info.ModTime(), file)
+}
+
+const maxArchiveFiles = 1000
+
+func (a *API) archive(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	var input struct{ IDs []int }
+	if json.NewDecoder(r.Body).Decode(&input) != nil || len(input.IDs) == 0 {
+		problem(w, http.StatusBadRequest, "media ids are required")
+		return
+	}
+	if len(input.IDs) > maxArchiveFiles {
+		problem(w, http.StatusBadRequest, fmt.Sprintf("too many files: %d > %d", len(input.IDs), maxArchiveFiles))
+		return
+	}
+	unique := dedupeInts(input.IDs)
+	items, err := a.Store.MediaBatch(r.Context(), unique)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(items) != len(unique) {
+		problem(w, http.StatusNotFound, "some media items were not found")
+		return
+	}
+	for _, item := range items {
+		if !a.requireMediaRead(w, r, p, item.ID) {
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": "media-archive.zip"}))
+	archive := zip.NewWriter(w)
+	defer archive.Close()
+	used := map[string]bool{}
+	for _, item := range items {
+		file, err := os.Open(item.Path)
+		if err != nil {
+			continue
+		}
+		entry, err := archive.Create(uniqueArchiveName(item.Name, item.ID, used))
+		if err == nil {
+			_, err = io.Copy(entry, file)
+		}
+		file.Close()
+		if err != nil {
+			return
+		}
+	}
+}
+
+func uniqueArchiveName(name string, id int, used map[string]bool) string {
+	base := filepath.Base(name)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = fmt.Sprintf("file_%d", id)
+	}
+	candidate := base
+	for suffix := 2; used[candidate]; suffix++ {
+		candidate = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(base, filepath.Ext(base)), suffix, filepath.Ext(base))
+	}
+	used[candidate] = true
+	return candidate
 }
 
 func (a *API) play(w http.ResponseWriter, r *http.Request) {
@@ -3000,6 +3093,18 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 func problem(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func dedupeInts(ids []int) []int {
+	seen := make(map[int]bool, len(ids))
+	out := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int, bool) {

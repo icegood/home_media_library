@@ -24,6 +24,14 @@ import (
 	"media-library/backend/internal/transcode"
 )
 
+// Build-time values injected via -ldflags (see Dockerfile). They are exposed to
+// authenticated clients through GET /api/v1/about.
+var (
+	version   = "dev"
+	revision  = "unknown"
+	buildDate = "unknown"
+)
+
 func main() {
 	const addr = ":8080"
 	secret := os.Getenv("JWT_SECRET")
@@ -86,6 +94,9 @@ func main() {
 		Shutdown:          stop,
 		ContainerStop:     dockerStopSelf,
 		WorkerPool:        workerPool,
+		Version:           version,
+		Revision:          revision,
+		BuildDate:         buildDate,
 	}
 	handler := apiInstance.Handler()
 
