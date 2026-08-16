@@ -919,3 +919,14 @@ func TestSQLiteVacuumJobCategoryPersists(t *testing.T) {
 		t.Fatalf("vacuum job not persisted: %#v", jobs)
 	}
 }
+
+func TestSQLiteTHMExtensionMapsToImageJPEG(t *testing.T) {
+	repository, _ := openSQLite(t)
+	mimeType, err := repository.MIMETypeForExtension(context.Background(), ".thm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mimeType != "image/jpeg" {
+		t.Fatalf("THM mime = %q, want image/jpeg", mimeType)
+	}
+}

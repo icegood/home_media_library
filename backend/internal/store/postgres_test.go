@@ -698,3 +698,14 @@ func TestPostgresPruneFolderKeepsRoot(t *testing.T) {
 		t.Fatalf("root folder should survive prune: %v", err)
 	}
 }
+
+func TestPostgresTHMExtensionMapsToImageJPEG(t *testing.T) {
+	repository := openPostgres(t, false)
+	mimeType, err := repository.MIMETypeForExtension(context.Background(), ".thm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mimeType != "image/jpeg" {
+		t.Fatalf("THM mime = %q, want image/jpeg", mimeType)
+	}
+}

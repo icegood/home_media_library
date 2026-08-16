@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+ARG GOLANG_IMAGE=golang:1.23-alpine
+FROM --platform=$BUILDPLATFORM ${GOLANG_IMAGE} AS build
 ARG VERSION
 ARG VCS_REF
 ARG BUILD_DATE
@@ -21,6 +22,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
        -ldflags "-X main.version=${VERSION} -X main.revision=${VCS_REF} -X main.buildDate=${BUILD_DATE}" \
        -o /media-api ./cmd/server
+
+# Dev toolchain stage: same base image as `build`, so the Dev Containers
+# configuration (which builds this target) always matches the build version.
+FROM ${GOLANG_IMAGE} AS dev
+RUN apk add --no-cache git bash curl exiftool ffmpeg \
+    && go install golang.org/x/tools/gopls@v0.17.1
 
 FROM alpine:3.21
 ARG VERSION

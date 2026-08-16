@@ -69,6 +69,54 @@ func TestExtractorGracefullySkipsMissingTools(t *testing.T) {
 	}
 }
 
+func TestExtractorConvertsNaiveExifTimeToUTCUsingFileMtime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test writes shell scripts")
+	}
+	exifJSON := `[{"DateTimeOriginal":"2016:05:08 13:49:52","CreateDate":"2016:05:08 13:49:52","ModifyDate":"2016:05:08 13:49:52","FileModifyDate":"2016:05:08 10:49:52+00:00","FileName":"DSC07745.JPG"}]`
+	bin := t.TempDir()
+	writeTool(t, filepath.Join(bin, "exiftool"), "#!/bin/sh\nprintf '%s\\n' '"+exifJSON+"'\n")
+	result, err := (metadata.Extractor{ExifTool: filepath.Join(bin, "exiftool"), Timeout: time.Second}).Extract(context.Background(), "DSC07745.JPG", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TakenAt != "2016-05-08T10:49:52Z" {
+		t.Fatalf("takenAt = %q, want UTC 10:49:52Z (camera local 13:49:52)", result.TakenAt)
+	}
+}
+
+func TestExtractorKeepsExplicitExifOffset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test writes shell scripts")
+	}
+	exifJSON := `[{"DateTimeOriginal":"2016:05:08 13:49:52+03:00","FileModifyDate":"2016:05:08 10:49:52+00:00","FileName":"DSC07745.JPG"}]`
+	bin := t.TempDir()
+	writeTool(t, filepath.Join(bin, "exiftool"), "#!/bin/sh\nprintf '%s\\n' '"+exifJSON+"'\n")
+	result, err := (metadata.Extractor{ExifTool: filepath.Join(bin, "exiftool"), Timeout: time.Second}).Extract(context.Background(), "DSC07745.JPG", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TakenAt != "2016-05-08T10:49:52Z" {
+		t.Fatalf("takenAt = %q, want 2016-05-08T10:49:52Z", result.TakenAt)
+	}
+}
+
+func TestExtractorFallsBackToNaiveUtcWhenMtimeDoesNotMatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test writes shell scripts")
+	}
+	exifJSON := `[{"DateTimeOriginal":"2016:05:08 13:49:52","FileModifyDate":"2026:07:29 06:12:16+00:00","FileName":"DSC07745.JPG"}]`
+	bin := t.TempDir()
+	writeTool(t, filepath.Join(bin, "exiftool"), "#!/bin/sh\nprintf '%s\\n' '"+exifJSON+"'\n")
+	result, err := (metadata.Extractor{ExifTool: filepath.Join(bin, "exiftool"), Timeout: time.Second}).Extract(context.Background(), "DSC07745.JPG", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TakenAt != "2016-05-08T13:49:52Z" {
+		t.Fatalf("takenAt = %q, want naive fallback 2016-05-08T13:49:52Z", result.TakenAt)
+	}
+}
+
 func writeTool(t *testing.T, path, script string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

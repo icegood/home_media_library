@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+ARG NODE_IMAGE=node:22-alpine
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 ARG VERSION
 ARG VCS_REF
 ARG BUILD_DATE
@@ -16,6 +17,11 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . .
 RUN npm test && npm run build
+
+# Dev toolchain stage: same base image as `build`, so the Dev Containers
+# configuration (which builds this target) always matches the build version.
+FROM ${NODE_IMAGE} AS dev
+RUN apk add --no-cache git bash
 
 FROM nginx:1.27-alpine
 ARG VERSION

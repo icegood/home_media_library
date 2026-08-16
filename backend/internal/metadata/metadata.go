@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -153,6 +154,14 @@ func gpsFromEXIF(document map[string]any) string {
 }
 
 func takenAtFromEXIF(document map[string]any) string {
+	var fileModify time.Time
+	fileModifyValid := false
+	if value, ok := stringValue(document["FileModifyDate"]); ok {
+		if parsed, ok := parseExifDate(value); ok {
+			fileModify = parsed
+			fileModifyValid = true
+		}
+	}
 	for _, key := range []string{
 		"DateTimeOriginal",
 		"CreateDate",
@@ -161,12 +170,31 @@ func takenAtFromEXIF(document map[string]any) string {
 		"ModifyDate",
 	} {
 		if value, ok := stringValue(document[key]); ok {
-			if parsed, ok := parseExifDate(value); ok {
-				return parsed.UTC().Format(time.RFC3339)
+			parsed, ok := parseExifDate(value)
+			if !ok {
+				continue
 			}
+			// Camera dates carry no timezone: the wall-clock time in the EXIF
+			// matches the file's mtime (both follow the camera clock). Use the
+			// mtime, which is an absolute instant, to convert to UTC; otherwise
+			// the naive string would be treated as UTC and drift by the camera
+			// offset in the UI.
+			if !hasExplicitOffset(value) && fileModifyValid {
+				correction := fileModify.Sub(parsed)
+				if correction > -12*time.Hour && correction < 12*time.Hour {
+					parsed = parsed.Add(correction)
+				}
+			}
+			return parsed.UTC().Format(time.RFC3339)
 		}
 	}
 	return ""
+}
+
+var explicitOffsetRe = regexp.MustCompile(`(?i)(?:z|[+-]\d{2}:?\d{2})\s*$`)
+
+func hasExplicitOffset(value string) bool {
+	return explicitOffsetRe.MatchString(strings.TrimSpace(value))
 }
 
 func stringValue(value any) (string, bool) {

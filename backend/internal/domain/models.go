@@ -93,6 +93,9 @@ type UserSettings struct {
 	Theme string `json:"theme"`
 	Codec string `json:"codec"`
 	Zoom  int    `json:"zoom"`
+	// DateFormat controls how dates are rendered (and pasted back) in the web
+	// UI: "auto" uses the browser locale, explicit ids select a fixed layout.
+	DateFormat string `json:"dateFormat"`
 	// DefaultThumbImage/Video/Folder pick the placeholder picture shown for
 	// media whose thumbnail has not been generated yet. Values are ids in the
 	// web UI's built-in picture catalog.
@@ -103,7 +106,7 @@ type UserSettings struct {
 
 func DefaultUserSettings() UserSettings {
 	return UserSettings{
-		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100,
+		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100, DateFormat: "auto",
 		DefaultThumbImage: "mountains", DefaultThumbVideo: "mountains", DefaultThumbFolder: "mountains",
 	}
 }

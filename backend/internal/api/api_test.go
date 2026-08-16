@@ -1105,6 +1105,47 @@ func TestCodecIsUserSetting(t *testing.T) {
 	}
 }
 
+func TestDateFormatIsUserSetting(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"h264","dateFormat":"dmy"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("date format status = %d", response.Code)
+	}
+	settings, _ := f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.DateFormat != "dmy" {
+		t.Fatalf("stored dateFormat = %q", settings.DateFormat)
+	}
+	response = request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"h264","dateFormat":"dmy-ss"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("dmy-ss date format status = %d", response.Code)
+	}
+	settings, _ = f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.DateFormat != "dmy-ss" {
+		t.Fatalf("stored dateFormat = %q, want dmy-ss", settings.DateFormat)
+	}
+	response = request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"h264","dateFormat":"mdy-ss"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("mdy-ss date format status = %d", response.Code)
+	}
+	settings, _ = f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.DateFormat != "mdy-ss" {
+		t.Fatalf("stored dateFormat = %q, want mdy-ss", settings.DateFormat)
+	}
+	response = request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"h264","dateFormat":"bogus"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("bogus date format status = %d", response.Code)
+	}
+	settings, _ = f.store.UserSettings(context.Background(), f.aliceID)
+	if settings.DateFormat != "auto" {
+		t.Fatalf("bogus dateFormat must normalize to auto, got %q", settings.DateFormat)
+	}
+	adminSettings, _ := f.store.UserSettings(context.Background(), 1)
+	if adminSettings.DateFormat != "auto" {
+		t.Fatalf("default admin dateFormat = %q", adminSettings.DateFormat)
+	}
+}
+
 func TestLegacyCodecSettingIsNormalized(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")

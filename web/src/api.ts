@@ -215,6 +215,7 @@ export interface UserSettings {
   theme:"light"|"dark"|"system";
   codec:TranscodeSchemaId;
   zoom:number;
+  dateFormat:"auto"|"iso"|"dmy"|"dmy-ss"|"mdy"|"mdy-ss";
   defaultThumbImage:string;
   defaultThumbVideo:string;
   defaultThumbFolder:string;

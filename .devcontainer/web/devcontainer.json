@@ -1,0 +1,26 @@
+{
+  "name": "Media Library Web (React)",
+  "dockerComposeFile": "compose.yaml",
+  "service": "web",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [5173],
+  "postCreateCommand": "npm ci",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "username": "dev",
+      "uid": "automatic",
+      "gid": "automatic"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "files.eol": "\n"
+      }
+    }
+  }
+}

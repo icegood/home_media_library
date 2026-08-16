@@ -178,14 +178,16 @@ function useFolderEntries(libraryId:number, folderId:number|null): FolderEntries
 function useBreadcrumb(): Crumb[] | null {
   const location = useLocation();
   const pathname = location.pathname;
+  const searchParams = new URLSearchParams(location.search);
   const favoritesMatch = pathname.match(/^\/favorites\/view\/[^/]+$/);
   const rootMatch = pathname.match(/^\/library\/([^/]+)$/);
   const folderMatch = pathname.match(/^\/library\/([^/]+)\/folder\/([^/]+)$/);
   const viewerMatch = pathname.match(/^\/library\/([^/]+)\/view\/([^/]+)$/);
   const timelineMatch = pathname.match(/^\/library\/([^/]+)\/timeline$/);
   const timelineFolderMatch = pathname.match(/^\/library\/([^/]+)\/timeline\/([^/]+)$/);
-  const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : timelineMatch ? Number(timelineMatch[1]) : timelineFolderMatch ? Number(timelineFolderMatch[1]) : NaN;
-  const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : timelineFolderMatch ? Number(timelineFolderMatch[2]) : null;
+  const isMap = pathname === "/map";
+  const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : timelineMatch ? Number(timelineMatch[1]) : timelineFolderMatch ? Number(timelineFolderMatch[1]) : isMap && searchParams.get("library") ? Number(searchParams.get("library")) : NaN;
+  const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : timelineFolderMatch ? Number(timelineFolderMatch[2]) : isMap && searchParams.get("folder") ? Number(searchParams.get("folder")) : null;
   const folderData = useFolderEntries(folderID != null ? libraryID : NaN, folderID);
   const [libraries, setLibraries] = useState<Library[]|null>(null);
   useEffect(() => {
@@ -194,9 +196,20 @@ function useBreadcrumb(): Crumb[] | null {
     if (!Number.isFinite(libraryID)) return;
     api.libraries().then(items => { if (!cancelled) setLibraries(items); }).catch(() => setLibraries(null));
     return () => { cancelled = true; };
-  }, [pathname]);
+  }, [pathname, location.search]);
   return useMemo(() => {
     if (favoritesMatch) return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
+    if (isMap) {
+      if (!Number.isFinite(libraryID) || !libraries) return null;
+      const library = libraries.find(item => item.id === libraryID);
+      if (!library) return null;
+      const base: Crumb[] = [{label:`Map of ${library.name}`, to:`/map?library=${libraryID}`}];
+      if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
+        base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:`/map?library=${libraryID}&folder=${folder.id}`})));
+      }
+      base[base.length - 1] = {...base[base.length - 1], current:true};
+      return base;
+    }
     if (!Number.isFinite(libraryID) || !libraries) return null;
     const library = libraries.find(item => item.id === libraryID);
     const timeline = timelineMatch || timelineFolderMatch;
@@ -207,7 +220,7 @@ function useBreadcrumb(): Crumb[] | null {
     }
     if ((rootMatch || folderMatch || timeline) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
     return base;
-  }, [libraries, folderData, pathname]);
+  }, [libraries, folderData, location]);
 }
 
 function closeParentDetails(event:MouseEvent<HTMLElement>) {
@@ -1205,8 +1218,8 @@ function Login({onLogin}:{onLogin:(user:User)=>void}) {
     }
   }
   return <main className="center"><form className="card login" onSubmit={submit}><h1>Media Library</h1>
-    <label>Login<input name="login" autoComplete="username" required/></label>
-    <label>Password<input name="password" type="password" required/></label>
+    <label>Login<input name="login" id="login" autoComplete="username" required/></label>
+    <label>Password<input name="password" id="password" type="password" autoComplete="current-password" required/></label>
     {error && <p className="error">{error}</p>}<button type="submit">Sign in</button>
     <p className="muted"><button type="button" className="link-button" onClick={() => { setForgot(value => !value); setError(""); }}>Forgot password?</button></p>
     {forgot && <fieldset><legend>Password reset</legend>
@@ -1262,6 +1275,7 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264-aac-mp4");
   const [codecOpen, setCodecOpen] = useState(false);
   const [thumbPickerOpen, setThumbPickerOpen] = useState<"image"|"video"|"folder"|null>(null);
+  const [dateFormat, setDateFormat] = useState<DateFormat>("auto");
   const [defaultThumbImage, setDefaultThumbImage] = useState("mountains");
   const [defaultThumbVideo, setDefaultThumbVideo] = useState("mountains");
   const [defaultThumbFolder, setDefaultThumbFolder] = useState("mountains");
@@ -1279,6 +1293,7 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
       setDefaultThumbImage(settings.defaultThumbImage || "mountains");
       setDefaultThumbVideo(settings.defaultThumbVideo || "mountains");
       setDefaultThumbFolder(settings.defaultThumbFolder || "mountains");
+      setDateFormat(normalizeDateFormat(settings.dateFormat));
       setLoaded(true);
     }).catch(() => undefined);
   }, [user.id]);
@@ -1304,8 +1319,8 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   async function saveSettings() {
     setSaving(true); setError(""); setSaved(false);
     try {
-      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
-      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
+      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
+      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
       onThemeChange(draftTheme);
       onZoomChange(draftZoom);
       setSaved(true);
@@ -1334,6 +1349,16 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
           <option value="system">System — match device</option>
         </select></label>
         <small>System follows your browser or operating system setting.</small>
+        <label>Date format<select value={dateFormat} onChange={event => { setDateFormat(event.target.value as DateFormat); setSaved(false); }}>
+          <option value="auto">Browser locale (recommended)</option>
+          <option value="iso">2026-08-16 14:30</option>
+          <option value="dmy">16.08.2026 14:30</option>
+          <option value="dmy-ss">16.08.2026 14:30:15</option>
+          <option value="mdy">08/16/2026 2:30 PM</option>
+          <option value="mdy-ss">08/16/2026 2:30:15 PM</option>
+        </select></label>
+        <small>Controls how dates look and are pasted back in the viewer.</small>
+        {dateFormat === "auto" && !systemLocaleAvailable() && <small className="muted">Your browser did not report a system locale — choose one of the fixed formats above instead.</small>}
       </fieldset>
       <fieldset><legend>Zoom</legend>
         <label>Zoom<select value={draftZoom} onChange={event => { setDraftZoom(Number(event.target.value)); setSaved(false); }}>
@@ -1618,7 +1643,7 @@ function LibraryTimeline() {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)}/>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"}/>
           )}</div>
         </div>
       )}</div>}
@@ -1843,6 +1868,74 @@ function formatShortDate(value:string) {
   return date.toLocaleDateString(undefined, {year:"numeric", month:"short", day:"numeric"});
 }
 
+type DateFormat = "auto" | "iso" | "dmy" | "dmy-ss" | "mdy" | "mdy-ss";
+
+function systemLocaleAvailable() {
+  try {
+    return typeof navigator !== "undefined" && Boolean(navigator.language) &&
+      typeof Intl !== "undefined" && typeof Intl.DateTimeFormat === "function";
+  } catch {
+    return false;
+  }
+}
+
+function pad2(value:number) { return String(value).padStart(2, "0"); }
+
+function formatDateTime(value:string, format:DateFormat = userDateFormat) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  if (format === "iso") return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  if (format === "dmy") return `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  if (format === "dmy-ss") return `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+  if (format === "mdy") {
+    const hours = date.getHours();
+    const hour12 = hours % 12 || 12;
+    return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}/${date.getFullYear()} ${hour12}:${pad2(date.getMinutes())} ${hours < 12 ? "AM" : "PM"}`;
+  }
+  if (format === "mdy-ss") {
+    const hours = date.getHours();
+    const hour12 = hours % 12 || 12;
+    return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}/${date.getFullYear()} ${hour12}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${hours < 12 ? "AM" : "PM"}`;
+  }
+  try {
+    return new Intl.DateTimeFormat(undefined, {dateStyle:"medium", timeStyle:"short"}).format(date);
+  } catch {
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  }
+}
+
+function parseDateTimeText(text:string, format:DateFormat = userDateFormat): Date|null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const value = (index:number) => { const raw = match?.[index]; return raw == null ? 0 : Number(raw); };
+  let match:RegExpMatchArray|null = null;
+  let year = 0, month = 0, day = 0, hours = 0, minutes = 0, seconds = 0;
+  if (format === "dmy" || format === "dmy-ss") {
+    match = trimmed.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (match) { day = value(1); month = value(2); year = value(3); hours = value(4); minutes = value(5); seconds = value(6); }
+  } else if (format === "mdy" || format === "mdy-ss") {
+    match = trimmed.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
+    if (match) { month = value(1); day = value(2); year = value(3); hours = value(4); minutes = value(5); seconds = value(6); }
+  } else {
+    match = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (match) { year = value(1); month = value(2); day = value(3); hours = value(4); minutes = value(5); seconds = value(6); }
+  }
+  if (match) {
+    if (format === "mdy" && match[7]) {
+      const pm = /pm/i.test(match[7]);
+      hours = (hours % 12) + (pm ? 12 : 0);
+    }
+    const date = new Date(year, month - 1, day, hours, minutes, seconds || 0);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  const parsed = Date.parse(trimmed);
+  return Number.isNaN(parsed) ? null : new Date(parsed);
+}
+
+function dateToUTCString(date:Date) {
+  return date.toISOString();
+}
+
 function groupByDate<T extends {takenAt:string}>(items:readonly T[]): {label:string; items:T[]}[] {
   const groups: {label:string; items:T[]}[] = [];
   for (const item of items) {
@@ -1900,7 +1993,7 @@ function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onO
         const priority = row >= firstVisibleRow && row < firstVisibleRow + visibleRows;
         return entry.type === "folder" ?
           <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} priority={priority} onOpenFolder={onOpenFolder}/> :
-          <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} priority={priority} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected}/>;
+          <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} priority={priority} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date"/>;
       })}
     </div>
   </div>;
@@ -1913,7 +2006,10 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Ent
   const [refreshing, setRefreshing] = useState(false);
   const [thumbnailOptionsOpen, setThumbnailOptionsOpen] = useState(false);
   const [thumbnailError, setThumbnailError] = useState("");
-  async function openStats() {
+  const [statsOpen, setStatsOpen] = useState(false);
+  async function toggleStats() {
+    setStatsOpen(open => !open);
+    if (statsOpen || stats) return;
     setStats(null); setStatsError(""); setCalculating(true);
     try {
       const data = await api.folderEntries(libraryId, entry.id);
@@ -1954,7 +2050,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Ent
       {view === "tile" && <FolderCover folderId={entry.folderThumbnail} priority={priority}/>}
       {view === "list" && <span className="folder">▰</span>}
     </button>
-    <button type="button" className="folder-title-button" onClick={openStats}><h2>{entry.name}</h2></button>
+    <button type="button" className="folder-title-button" aria-expanded={statsOpen} onClick={toggleStats}><h2>{entry.name}</h2></button>
     <details className="item-menu folder-menu">
       <summary aria-label={`Folder menu ${entry.name}`}>⋮</summary>
       <div className="item-submenu" role="menu" onClick={closeParentDetails}>
@@ -1963,18 +2059,15 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Ent
       </div>
     </details>
     {thumbnailOptionsOpen && <ThumbnailRefreshModal title={entry.name} busy={refreshing} error={thumbnailError} onClose={() => setThumbnailOptionsOpen(false)} onRefresh={refreshFolderThumbnails}/>}
-    {(stats || statsError || calculating) && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Folder statistics ${entry.name}`} onClick={event => closeOnBackdropClick(event, () => { setStats(null); setStatsError(""); })}>
-      <div className="card settings modal folder-stats">
-        <div className="panel-title"><h2>{entry.name}</h2><button type="button" className="secondary" onClick={() => { setStats(null); setStatsError(""); }}>Close</button></div>
-        {calculating && <p className="muted">Calculating…</p>}
-        {statsError && <p className="error">{statsError}</p>}
-        {stats && <div className="stats-grid">
-          <div><strong>{stats.folders}</strong><span>Folders</span></div>
-          <div><strong>{stats.media}</strong><span>Files</span></div>
-          <div><strong>{stats.images}</strong><span>Images</span></div>
-          <div><strong>{stats.videos}</strong><span>Videos</span></div>
-        </div>}
-      </div>
+    {statsOpen && <div className="folder-stats">
+      {calculating && <p className="muted">Calculating…</p>}
+      {statsError && <p className="error">{statsError}</p>}
+      {stats && <div className="stats-grid">
+        <div><strong>{stats.folders}</strong><span>Folders</span></div>
+        <div><strong>{stats.media}</strong><span>Files</span></div>
+        <div><strong>{stats.images}</strong><span>Images</span></div>
+        <div><strong>{stats.videos}</strong><span>Videos</span></div>
+      </div>}
     </div>}
   </div>;
 }
@@ -1992,10 +2085,31 @@ const DEFAULT_THUMB_PICTURES = [
 function svgDataUri(svg:string) { return `data:image/svg+xml,${encodeURIComponent(svg)}`; }
 
 const userDefaultThumbs = {image:"mountains", video:"mountains", folder:"mountains"};
+let userDateFormat: DateFormat = "auto";
+const dateFormatListeners = new Set<() => void>();
+function normalizeDateFormat(value:unknown): DateFormat {
+  return value === "iso" || value === "dmy" || value === "dmy-ss" || value === "mdy" || value === "mdy-ss" ? value : "auto";
+}
+function setUserDateFormat(value:DateFormat) {
+  if (value === userDateFormat) return;
+  userDateFormat = value;
+  dateFormatListeners.forEach(listener => listener());
+}
+function useUserDateFormat(): DateFormat {
+  const [format, setFormat] = useState(userDateFormat);
+  useEffect(() => {
+    setFormat(userDateFormat);
+    const listener = () => setFormat(userDateFormat);
+    dateFormatListeners.add(listener);
+    return () => { dateFormatListeners.delete(listener); };
+  }, []);
+  return format;
+}
 function syncUserDefaultThumbs(settings:UserSettingsPayload) {
   userDefaultThumbs.image = settings.defaultThumbImage || "mountains";
   userDefaultThumbs.video = settings.defaultThumbVideo || "mountains";
   userDefaultThumbs.folder = settings.defaultThumbFolder || "mountains";
+  setUserDateFormat(normalizeDateFormat(settings.dateFormat));
 }
 function defaultThumbPicture(kind?:string) {
   const id = kind === "folder" ? userDefaultThumbs.folder : kind === "video" ? userDefaultThumbs.video : userDefaultThumbs.image;
@@ -2027,9 +2141,9 @@ function FolderCover({folderId, priority}:{folderId?:ID; priority?:boolean}) {
   return <div className="folder-cover"><ThumbImage src={api.folderThumbnailUrl(folderId)} priority={priority} kind="folder"/></div>;
 }
 
-function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void}) {
+function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string}) {
   const navigate = useNavigate();
-  const open = () => favoriteViewId != null || libraryId == null ? navigate(`/favorites/view/${item.id}?viewId=${encodeURIComponent(String(favoriteViewId ?? ""))}`) : navigate(libraryItemURL(libraryId, item));
+  const open = () => favoriteViewId != null || libraryId == null ? navigate(`/favorites/view/${item.id}?viewId=${encodeURIComponent(String(favoriteViewId ?? ""))}`) : navigate(libraryItemURL(libraryId, item, sort));
   return <article className="card media" onClick={open} role="button" tabIndex={0}
     onKeyDown={event => { if (event.key === "Enter" || event.key === " ") open(); }}>
     {onToggleSelected && <label className="select-media" aria-label={`Select ${item.name}`} onClick={event => event.stopPropagation()}>
@@ -2039,7 +2153,13 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,o
       <ThumbImage src={api.thumbnailUrl(item.id)} priority={priority} kind={item.kind}/>
       {item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}
     </div>}
-    <div><strong>{item.name}</strong><small>{item.kind} · {formatBytes(item.size)}</small></div>
+    <div>
+      {caption === "date-name"
+        ? <><strong>{formatDateTime(item.takenAt)}</strong><small><span>{item.name}</span> ({item.kind}: {formatBytes(item.size)})</small></>
+        : caption === "name-date"
+        ? <><strong><span>{item.name}</span> ({item.kind}: {formatBytes(item.size)})</strong><small>{formatDateTime(item.takenAt)}</small></>
+        : <><strong>{item.name}</strong><small>{item.kind} · {formatBytes(item.size)}</small></>}
+    </div>
     <FavoriteButton item={item} viewId={favoriteViewId} onChange={onFavoriteChange}/>
   </article>;
 }
@@ -2147,7 +2267,24 @@ function MediaViewerPage() {
   const items = (folderData?.entries ?? []).map(entry => entry.media).filter((media): media is Media => media != null);
   const [fallbackItem, setFallbackItem] = useState<Media|null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
-  const folderMedia = items.filter(media => media.folderId === routeFolderId);
+  const sortParam = query.get("sort") ?? "name";
+  const scopeParam = query.get("scope");
+  const [scopedMedia, setScopedMedia] = useState<Media[]|null>(null);
+  useEffect(() => {
+    if (scopeParam == null) {
+      setScopedMedia(null);
+      return;
+    }
+    try {
+      const raw = sessionStorage.getItem(scopeParam);
+      setScopedMedia(raw ? (JSON.parse(raw) as Media[]) : null);
+    } catch {
+      setScopedMedia(null);
+    }
+  }, [scopeParam]);
+  const folderMedia = scopedMedia
+    ? sortParam === "name" ? scopedMedia : sortMedia(scopedMedia, sortParam === "date-asc" ? "asc" : "desc")
+    : sortParam === "name" ? items.filter(media => media.folderId === routeFolderId) : sortMedia(items.filter(media => media.folderId === routeFolderId), sortParam === "date-asc" ? "asc" : "desc");
   const index = folderMedia.findIndex(media => media.id === currentMediaId);
   const item = index >= 0 ? folderMedia[index] : fallbackItem;
   const previous = index > 0 ? folderMedia[index - 1] : null;
@@ -2157,7 +2294,7 @@ function MediaViewerPage() {
     api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null));
   }, [currentMediaId, index]);
   function go(media:Media|null) {
-    if (media) navigate(libraryItemURL(libraryId, media));
+    if (media) navigate(libraryItemURL(libraryId, media, sortParam, scopeParam ?? undefined));
   }
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
@@ -2180,8 +2317,10 @@ function MediaViewerPage() {
   </main>;
 }
 
-function libraryItemURL(libraryId:ID, item:Media) {
+function libraryItemURL(libraryId:ID, item:Media, sort:string = "name", scope?:string) {
   const query = new URLSearchParams({item:String(item.id)});
+  if (sort !== "name") query.set("sort", sort);
+  if (scope) query.set("scope", scope);
   return `/library/${libraryId}/view/${item.folderId}?${query.toString()}`;
 }
 
@@ -2263,19 +2402,21 @@ function eventPoint(event:ReactPointerEvent<HTMLImageElement>) {
 }
 
 function MediaInfo({item}:{item:Media}) {
+  const dateFormat = useUserDateFormat();
   const [name, setName] = useState(item.name);
   const [gpsValue, setGPSValue] = useState(item.gps ?? "");
-  const [takenAt, setTakenAt] = useState(toDateTimeLocal(item.takenAt));
+  const [takenAt, setTakenAt] = useState(() => formatDateTime(item.takenAt, dateFormat));
   const [current, setCurrent] = useState(item);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
-    setName(item.name); setGPSValue(item.gps ?? ""); setTakenAt(toDateTimeLocal(item.takenAt)); setCurrent(item); setSaved(false); setError("");
-  }, [item]);
+    setName(item.name); setGPSValue(item.gps ?? ""); setTakenAt(formatDateTime(item.takenAt, dateFormat)); setCurrent(item); setSaved(false); setError("");
+  }, [item, dateFormat]);
   const trimmedName = name.trim();
   const trimmedGPS = gpsValue.trim();
-  const dirty = trimmedName !== current.name || trimmedGPS !== (current.gps ?? "") || takenAt !== toDateTimeLocal(current.takenAt);
+  const dirty = trimmedName !== current.name || trimmedGPS !== (current.gps ?? "") || takenAt.trim() !== formatDateTime(current.takenAt, dateFormat);
   async function saveDetails() {
     const trimmedName = name.trim();
     const trimmedGPS = gpsValue.trim();
@@ -2283,22 +2424,47 @@ function MediaInfo({item}:{item:Media}) {
       setError("name is required");
       return;
     }
+    let dateValue = "";
+    if (takenAt.trim() !== "") {
+      const parsed = parseDateTimeText(takenAt, dateFormat);
+      if (!parsed) {
+        setError("Date must be in the configured format, for example: " + formatDateTime(new Date().toISOString(), dateFormat));
+        return;
+      }
+      dateValue = dateToUTCString(parsed);
+    }
     setSaving(true); setSaved(false); setError("");
     try {
-      const updated = await api.updateMediaDetails(item.id, {name:trimmedName, gps:trimmedGPS, takenAt:takenAt});
-      setCurrent(updated); setName(updated.name); setGPSValue(updated.gps ?? ""); setTakenAt(toDateTimeLocal(updated.takenAt)); setSaved(true);
+      const updated = await api.updateMediaDetails(item.id, {name:trimmedName, gps:trimmedGPS, takenAt:dateValue});
+      setCurrent(updated); setName(updated.name); setGPSValue(updated.gps ?? ""); setTakenAt(formatDateTime(updated.takenAt, dateFormat)); setSaved(true);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
       setSaving(false);
     }
   }
+  async function copyDate() {
+    const text = formatDateTime(current.takenAt, dateFormat);
+    if (!text || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError("Could not copy the date");
+    }
+  }
   const gps = current.gps ? parseGPS(current.gps) : null;
+  const currentDate = formatDateTime(current.takenAt, dateFormat);
   return <div className="info-panel"><h2>{current.name}</h2>
     <p>{current.kind} · {formatBytes(current.size)}</p>
+    {currentDate && <div className="media-date-copy">
+      <span className="media-date-copy-text" title="Click to select the whole date">{currentDate}</span>
+      <button type="button" className="secondary" onClick={() => void copyDate()}>{copied ? "Copied" : "Copy date"}</button>
+    </div>}
     <div className="media-edit">
       <label>Name<input value={name} onChange={event => setName(event.target.value)} required/></label>
-      <label>Date<input type="datetime-local" value={takenAt} onChange={event => setTakenAt(event.target.value)}/></label>
+      <label>Date<input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/></label>
       <label>GPS<input value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/></label>
       <div className="action-row">
         <button type="button" disabled={saving || !dirty} onClick={saveDetails}>{saving ? "Saving…" : "Save"}</button>
@@ -2321,14 +2487,6 @@ function MetadataSummary({metadata}:{metadata:Record<string, unknown>}) {
       <pre>{JSON.stringify(value, null, 2)}</pre>
     </section>)}
   </div>;
-}
-
-function toDateTimeLocal(value:string|undefined) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
 }
 
 function videoMetadataDuration(metadata:Record<string, unknown>): number {
@@ -2769,6 +2927,11 @@ function SelectionRectangle({bounds}:{bounds:L.LatLngBounds}) {
 function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   const sorted = useMemo(() => sortMedia(items, sort), [items, sort]);
+  const scope = useMemo(() => {
+    const key = `map-scope-${Math.random().toString(36).slice(2)}`;
+    sessionStorage.setItem(key, JSON.stringify(items));
+    return key;
+  }, [items]);
   const visible = useProgressiveReveal(sorted, 100);
   const groups = groupByDate(visible);
   return <aside className="map-timeline-panel" aria-label="Selected area">
@@ -2784,15 +2947,15 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MapAreaItem key={item.id} item={item}/>
+            <MapAreaItem key={item.id} item={item} scope={scope} sort={sort}/>
           )}</div>
         </div>
       )}</div>}
   </aside>;
 }
 
-function MapAreaItem({item}:{item:MapMedia}) {
-  return <Link className="map-area-item" to={libraryItemURL(item.libraryId, item)} aria-label={`Open ${item.name} in folder`}>
+function MapAreaItem({item,scope,sort}:{item:MapMedia; scope:string; sort:"desc"|"asc"}) {
+  return <Link className="map-area-item" to={libraryItemURL(item.libraryId, item, sort === "asc" ? "date-asc" : "date", scope)} aria-label={`Open ${item.name} in folder`}>
     <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
     <small>{item.name}</small>
   </Link>;

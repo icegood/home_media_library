@@ -1,0 +1,14 @@
+# Dev Containers compose: a single Go toolchain container built from the `dev`
+# stage of backend/Dockerfile, which derives from the SAME base image as the
+# production build stage, so the dev Go version never drifts from the build.
+services:
+  api:
+    build:
+      context: ../backend
+      target: dev
+    environment:
+      - CGO_ENABLED=0
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace/backend
+    command: sleep infinity

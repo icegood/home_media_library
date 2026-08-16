@@ -208,8 +208,19 @@ jobs:
           tag="v${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${tag}" -m "Media Library ${{ steps.version.outputs.version }}"
+          git tag -a "${tag}" -m "Media Library ${{ steps.version.outputs.version }}" "${GITHUB_SHA}"
           git push origin "${tag}"
+
+      - name: Retag existing version tag to this commit
+        if: steps.tagcheck.outputs.exists == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f -a "${tag}" -m "Media Library ${{ steps.version.outputs.version }}" "${GITHUB_SHA}"
+          git push -f origin "${tag}"
 
       - name: Create GitHub release
         if: steps.tagcheck.outputs.exists == 'false'
@@ -219,6 +230,20 @@ jobs:
           name: Media Library ${{ steps.version.outputs.version }}
           files: media-library-deploy-${{ steps.version.outputs.version }}.tar.gz
           generate_release_notes: true
+
+      - name: Update existing release with deployment package
+        if: steps.tagcheck.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.version.outputs.version }}"
+          package="media-library-deploy-${{ steps.version.outputs.version }}.tar.gz"
+          if gh release view "${tag}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "${tag}" "${package}" --clobber --repo "${{ github.repository }}"
+          else
+            gh release create "${tag}" "${package}" --title "Media Library ${{ steps.version.outputs.version }}" --repo "${{ github.repository }}"
+          fi
 
       - name: Print image names
         shell: bash

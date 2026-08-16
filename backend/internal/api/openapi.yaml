@@ -2238,6 +2238,10 @@ components:
           minimum: 80
           maximum: 140
           description: UI scale as a percentage of the default; also scales folder and file names.
+        dateFormat:
+          type: string
+          enum: [auto, iso, dmy, dmy-ss, mdy, mdy-ss]
+          description: How dates are formatted in the viewer. `auto` uses the browser locale; the fixed formats are YYYY-MM-DD HH:mm, DD.MM.YYYY HH:mm, DD.MM.YYYY HH:mm:ss, MM/DD/YYYY hh:mm AM/PM, and MM/DD/YYYY hh:mm:ss AM/PM. Unknown values normalize to `auto`.
         defaultThumbImage:
           type: string
           description: Id of the placeholder picture shown for images whose thumbnail has not been generated yet.

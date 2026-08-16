@@ -451,9 +451,10 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	var input struct {
-		Theme string `json:"theme"`
-		Codec string `json:"codec"`
-		Zoom  int    `json:"zoom"`
+		Theme              string `json:"theme"`
+		Codec              string `json:"codec"`
+		Zoom               int    `json:"zoom"`
+		DateFormat         string `json:"dateFormat"`
 		DefaultThumbImage  string `json:"defaultThumbImage"`
 		DefaultThumbVideo  string `json:"defaultThumbVideo"`
 		DefaultThumbFolder string `json:"defaultThumbFolder"`
@@ -496,8 +497,9 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom,
+	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat,
 		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder}
+	settings.DateFormat = normalizeDateFormat(settings.DateFormat)
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {
 		problem(w, http.StatusInternalServerError, "could not save user settings")
 		return
@@ -523,6 +525,16 @@ func normalizeDefaultThumb(value string) (string, error) {
 		return "", errors.New("default thumbnail picture id may only contain lowercase letters, digits, and dashes")
 	}
 	return value, nil
+}
+
+func normalizeDateFormat(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "iso", "dmy", "dmy-ss", "mdy", "mdy-ss":
+		return value
+	default:
+		return "auto"
+	}
 }
 
 func (a *API) libraries(w http.ResponseWriter, r *http.Request) {

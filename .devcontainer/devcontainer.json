@@ -1,0 +1,27 @@
+{
+  "name": "Media Library API (Go)",
+  "dockerComposeFile": "compose.yaml",
+  "service": "api",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [8080],
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "username": "dev",
+      "uid": "automatic",
+      "gid": "automatic"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.formatTool": "gofmt",
+        "go.testFlags": ["-v"],
+        "files.eol": "\n"
+      }
+    }
+  }
+}
