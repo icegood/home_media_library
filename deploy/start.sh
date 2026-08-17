@@ -52,7 +52,17 @@ case "$mode" in
     WEB_IMAGE="ghcr.io/icegood/home-media-library-web:${resolved_version}"
     ENV_FILE="${ENV_FILE:-.env}"
     export API_IMAGE WEB_IMAGE ENV_FILE
-    docker compose -f compose.yaml pull
+    # Pull only the services that will actually run: the gateway is conditional
+    # on the "https" compose profile, so its image is only pulled when the
+    # profile is enabled.
+    pull_targets="api web"
+    for profile in $(printf '%s' "${COMPOSE_PROFILES:-}" | tr ',' ' '); do
+      if [ "$profile" = "https" ]; then
+        pull_targets="$pull_targets gateway"
+      fi
+    done
+    # shellcheck disable=SC2086
+    docker compose -f compose.yaml pull $pull_targets
     docker compose -f compose.yaml rm -sf
     docker compose -f compose.yaml up -d --no-build --remove-orphans
     ;;

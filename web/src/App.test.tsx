@@ -927,7 +927,7 @@ test("selected media items can be downloaded as a zip archive", async () => {
   render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Select one.jpg"));
   fireEvent.click(screen.getByLabelText("Select two.jpg"));
-  fireEvent.click(screen.getByRole("button", {name:"Download selected"}));
+  fireEvent.click(screen.getByRole("button", {name:"Download"}));
   await waitFor(() => expect(mockApi.downloadArchive).toHaveBeenCalledWith([100, 101]));
 });
 
@@ -944,8 +944,8 @@ test("selected media items can receive the same gps in bulk", async () => {
   render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Select one.jpg"));
   fireEvent.click(await screen.findByLabelText("Select two.jpg"));
-  fireEvent.change(screen.getByLabelText("GPS for selected"), {target:{value:"50.45,30.52"}});
-  fireEvent.click(screen.getByRole("button", {name:"Apply GPS"}));
+  fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"50.45,30.52"}});
+  fireEvent.click(screen.getByRole("button", {name:"Apply"}));
   await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledTimes(2));
   expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"50.45,30.52", takenAt:null});
   expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(101, {name:"two.jpg", gps:"50.45,30.52", takenAt:null});
@@ -961,7 +961,7 @@ test("folder timeline loads media for that folder and links back to it", async (
   await waitFor(() => expect(mockApi.folderMedia).toHaveBeenCalledWith(1, 20));
   expect(screen.getByText("two.jpg")).toBeInTheDocument();
   expect(screen.getByText("one.jpg")).toBeInTheDocument();
-  const toggle = within(document.querySelector(".view-toggle") as HTMLElement);
+  const toggle = within(document.querySelector(".button-group") as HTMLElement);
   expect(toggle.getByRole("link", {name:"Folders"})).toHaveAttribute("href", "/library/1/folder/20");
   expect(toggle.getByRole("link", {name:"Map"})).toHaveAttribute("href", "/map?library=1&folder=20");
   expect(screen.getByRole("link", {name:"Timeline of Libraries"})).toHaveAttribute("href", "/");
@@ -1044,7 +1044,9 @@ test("media info shows the date in the configured format, copyable, and pasting 
   const date = new Date("2020-08-21T12:34:00Z");
   const pad2 = (value:number) => String(value).padStart(2, "0");
   const expected = `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-  expect(await screen.findByText(expected)).toHaveClass("media-date-copy-text");
+  const dateInput = await screen.findByLabelText("Date");
+  expect(dateInput).toHaveValue(expected);
+  expect(dateInput.closest(".media-date-editor")).toContainElement(screen.getByRole("button", {name:"Copy date"}));
   expect(screen.getByRole("button", {name:"Copy date"})).toBeInTheDocument();
   const pasted = new Date(2020, 7, 21, 14, 30);
   fireEvent.change(screen.getByLabelText("Date"), {target:{value:`${pad2(pasted.getDate())}.${pad2(pasted.getMonth() + 1)}.${pasted.getFullYear()} ${pad2(pasted.getHours())}:${pad2(pasted.getMinutes())}`}});
@@ -1067,7 +1069,7 @@ test("media info shows and parses the date format with seconds", async () => {
   const date = new Date("2020-08-21T12:34:56Z");
   const pad2 = (value:number) => String(value).padStart(2, "0");
   const expected = `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
-  expect(await screen.findByText(expected)).toHaveClass("media-date-copy-text");
+  expect(await screen.findByLabelText("Date")).toHaveValue(expected);
   const pasted = new Date(2020, 7, 21, 14, 30, 15);
   fireEvent.change(screen.getByLabelText("Date"), {target:{value:`${pad2(pasted.getDate())}.${pad2(pasted.getMonth() + 1)}.${pasted.getFullYear()} ${pad2(pasted.getHours())}:${pad2(pasted.getMinutes())}:${pad2(pasted.getSeconds())}`}});
   fireEvent.click(screen.getByRole("button", {name:"Save"}));

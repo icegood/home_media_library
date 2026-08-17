@@ -212,7 +212,7 @@ export type TranscodeSchemaId =
   | "vp8-opus-webm";
 
 export interface UserSettings {
-  theme:"light"|"dark"|"system";
+  theme:"light"|"dark"|"forest"|"system";
   codec:TranscodeSchemaId;
   zoom:number;
   dateFormat:"auto"|"iso"|"dmy"|"dmy-ss"|"mdy"|"mdy-ss";

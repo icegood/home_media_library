@@ -10,7 +10,7 @@ export function App() {
   const [user, setUser] = useState<User|null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
   const [ready, setReady] = useState(false);
-  const [theme, setTheme] = useState<"light"|"dark"|"system">("light");
+  const [theme, setTheme] = useState<"light"|"dark"|"forest"|"system">("light");
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [zoom, setZoom] = useState(100);
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
@@ -74,7 +74,7 @@ export function App() {
     });
   }
   return <div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
-    {viewerMode && <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>}
+    <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link><Link to="/map">Map</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
@@ -1184,9 +1184,9 @@ function FirstSetup({onComplete}:{onComplete:(user:User)=>void}) {
   return <main className="center"><form className="card login" onSubmit={submit}>
     <h1>Create administrator</h1>
     <p>This is the first startup. Create the account that will manage users, libraries, and access.</p>
-    <label>Login<input name="login" autoComplete="username" minLength={3} maxLength={64} pattern="[A-Za-z0-9._-]+" required/></label>
-    <label>Password<input name="password" type="password" minLength={12} autoComplete="new-password" required/></label>
-    <label>Confirm password<input name="confirmPassword" type="password" minLength={12} autoComplete="new-password" required/></label>
+    <label><span>Login</span><input name="login" autoComplete="username" minLength={3} maxLength={64} pattern="[A-Za-z0-9._-]+" required/></label>
+    <label><span>Password</span><input name="password" type="password" minLength={12} autoComplete="new-password" required/></label>
+    <label><span>Confirm password</span><input name="confirmPassword" type="password" minLength={12} autoComplete="new-password" required/></label>
     {error && <p className="error">{error}</p>}<button type="submit">Create administrator</button>
   </form></main>;
 }
@@ -1218,12 +1218,12 @@ function Login({onLogin}:{onLogin:(user:User)=>void}) {
     }
   }
   return <main className="center"><form className="card login" onSubmit={submit}><h1>Media Library</h1>
-    <label>Login<input name="login" id="login" autoComplete="username" required/></label>
-    <label>Password<input name="password" id="password" type="password" autoComplete="current-password" required/></label>
+    <label><span>Login</span><input name="login" id="login" autoComplete="username" required/></label>
+    <label><span>Password</span><input name="password" id="password" type="password" autoComplete="current-password" required/></label>
     {error && <p className="error">{error}</p>}<button type="submit">Sign in</button>
     <p className="muted"><button type="button" className="link-button" onClick={() => { setForgot(value => !value); setError(""); }}>Forgot password?</button></p>
     {forgot && <fieldset><legend>Password reset</legend>
-      <label>Email<input type="email" value={forgotEmail} onChange={event => setForgotEmail(event.target.value)} autoComplete="email" required/></label>
+      <label><span>Email</span><input type="email" value={forgotEmail} onChange={event => setForgotEmail(event.target.value)} autoComplete="email" required/></label>
       <button type="button" className="secondary" disabled={forgotBusy} onClick={event => void requestReset(event as unknown as FormEvent<HTMLFormElement>)}>Send reset link</button>
     </fieldset>}
     {forgotMessage && <p className="success">{forgotMessage}</p>}
@@ -1265,12 +1265,12 @@ function ResetPassword() {
 }
 
 function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZoomChange, onUserChanged, onClose}:{
-  user:User; theme:"light"|"dark"|"system"; zoom:number; resolvedTheme:"light"|"dark";
-  onThemeChange:(theme:"light"|"dark"|"system")=>void;
+  user:User; theme:"light"|"dark"|"forest"|"system"; zoom:number; resolvedTheme:"light"|"dark"|"forest";
+  onThemeChange:(theme:"light"|"dark"|"forest"|"system")=>void;
   onZoomChange:(zoom:number)=>void;
   onUserChanged:(user:User)=>void; onClose:()=>void;
 }) {
-  const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"system">(theme);
+  const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"forest"|"system">(theme);
   const [draftZoom, setDraftZoom] = useState(zoom);
   const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264-aac-mp4");
   const [codecOpen, setCodecOpen] = useState(false);
@@ -1343,9 +1343,10 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
       </div>
       <p className="muted">Preferences for {user.login}. These apply only to your account.</p>
       <fieldset><legend>Appearance</legend>
-        <label>Theme<select value={draftTheme} onChange={event => { setDraftTheme(event.target.value as "light"|"dark"|"system"); setSaved(false); }}>
+        <label>Theme<select value={draftTheme} onChange={event => { setDraftTheme(event.target.value as "light"|"dark"|"forest"|"system"); setSaved(false); }}>
           <option value="light">Light</option>
           <option value="dark">Dark</option>
+          <option value="forest">Forest</option>
           <option value="system">System — match device</option>
         </select></label>
         <small>System follows your browser or operating system setting.</small>
@@ -1599,9 +1600,12 @@ function Browser() {
     }));
     setSelected([]);
   }
-  return <main className="browser-page"><div className="browser-bar">
-    <div className="view-toggle"><Link className="button-like active" to={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}>Folders</Link><Link className="button-like" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link><Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div></div>
-    <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
+  return <main className="browser-page"><div className="browser-bar"><div className="browser-bar-inner">
+    <div className="button-group"><Link className="button-like active" to={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}>Folders</Link><Link className="button-like" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link><Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link></div>
+    <span className="bar-sep"/>
+    <div className="button-group"><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div>
+    <span className="bar-sep"/>
+    <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
     <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} onToggleSelected={toggleSelected(setSelected)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
 }
 
@@ -1628,15 +1632,18 @@ function LibraryTimeline() {
     setSelected([]);
   }
   return <main className="browser-page">
-    <div className="browser-bar">
-      <div className="view-toggle"><Link className="button-like" to={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</Link><Link className="button-like active" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link>
-        <Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link>
+    <div className="browser-bar"><div className="browser-bar-inner">
+      <div className="button-group"><Link className="button-like" to={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</Link><Link className="button-like active" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link>
+        <Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link></div>
+      <span className="bar-sep"/>
+      <div className="button-group">
         <button className={kind === "all" ? "active" : ""} onClick={() => setKind("all")}>All</button>
         <button className={kind === "image" ? "active" : ""} onClick={() => setKind("image")}>Images</button>
         <button className={kind === "video" ? "active" : ""} onClick={() => setKind("video")}>Videos</button>
         <button onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
-      </div></div>
-    <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
+      </div>
+      <span className="bar-sep"/>
+    <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
     {sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
       <div className="timeline-grid">{groupByDate(sorted).map(group =>
         <div className="timeline-group" key={group.label}>
@@ -1737,9 +1744,13 @@ function FavoriteViewPage() {
   const selected = views.find(view => view.id === Number(viewId));
   return <main className="browser-page">
     <h1>{selected?.name ?? "Favorite view"}</h1>
-    <div className="browser-bar"><div className="crumbs"><Link to="/">Libraries</Link> / <Link to="/favorites">Favorite views</Link> / {selected?.name ?? "View"}</div>
-      <div className="view-toggle"><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div></div>
+    <div className="browser-bar"><div className="browser-bar-inner">
+      <div className="button-group"><Link className="button-like" to="/">Libraries</Link><Link className="button-like" to="/favorites">Favorite views</Link><span className="button-like active">{selected?.name ?? "View"}</span></div>
+      <span className="bar-sep"/>
+      <div className="button-group"><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div>
+      <span className="bar-sep"/>
     <BulkGPSBar items={items} selectedIds={selectedIds} onSelectedIds={setSelectedIds} onUpdated={updated => { setItems(current => current.map(item => updated.find(media => media.id === item.id) ?? item)); setSelectedIds([]); }}/>
+    </div></div>
     {error && <p className="error">{error}</p>}
     {items.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
       <div className={view === "tile" ? "grid" : "list-view"}>{items.map(item =>
@@ -1834,12 +1845,11 @@ function BulkGPSBar({items,selectedIds,onSelectedIds,onUpdated}:{items:Media[]; 
     }
   }
   return <form className="bulk-toolbar" aria-label="Bulk edit selected media" onSubmit={save}>
-    <label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label>
-    <span>{selected.length} selected</span>
-    <label>GPS for selected<input value={gps} onChange={event => setGPS(event.target.value)} placeholder="50.45,30.52"/></label>
-    <button type="submit" disabled={busy || selected.length === 0}>{busy ? "Saving…" : "Apply GPS"}</button>
-    <button type="button" className="secondary" disabled={busy || selected.length === 0} onClick={download}>{busy ? "Zipping…" : "Download selected"}</button>
-    {selected.length > 0 && <button type="button" className="secondary" disabled={busy} onClick={() => onSelectedIds([])}>Clear</button>}
+      <label className="gps-label">GPS<input value={gps} onChange={event => setGPS(event.target.value)} placeholder="50.45,30.52"/></label>
+      <button type="submit" disabled={busy || selected.length === 0}>{busy ? "Saving…" : "Apply"}</button>
+      <button type="button" className="secondary" disabled={busy || selected.length === 0} onClick={download}>{busy ? "Zipping…" : "Download"}</button>
+      <span className="bar-sep"/>
+      <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>{selected.length} selected</span></div>
     {error && <small className="error">{error}</small>}
   </form>;
 }
@@ -2454,18 +2464,27 @@ function MediaInfo({item}:{item:Media}) {
       setError("Could not copy the date");
     }
   }
+  function pickerValue() {
+    const parsed = takenAt.trim() ? parseDateTimeText(takenAt, dateFormat) : current.takenAt ? new Date(current.takenAt) : null;
+    if (!parsed || Number.isNaN(parsed.getTime())) return "";
+    return `${parsed.getFullYear()}-${pad2(parsed.getMonth() + 1)}-${pad2(parsed.getDate())}T${pad2(parsed.getHours())}:${pad2(parsed.getMinutes())}:${pad2(parsed.getSeconds())}`;
+  }
+  function pickDateTime(value:string) {
+    if (!value) {
+      setTakenAt("");
+      return;
+    }
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) setTakenAt(formatDateTime(parsed.toISOString(), dateFormat));
+  }
   const gps = current.gps ? parseGPS(current.gps) : null;
   const currentDate = formatDateTime(current.takenAt, dateFormat);
   return <div className="info-panel"><h2>{current.name}</h2>
     <p>{current.kind} · {formatBytes(current.size)}</p>
-    {currentDate && <div className="media-date-copy">
-      <span className="media-date-copy-text" title="Click to select the whole date">{currentDate}</span>
-      <button type="button" className="secondary" onClick={() => void copyDate()}>{copied ? "Copied" : "Copy date"}</button>
-    </div>}
     <div className="media-edit">
-      <label>Name<input value={name} onChange={event => setName(event.target.value)} required/></label>
-      <label>Date<input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/></label>
-      <label>GPS<input value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/></label>
+      <label className="media-edit-row"><span>Name</span><input value={name} onChange={event => setName(event.target.value)} required/></label>
+      <label className="media-edit-row"><span>Date</span><span className="media-date-editor"><input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/>{currentDate && <button type="button" className="secondary media-date-icon" aria-label="Copy date" title="Copy date" onClick={() => void copyDate()}>{copied ? "✓" : "⧉"}</button>}<input className="media-date-picker" type="datetime-local" step="1" aria-label="Pick date and time" title="Pick date and time" value={pickerValue()} onChange={event => pickDateTime(event.target.value)}/></span></label>
+      <label className="media-edit-row"><span>GPS</span><input value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/></label>
       <div className="action-row">
         <button type="button" disabled={saving || !dirty} onClick={saveDetails}>{saving ? "Saving…" : "Save"}</button>
         {gps && <Link className="secondary-link" to={`/map?item=${current.id}`}>Open on map</Link>}
@@ -2750,7 +2769,7 @@ function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] 
   return items.slice(0, count);
 }
 
-function GeoMap({theme}:{theme:"light"|"dark"}) {
+function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
   const [items, setItems] = useState<MapMedia[]>([]);
   const [pickedGPS, setPickedGPS] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
@@ -2780,20 +2799,24 @@ function GeoMap({theme}:{theme:"light"|"dark"}) {
     setArea({bounds: points.length > 0 ? L.latLngBounds(points) : L.latLngBounds([0,0],[0,0]), items: sortMedia(cluster, "desc")});
   }
   return <main className={`map-page ${area ? "panel-open" : ""}`} aria-label="Media map">
+    <div className="browser-bar"><div className="browser-bar-inner">
+      <div className="button-group"><Link className="button-like" to={libraryParam ? `/library/${libraryParam}${folderParam ? `/folder/${folderParam}` : ""}` : "/"}>Folders</Link><Link className="button-like" to={libraryParam ? `/library/${libraryParam}/timeline${folderParam ? `/${folderParam}` : ""}` : "/"}>Timeline</Link><Link className="button-like active" to={`/map${libraryParam ? `?library=${libraryParam}${folderParam ? `&folder=${folderParam}` : ""}` : ""}`}>Map</Link></div>
+      <span className="bar-sep"/>
+      <div className="button-group">
+        <button className={`select-area-button ${selectMode ? "active" : ""}`} onClick={() => setSelectMode(value => !value)}>{selectMode ? "Cancel area selection" : "Select area"}</button>
+        {area && <button className="secondary" onClick={() => setArea(null)}>Clear selection</button>}
+      </div>
+      {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
+    </div></div>
     <div className="map-stage">
       <MapContainer center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className="map">
-        <TileLayer key={theme} attribution='&copy; OpenStreetMap contributors' url={theme === "dark" ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png" : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"}/>
+        <TileLayer key={theme} attribution='&copy; OpenStreetMap contributors' url={theme === "light" ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"}/>
         <ScaleControl position="bottomleft" imperial={false}/>
         <PlaceSearch/>
         <MapItems items={items} focused={focused} pickedGPS={pickedGPS} copyStatus={copyStatus} selectMode={selectMode} onCopyStatus={setCopyStatus} onPick={value => { setPickedGPS(value); setCopyStatus(""); }} onSelectCluster={selectCluster} onRenderProgress={setRendering}/>
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
-      <div className="map-toolbar">
-        <button className={`select-area-button ${selectMode ? "active" : ""}`} onClick={() => setSelectMode(value => !value)}>{selectMode ? "Cancel area selection" : "Select area"}</button>
-        {area && <button className="secondary" onClick={() => setArea(null)}>Clear selection</button>}
-        {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
-      </div>
     </div>
     {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
   </main>;
@@ -2902,7 +2925,7 @@ function AreaSelector({enabled,onArea}:{enabled:boolean; onArea:(start:L.LatLng,
       if (!enabled) return;
       dragRef.current = {start:event.latlng, current:event.latlng};
       if (!rectangleRef.current) {
-        rectangleRef.current = L.rectangle(L.latLngBounds(event.latlng, event.latlng), {color:"#1769e0", weight:2, dashArray:"6 6", fillOpacity:0.12}).addTo(map);
+        rectangleRef.current = L.rectangle(L.latLngBounds(event.latlng, event.latlng), {color:getComputedStyle(document.documentElement).getPropertyValue("--map-rect").trim()||"#1769e0", weight:2, dashArray:"6 6", fillOpacity:0.12}).addTo(map);
       }
     },
     mousemove: event => {
@@ -2918,7 +2941,7 @@ function AreaSelector({enabled,onArea}:{enabled:boolean; onArea:(start:L.LatLng,
 function SelectionRectangle({bounds}:{bounds:L.LatLngBounds}) {
   const map = useMap();
   useEffect(() => {
-    const layer = L.rectangle(bounds, {color:"#1769e0", weight:2, dashArray:"6 6", fillOpacity:0.1}).addTo(map);
+    const layer = L.rectangle(bounds, {color:getComputedStyle(document.documentElement).getPropertyValue("--map-rect").trim()||"#1769e0", weight:2, dashArray:"6 6", fillOpacity:0.1}).addTo(map);
     return () => { map.removeLayer(layer); };
   }, [bounds, map]);
   return null;

@@ -464,8 +464,8 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Theme = strings.TrimSpace(input.Theme)
-	if input.Theme != "light" && input.Theme != "dark" && input.Theme != "system" {
-		problem(w, http.StatusBadRequest, "theme must be light, dark, or system")
+	if input.Theme != "light" && input.Theme != "dark" && input.Theme != "system" && input.Theme != "forest" {
+		problem(w, http.StatusBadRequest, "theme must be light, dark, forest, or system")
 		return
 	}
 	schema, err := transcode.ParseSchema(input.Codec)

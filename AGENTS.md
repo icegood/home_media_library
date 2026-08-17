@@ -5,9 +5,8 @@ Workspace: self-hosted multi-user media library (`media_library`).
 ## Skills
 
 - `update-ui-after-build` (`.github/skills/update-ui-after-build/SKILL.md`) — after
-  any frontend change, verify in the running app: build, test, and deploy through
-  `deploy/start.sh local-build`, then hard-reload the browser. A stale browser/container
-  means deployment issue until proven otherwise.
+  any frontend change, build, test, and deploy through `deploy/start.sh local-build`.
+  Browser or Playwright verification is only done when explicitly requested.
 - `media-library-architecture` (`.github/skills/media-library-architecture/SKILL.md`) —
   full architecture map: components, data model, flows, runtime layout, hygiene.
 - `short-answers` (`.github/skills/short-answers/SKILL.md`) — answer very short,
