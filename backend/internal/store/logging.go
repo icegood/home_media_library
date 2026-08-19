@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"media-library/backend/internal/applog"
@@ -89,6 +90,8 @@ type loggingConn struct {
 	label string
 }
 
+var querySeq uint64
+
 func (c *loggingConn) Prepare(query string) (driver.Stmt, error) {
 	stmt, err := c.conn.Prepare(query)
 	if err != nil {
@@ -120,15 +123,17 @@ func (c *loggingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (drive
 }
 
 func (c *loggingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	id := atomic.AddUint64(&querySeq, 1)
+	applog.Printf(applog.Debug, "db %s [%d]: %s", c.label, id, query)
 	start := time.Now()
 	if execer, ok := c.conn.(driver.ExecerContext); ok {
 		result, err := execer.ExecContext(ctx, query, args)
-		c.log(query, start, err)
+		logDone(c.label, id, start, err)
 		return result, err
 	}
 	stmt, err := c.PrepareContext(ctx, query)
 	if err != nil {
-		c.log(query, start, err)
+		logDone(c.label, id, start, err)
 		return nil, err
 	}
 	defer stmt.Close()
@@ -139,15 +144,17 @@ func (c *loggingConn) ExecContext(ctx context.Context, query string, args []driv
 }
 
 func (c *loggingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	id := atomic.AddUint64(&querySeq, 1)
+	applog.Printf(applog.Debug, "db %s [%d]: %s", c.label, id, query)
 	start := time.Now()
 	if queryer, ok := c.conn.(driver.QueryerContext); ok {
 		rows, err := queryer.QueryContext(ctx, query, args)
-		c.log(query, start, err)
+		logDone(c.label, id, start, err)
 		return rows, err
 	}
 	stmt, err := c.PrepareContext(ctx, query)
 	if err != nil {
-		c.log(query, start, err)
+		logDone(c.label, id, start, err)
 		return nil, err
 	}
 	defer stmt.Close()
@@ -155,10 +162,6 @@ func (c *loggingConn) QueryContext(ctx context.Context, query string, args []dri
 		return queryer.QueryContext(ctx, args)
 	}
 	return stmt.Query(namedValues(args))
-}
-
-func (c *loggingConn) log(query string, start time.Time, err error) {
-	logQuery(c.label, query, start, err)
 }
 
 type loggingStmt struct {
@@ -177,20 +180,24 @@ func (s *loggingStmt) Query(args []driver.Value) (driver.Rows, error) {
 }
 
 func (s *loggingStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	id := atomic.AddUint64(&querySeq, 1)
+	applog.Printf(applog.Debug, "db %s [%d]: %s", s.label, id, s.query)
 	start := time.Now()
 	if execer, ok := s.stmt.(driver.StmtExecContext); ok {
 		result, err := execer.ExecContext(ctx, args)
-		logQuery(s.label, s.query, start, err)
+		logDone(s.label, id, start, err)
 		return result, err
 	}
 	return s.Exec(namedValues(args))
 }
 
 func (s *loggingStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	id := atomic.AddUint64(&querySeq, 1)
+	applog.Printf(applog.Debug, "db %s [%d]: %s", s.label, id, s.query)
 	start := time.Now()
 	if queryer, ok := s.stmt.(driver.StmtQueryContext); ok {
 		rows, err := queryer.QueryContext(ctx, args)
-		logQuery(s.label, s.query, start, err)
+		logDone(s.label, id, start, err)
 		return rows, err
 	}
 	return s.Query(namedValues(args))
@@ -204,11 +211,11 @@ func namedValues(args []driver.NamedValue) []driver.Value {
 	return values
 }
 
-func logQuery(label, query string, start time.Time, err error) {
+func logDone(label string, id uint64, start time.Time, err error) {
 	duration := time.Since(start).Round(time.Millisecond)
 	if err != nil {
-		applog.Printf(applog.Debug, "db %s: %s (%s): %v", label, query, duration, err)
+		applog.Printf(applog.Debug, "db %s [%d]: done (%s): %v", label, id, duration, err)
 		return
 	}
-	applog.Printf(applog.Debug, "db %s: %s (%s)", label, query, duration)
+	applog.Printf(applog.Debug, "db %s [%d]: done (%s)", label, id, duration)
 }

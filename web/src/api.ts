@@ -104,17 +104,22 @@ export const api = {
   folderMedia: (libraryId:ID, folderId:ID) => call<Media[]>(`/libraries/${libraryId}/folders/${folderId}/media`),
   favoriteViews: () => call<FavoriteView[]>("/favorite-views"),
   mediaFavoriteViews: (id:ID) => call<FavoriteViewMembership[]>(`/media/${id}/favorite-views`),
+  folderFavoriteViews: (id:ID) => call<FavoriteViewMembership[]>(`/folders/${id}/favorite-views`),
   createFavoriteView: (name:string) => call<FavoriteView>("/favorite-views", {method:"POST", body:JSON.stringify({name})}),
   updateFavoriteView: (id:ID, name:string) => call<FavoriteView>(`/favorite-views/${id}`, {method:"PUT", body:JSON.stringify({name})}),
   deleteFavoriteView: (id:ID) => call<void>(`/favorite-views/${id}`, {method:"DELETE"}),
-  favoriteViewMedia: (id:ID) => call<Media[]>(`/favorite-views/${id}/media`),
+  favoriteViewMedia: (id:ID) => call<{id:ID; name:string; mimeType?:string; isFolder?:boolean}[]>(`/favorite-views/${id}/media`),
+  favoriteViewMediaFull: (id:ID) => call<Media[]>(`/favorite-views/${id}/media?full=true`),
+  favoriteFolder: (viewId:ID, folderId:ID) => call<{ok:boolean}>(`/favorite-views/${viewId}/folders/${folderId}`, {method:"PUT"}),
+  unfavoriteFolder: (viewId:ID, folderId:ID) => call<{ok:boolean}>(`/favorite-views/${viewId}/folders/${folderId}`, {method:"DELETE"}),
   media: (id:ID) => call<Media>(`/media/${id}`),
   favoriteMedia: (viewId:ID, id:ID) => call<Media>(`/favorite-views/${viewId}/media/${id}`, {method:"PUT"}),
   unfavoriteMedia: (viewId:ID, id:ID) => call<Media>(`/favorite-views/${viewId}/media/${id}`, {method:"DELETE"}),
-  map: (libraryId?:ID, folderId?:ID, bounds?:{west:number; south:number; east:number; north:number}) => {
+  map: (libraryId?:ID, folderId?:ID, bounds?:{west:number; south:number; east:number; north:number}, favoriteViewId?:ID) => {
     const params:string[] = [];
     if (libraryId != null) params.push(`library=${libraryId}`);
     if (folderId != null) params.push(`folder=${folderId}`);
+    if (favoriteViewId != null) params.push(`favorite=${favoriteViewId}`);
     if (bounds != null) params.push(`bbox=${bounds.west},${bounds.south},${bounds.east},${bounds.north}`);
     return call<MapMedia[]>(`/map${params.length > 0 ? `?${params.join("&")}` : ""}`);
   },
@@ -122,6 +127,10 @@ export const api = {
     call<Media>(`/media/${id}/gps`, {method:"PATCH", body:JSON.stringify({gps})}),
   updateMediaDetails: (id:ID, input:{name:string; gps:string|null; takenAt:string|null}) =>
     call<Media>(`/media/${id}/details`, {method:"PATCH", body:JSON.stringify(input)}),
+  bulkUpdateMedia: (input:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string|null; takenAt?:string|null; shiftMinutes?:number|null}) =>
+    call<{id:ID; takenAt?:string; gps?:string}[]>(`/media/bulk`, {method:"PATCH", body:JSON.stringify(input)}),
+  metadataRenew: (libraryId:ID, input:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean}) =>
+    call<JobStatus>(`/admin/libraries/${libraryId}/metadata/renew`, {method:"POST", body:JSON.stringify(input)}),
   settings: () => call<AdminSettings>("/admin/settings"),
   updateSettings: (settings:AdminSettings) =>
     call<AdminSettings>("/admin/settings", {method:"PUT", body:JSON.stringify(settings)}),

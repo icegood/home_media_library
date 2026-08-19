@@ -261,7 +261,7 @@ func TestFavoritesArePerUserAndRespectReadAccess(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("favorites status = %d: %s", response.Code, response.Body)
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte(fmt.Sprintf(`"id":%d`, f.photoID))) || !bytes.Contains(response.Body.Bytes(), []byte(`"favorite":true`)) {
+	if !bytes.Contains(response.Body.Bytes(), []byte(fmt.Sprintf(`"id":%d`, f.photoID))) {
 		t.Fatalf("favorite media missing from response: %s", response.Body)
 	}
 	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/favorite-views/%d/media", view.ID), bob, nil)

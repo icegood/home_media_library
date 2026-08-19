@@ -297,6 +297,20 @@ type MediaDetailsPatch struct {
 	TakenAt *string `json:"takenAt"`
 }
 
+type BulkMediaPatch struct {
+	SelectedIDs      []int  `json:"selectedIds"`
+	SelectedFolders  []int  `json:"selectedFolders"`
+	GPS              *string `json:"gps"`
+	TakenAt          *string `json:"takenAt"`
+	ShiftMinutes     *float64 `json:"shiftMinutes"`
+}
+
+type BulkMediaResult struct {
+	ID      int    `json:"id"`
+	TakenAt string `json:"takenAt,omitempty"`
+	GPS     string `json:"gps,omitempty"`
+}
+
 func CanonicalGPS(value string) (string, bool) {
 	parts := strings.Split(value, ",")
 	if len(parts) != 2 {
@@ -308,4 +322,14 @@ func CanonicalGPS(value string) (string, bool) {
 		return "", false
 	}
 	return strconv.FormatFloat(latitude, 'f', -1, 64) + "," + strconv.FormatFloat(longitude, 'f', -1, 64), true
+}
+
+func GPSCoords(canonical string) (float64, float64) {
+	parts := strings.Split(canonical, ",")
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	lat, _ := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	lng, _ := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	return lat, lng
 }

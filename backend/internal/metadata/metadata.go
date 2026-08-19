@@ -162,6 +162,17 @@ func takenAtFromEXIF(document map[string]any) string {
 			fileModifyValid = true
 		}
 	}
+	// GPSDateTime is always UTC and can be used as a reference to determine the
+	// camera clock offset when FileModifyDate is too far away (e.g. file was
+	// copied long after the photo was taken).
+	var gpsTime time.Time
+	gpsTimeValid := false
+	if value, ok := stringValue(document["GPSDateTime"]); ok {
+		if parsed, ok := parseExifDate(value); ok {
+			gpsTime = parsed.UTC()
+			gpsTimeValid = true
+		}
+	}
 	for _, key := range []string{
 		"DateTimeOriginal",
 		"CreateDate",
@@ -174,15 +185,28 @@ func takenAtFromEXIF(document map[string]any) string {
 			if !ok {
 				continue
 			}
+			if hasExplicitOffset(value) {
+				return parsed.UTC().Format(time.RFC3339)
+			}
 			// Camera dates carry no timezone: the wall-clock time in the EXIF
 			// matches the file's mtime (both follow the camera clock). Use the
 			// mtime, which is an absolute instant, to convert to UTC; otherwise
 			// the naive string would be treated as UTC and drift by the camera
 			// offset in the UI.
-			if !hasExplicitOffset(value) && fileModifyValid {
+			if fileModifyValid {
 				correction := fileModify.Sub(parsed)
 				if correction > -12*time.Hour && correction < 12*time.Hour {
 					parsed = parsed.Add(correction)
+					return parsed.UTC().Format(time.RFC3339)
+				}
+			}
+			// FileModifyDate is too far away (file copied long after capture).
+			// Use GPS time to determine the camera clock offset.
+			if gpsTimeValid {
+				correction := gpsTime.Sub(parsed)
+				if correction > -12*time.Hour && correction < 12*time.Hour {
+					parsed = parsed.Add(correction)
+					return parsed.UTC().Format(time.RFC3339)
 				}
 			}
 			return parsed.UTC().Format(time.RFC3339)

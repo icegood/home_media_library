@@ -1,10 +1,39 @@
-import { FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
 import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+
+export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
+
+function TopMenuToggle() {
+  const {open, toggle} = useContext(TopMenuCtx);
+  return <button type="button" className="top-menu-handle under-bar" aria-label={open ? "Hide main menu" : "Show main menu"} onClick={toggle}>{open ? "^^" : "vv"}</button>;
+}
+
+// ModalBackdrop: reusable backdrop that installs a capture-phase pointerdown handler
+// when mounted to prevent clicks from reaching elements underneath the modal. It
+// also exposes the same onClick backdrop-close behavior used across the app.
+function ModalBackdrop({children, ariaLabel, onClick, nested}:{children:React.ReactNode; ariaLabel:string; onClick?: (e: React.MouseEvent<HTMLDivElement>)=>void; nested?: boolean}) {
+  const rootRef = useRef<HTMLDivElement|null>(null);
+  useEffect(() => {
+    function capture(e: Event) {
+      if (!(e.target instanceof Node)) return;
+      // If the pointer event originated inside this modal, allow it.
+      if (rootRef.current && rootRef.current.contains(e.target)) return;
+      // Otherwise prevent the event from reaching underlying layers.
+      e.stopImmediatePropagation();
+    }
+    document.addEventListener("pointerdown", capture, true);
+    return () => document.removeEventListener("pointerdown", capture, true);
+  }, []);
+  return <div className={`modal-backdrop${nested ? ' nested' : ''}`} role="dialog" aria-modal="true" aria-label={ariaLabel} ref={rootRef} onClick={onClick}>
+    {children}
+  </div>;
+}
 
 export function App() {
   const [user, setUser] = useState<User|null>(null);
@@ -73,9 +102,10 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  return <div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
-    <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
-    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link><Link to="/map">Map</Link>
+  const isBrowserPage = /^\/library\/\d(\/folder\/\d+)?$/.test(location.pathname);
+  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
+    {!isBrowserPage && <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>}
+    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
         <div className="nav-submenu" role="menu" onClick={closeParentDetails}>
@@ -110,7 +140,7 @@ export function App() {
       <Route path="/admin/settings" element={<Navigate to="/admin"/>}/>
       <Route path="*" element={<NotFound/>}/>
     </Routes>
-  </div>;
+  </div></TopMenuCtx.Provider>;
 }
 
 function NotFound() {
@@ -231,26 +261,25 @@ function closeOnBackdropClick(event:MouseEvent<HTMLElement>, close:()=>void) {
   if (event.target === event.currentTarget) close();
 }
 
-type SettingsSection = "network" | "mail" | "timeouts" | "thumbnails" | "libraries" | "users" | "jobs" | "scheduled" | "logs" | "emby";
+type SettingsSection = "network" | "mail" | "thumbnails" | "libraries" | "users" | "jobs" | "logs" | "database";
 
 const settingsSections: Record<SettingsSection, {label:string; description:string}> = {
   libraries: {label:"Libraries", description:"Add, rename, delete, scan, and refresh thumbnails"},
-  users: {label:"Users", description:"Create users and manage roles"},
+  users: {label:"Users", description:"Create users, manage roles, and login timeout"},
   thumbnails: {label:"Thumbnails", description:"Image and video thumbnail settings"},
   mail: {label:"Mail", description:"Outbound email for password resets"},
   network: {label:"Network", description:"HTTP, HTTPS, DNS, and certificates"},
-  timeouts: {label:"Timeouts", description:"Login and background job retention timeouts"},
-  jobs: {label:"Background jobs", description:"Track scans and thumbnail work"},
-  scheduled: {label:"Scheduled tasks", description:"Automate scans, thumbnails, and maintenance"},
+  jobs: {label:"Jobs", description:"Background jobs, scheduler, and retention"},
   logs: {label:"Logs", description:"Configure and view application logs"},
-  emby: {label:"Emby import", description:"Import Emby data into the library"},
+  database: {label:"Database", description:"Maintenance, shrink, and Emby import"},
 };
 
 const settingsGroups: Array<{label:string; items:Array<{id:SettingsSection; label:string; description:string}>}> = [
   {label:"Media", items:(["libraries", "thumbnails"] as SettingsSection[]).map(settingsItem)},
   {label:"Access", items:(["users"] as SettingsSection[]).map(settingsItem)},
-  {label:"System", items:(["network", "mail", "timeouts", "jobs", "scheduled", "logs"] as SettingsSection[]).map(settingsItem)},
-  {label:"Import", items:(["emby"] as SettingsSection[]).map(settingsItem)},
+  {label:"System", items:(["network", "mail", "logs"] as SettingsSection[]).map(settingsItem)},
+  {label:"Jobs", items:(["jobs"] as SettingsSection[]).map(settingsItem)},
+  {label:"Database", items:(["database"] as SettingsSection[]).map(settingsItem)},
 ];
 
 function settingsItem(id:SettingsSection) {
@@ -287,9 +316,8 @@ function AdminPanel() {
     </aside>
     <section className="settings-content">
       <StopServerButton/>
-      {section === "scheduled"
-        ? <ScheduledTaskManager/>
-        : section === "network" || section === "mail" || section === "timeouts" || section === "thumbnails" || section === "jobs"
+      {section === "database" ? <DatabaseMaintenanceSection/>
+        : section === "network" || section === "mail" || section === "thumbnails" || section === "jobs"
           ? <AdminSettings section={section}/>
           : <LibraryManagement activeSection={section}/>}
     </section>
@@ -351,7 +379,27 @@ function DatabaseVacuumAction() {
 }
 
 function isSettingsSection(value:string|null): value is SettingsSection {
-  return value === "network" || value === "mail" || value === "timeouts" || value === "thumbnails" || value === "libraries" || value === "users" || value === "jobs" || value === "scheduled" || value === "logs" || value === "emby";
+  return value === "network" || value === "mail" || value === "thumbnails" || value === "libraries" || value === "users" || value === "jobs" || value === "logs" || value === "database";
+}
+
+function LoginTimeoutField() {
+  const [hours, setHours] = useState(720);
+  const [allSettings, setAllSettings] = useState<import("./api").AdminSettings|null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { api.settings().then(value => { setHours(value.sessionMaxAgeHours); setAllSettings(value); }).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!allSettings) return;
+    let cancelled = false;
+    setSaving(true);
+    const timeout = window.setTimeout(() => {
+      api.updateSettings({...allSettings, sessionMaxAgeHours: hours}).then(() => { if (!cancelled) setSaving(false); }).catch(() => { if (!cancelled) setSaving(false); });
+    }, 600);
+    return () => { cancelled = true; window.clearTimeout(timeout); };
+  }, [allSettings, hours]);
+  return <div className="card settings"><h2>Login timeout</h2>
+    <label>Remember login, hours<input type="number" min="1" max="8760" value={hours} onChange={event => setHours(Number(event.target.value))} required/></label>
+    <small>Controls the HttpOnly login cookie and JWT expiration. Default is 720 hours, about 30 days. {saving && "Saving…"}</small>
+  </div>;
 }
 
 function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
@@ -485,9 +533,8 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
         {libraries.length === 0 && <div className="empty-state"><h2>No libraries yet</h2><p>Use the Add button above to create the first library.</p></div>}
       </div>
     </>}
-    {activeSection === "users" && <UserManagement/>}
-    {activeSection === "logs" && <><AdminSettings section="logs"/><LogViewer/></>}
-    {activeSection === "emby" && <EmbyImportPanel onImported={loadLibraries}/>} 
+    {activeSection === "users" && <><LoginTimeoutField/><UserManagement/></>}
+    {activeSection === "logs" && <><AdminSettings section="logs"/><LogViewer/></>} 
     {refreshingThumbnails && <ThumbnailRefreshModal title={refreshingThumbnails.name} busy={busy} error={error} onClose={() => setRefreshingThumbnails(null)} onRefresh={recreateExisting => libraryAction("thumbs", {id:refreshingThumbnails.id, name:refreshingThumbnails.name, roots:[]}, {recreateExisting})}/>}
     {statsLibrary && <LibraryStatsModal library={statsLibrary} onClose={() => setStatsLibrary(null)}/>}
     {deleting && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Delete library ${deleting.name}`}>
@@ -530,7 +577,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
 function DirectoryPickerModal({title,filesystem,error,onOpen,onSelect,onClose}:{title:string; filesystem:FilesystemListing|null; error:string; onOpen:(path:string)=>void; onSelect:(path:string)=>void; onClose:()=>void}) {
   return <div className="modal-backdrop nested" role="dialog" aria-modal="true" aria-label={title} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal file-picker">
-      <div className="panel-title"><div><h2>{title}</h2><p>Folders visible to the api process user</p></div><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><div><h2>{title}</h2><p>Folders visible to the api process user</p></div><button type="button" onClick={onClose}>Close</button></div>
       {error && <p className="error">{error}</p>}
       {filesystem && <>
         <div className="picker-path"><span>{filesystem.path}</span><button type="button" onClick={() => onSelect(filesystem.path)}>Select this folder</button></div>
@@ -651,7 +698,7 @@ function UserAccessEditor({user,onClose}:{user:User; onClose:()=>void}) {
   }
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Manage access for ${user.login}`} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal">
-      <div className="panel-title"><h2>Library access</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><h2>Library access</h2><button type="button" onClick={onClose}>Close</button></div>
       <p>Grant <strong>{user.login}</strong> read access to libraries.</p>
       {error && <p className="error">{error}</p>}
       {libraries.length === 0 ? <p className="muted">No libraries yet.</p> :
@@ -724,7 +771,6 @@ function JobMonitor() {
     const interval = window.setInterval(load, 1500);
     return () => { cancelled = true; window.clearInterval(interval); };
   }, []);
-  const categories = ["scan", "thumbnail-create", "vacuum"];
   const activeJobs = jobs.filter(isActiveJob);
   const completedJobs = jobs.filter(job => !isActiveJob(job)).slice(0, 10);
   return <section className="jobs-panel">
@@ -732,14 +778,7 @@ function JobMonitor() {
     {error && <p className="error">{error}</p>}
     {jobs.length === 0 && <p className="muted">No jobs yet.</p>}
     {activeJobs.length === 0 && jobs.length > 0 && <p className="muted">No active jobs. Completed jobs are shown below for a short time.</p>}
-    {activeJobs.length > 0 && <div className="job-categories">{categories.map(category => {
-      const instances = activeJobs.filter(job => jobCategory(job) === category);
-      return <section className="job-category" key={category}>
-        <div className="job-category-title"><h3>{categoryLabel(category)}</h3><small>{instances.length} active</small></div>
-        {instances.length === 0 && <p className="muted">No instances.</p>}
-        <div className="jobs-list">{instances.map(job => <JobInstanceRow job={job} key={job.id} onControl={control}/>)}</div>
-      </section>;
-    })}</div>}
+    {activeJobs.length > 0 && <div className="jobs-list">{activeJobs.map(job => <JobInstanceRow job={job} key={job.id} onControl={control}/>)}</div>}
     {completedJobs.length > 0 && <details className="completed-jobs">
       <summary>Recent completed jobs ({completedJobs.length})</summary>
       <div className="jobs-list">{completedJobs.map(job => <JobInstanceRow job={job} key={job.id} onControl={control}/>)}</div>
@@ -754,7 +793,7 @@ function isActiveJob(job:JobStatus) {
 function JobInstanceRow({job,onControl}:{job:JobStatus; onControl:(id:string, action:"pause"|"resume"|"cancel")=>void}) {
   const percent = job.total > 0 ? Math.min(100, Math.round(job.processed * 100 / job.total)) : 0;
   return <article className="job-row">
-    <div><strong>{job.libraryName}</strong><small>{job.status} · instance {job.id.slice(0, 8)}</small></div>
+    <div className="job-header"><span className="job-category-badge">{categoryLabel(jobCategory(job))}</span><strong>{job.libraryName}</strong><small>{job.status}</small><small className="job-instance-id">{job.id.slice(0, 8)}</small></div>
     <div className="job-progress"><span style={{width:`${percent}%`}}/></div>
     <small>{job.total > 0 ? `${job.processed}/${job.total}` : `${job.processed} paths`}{job.currentPath || job.rootPath ? ` · ${job.currentPath || job.rootPath}` : ""}</small>
     {job.cancelable && <div className="job-controls">
@@ -775,6 +814,7 @@ function categoryLabel(category:string) {
   if (category === "thumbnail-create") return "Thumbnail create";
   if (category === "scan") return "Scan";
   if (category === "vacuum") return "Vacuum";
+  if (category === "metadata-renew") return "Metadata";
   return category;
 }
 
@@ -1021,7 +1061,16 @@ function rootLabel(value = "") {
   return cleaned.split("/").pop() ?? cleaned;
 }
 
-function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnails"|"jobs"|"logs"}) {
+function DatabaseMaintenanceSection() {
+  const loadLibraries = async () => {};
+  return <div className="card settings">
+    <h2>Database</h2>
+    <DatabaseVacuumAction/>
+    <EmbyImportPanel onImported={loadLibraries}/>
+  </div>;
+}
+
+function AdminSettings({section}:{section:"network"|"mail"|"thumbnails"|"jobs"|"logs"}) {
   const [httpEnabled, setHTTPEnabled] = useState(true);
   const [httpsEnabled, setHTTPSEnabled] = useState(false);
   const [publicDns, setPublicDns] = useState("");
@@ -1125,18 +1174,13 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
       <label>Minimum interval, seconds<input type="number" min="1" value={videoThumbnailMinIntervalSeconds} onChange={event => setVideoThumbnailMinIntervalSeconds(Number(event.target.value))} required/></label>
       <small>Thumbnails are capped by max count and never closer than the minimum interval.</small>
     </fieldset></>}
-    {section === "jobs" && <><fieldset><legend>Job worker pool</legend>
-      <label>Worker pool size<input type="number" min="1" max="64" value={workerPoolSize} onChange={event => setWorkerPoolSize(Number(event.target.value))} required/></label>
-      <small>Shared parallel worker count for scan/import and thumbnail creation jobs.</small>
-    </fieldset><DatabaseVacuumAction/><JobMonitor/></>}
-    {section === "timeouts" && <><fieldset><legend>Login timeout</legend>
-      <label>Remember login, hours<input type="number" min="1" max="8760" value={sessionMaxAgeHours} onChange={event => setSessionMaxAgeHours(Number(event.target.value))} required/></label>
-      <small>Controls the HttpOnly login cookie and JWT expiration. Default is 720 hours, about 30 days.</small>
-    </fieldset>
-    <fieldset><legend>Background job timeout</legend>
+    {section === "jobs" && <><fieldset><legend>Background job timeout</legend>
       <label>Remove inactive jobs after, minutes<input type="number" min="1" max="10080" value={finishedJobRetentionMinutes} onChange={event => setFinishedJobRetentionMinutes(Number(event.target.value))} required/></label>
       <small>Done, failed, and cancelled jobs are removed from the admin job list after this time. Active and paused jobs are kept.</small>
-    </fieldset></>}
+    </fieldset><fieldset><legend>Job worker pool</legend>
+      <label>Worker pool size<input type="number" min="1" max="64" value={workerPoolSize} onChange={event => setWorkerPoolSize(Number(event.target.value))} required/></label>
+      <small>Shared parallel worker count for scan/import and thumbnail creation jobs.</small>
+    </fieldset><JobMonitor/><ScheduledTaskManager/></>}
     {section === "logs" && <fieldset><legend>Logs</legend>
       <label>Logging level<select value={logLevel} onChange={event => setLogLevel(event.target.value as typeof logLevel)}>
         <option value="D">D — debug</option>
@@ -1154,12 +1198,11 @@ function AdminSettings({section}:{section:"network"|"mail"|"timeouts"|"thumbnail
   </div>;
 }
 
-function settingsSectionTitle(section:"network"|"mail"|"timeouts"|"thumbnails"|"jobs"|"logs") {
+function settingsSectionTitle(section:"network"|"mail"|"thumbnails"|"jobs"|"logs") {
   if (section === "network") return "Network";
   if (section === "mail") return "Mail";
-  if (section === "timeouts") return "Timeouts";
   if (section === "thumbnails") return "Thumbnails";
-  if (section === "jobs") return "Background jobs";
+  if (section === "jobs") return "Jobs";
   return "Log settings";
 }
 
@@ -1470,7 +1513,7 @@ function AboutModal({onClose}:{onClose:()=>void}) {
     <div className="card settings modal about-modal">
       <div className="panel-title"><h2>About</h2>
         <button type="button" className="secondary" onClick={copyAbout} disabled={!info}>Copy</button>
-        <button type="button" className="secondary" onClick={onClose}>Close</button>
+        <button type="button" onClick={onClose}>Close</button>
       </div>
       <p className="muted">Media Library — self-hosted, multi-user photo and video library.</p>
       {copyStatus && <p className={copyStatus === "Copied." ? "success" : "error"}>{copyStatus}</p>}
@@ -1507,7 +1550,7 @@ function ChangePasswordModal({onClose}:{onClose:()=>void}) {
   }
   return <div className="modal-backdrop nested" role="dialog" aria-modal="true" aria-label="Change password" onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal">
-      <div className="panel-title"><h2>Change password</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><h2>Change password</h2><button type="button" onClick={onClose}>Close</button></div>
       <form onSubmit={submit}>
         <label>Current password<input type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} autoComplete="current-password" required/></label>
         <label>New password<input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} minLength={12} autoComplete="new-password" required/></label>
@@ -1552,7 +1595,7 @@ function LibraryStatsModal({library, onClose}:{library:{id:ID; name:string}; onC
   }, [library.id]);
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Library statistics ${library.name}`} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal folder-stats">
-      <div className="panel-title"><h2>{library.name}</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><h2>{library.name}</h2><button type="button" onClick={onClose}>Close</button></div>
       {calculating && <p className="muted">Calculating…</p>}
       {statsError && <p className="error">{statsError}</p>}
       {stats && <div className="stats-grid">
@@ -1568,13 +1611,30 @@ function LibraryStatsModal({library, onClose}:{library:{id:ID; name:string}; onC
 function ThumbnailRefreshModal({title,busy,error,onClose,onRefresh}:{title:string; busy:boolean; error:string; onClose:()=>void; onRefresh:(recreateExisting:boolean)=>void}) {
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Refresh thumbnails ${title}`} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal">
-      <div className="panel-title"><h2>Refresh thumbnails</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
-      <p><strong>{title}</strong></p>
+      <div className="panel-title"><h2>Refresh thumbnails: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
       <p className="muted">Choose whether existing thumbnails should be kept or regenerated.</p>
       {error && <p className="error">{error}</p>}
       <div className="action-row">
         <button type="button" disabled={busy} onClick={() => onRefresh(false)}>Missing only</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => onRefresh(true)}>Recreate existing</button>
+      </div>
+    </div>
+  </div>;
+}
+
+function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string; busy:boolean; error:string; onClose:()=>void; onRefresh:(recreateExisting:boolean, updateGps:boolean, updateTakenAt:boolean)=>void}) {
+  const [recreateExisting, setRecreateExisting] = useState(false);
+  const [updateGps, setUpdateGps] = useState(false);
+  const [updateTakenAt, setUpdateTakenAt] = useState(false);
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Refresh metadata ${title}`} onClick={event => closeOnBackdropClick(event, onClose)}>
+    <div className="card settings modal">
+      <div className="panel-title"><h2>Re-extract metadata: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
+      {error && <p className="error">{error}</p>}
+      <label className="check"><input type="checkbox" checked={recreateExisting} onChange={event => setRecreateExisting(event.target.checked)}/> Re-extract metadata JSON for all files</label>
+      <label className="check"><input type="checkbox" checked={updateGps} onChange={event => setUpdateGps(event.target.checked)}/> Update GPS coordinates</label>
+      <label className="check"><input type="checkbox" checked={updateTakenAt} onChange={event => setUpdateTakenAt(event.target.checked)}/> Update date/time</label>
+      <div className="action-row">
+        <button type="button" disabled={busy} onClick={() => onRefresh(recreateExisting, updateGps, updateTakenAt)}>Refresh</button>
       </div>
     </div>
   </div>;
@@ -1587,16 +1647,20 @@ function Browser() {
   const folderData = useFolderEntries(libraryId, currentFolderId);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [view, setView] = useState<"tile"|"list">("tile");
+  const [kind, setKind] = useState<"all"|"image"|"video">("all");
   const [selected, setSelected] = useState<ID[]>([]);
+  const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   useEffect(() => {
     setEntries(folderData?.entries ?? []);
   }, [folderData]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
-  function applyBulkGPS(updated:Media[]) {
+  const filteredEntries = kind === "all" ? entries : entries.filter(entry => entry.type === "folder" || entry.media?.kind === kind);
+  function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
-      const item = updated.find(media => media.id === entry.media?.id);
-      return item ? {...entry, media:item} : entry;
+      const p = patches.find(patch => patch.id === entry.media?.id);
+      if (!p) return entry;
+      return {...entry, media:{...entry.media, ...(p.takenAt != null ? {takenAt:p.takenAt} : {}), ...(p.gps != null ? {gps:p.gps} : {})}};
     }));
     setSelected([]);
   }
@@ -1605,8 +1669,15 @@ function Browser() {
     <span className="bar-sep"/>
     <div className="button-group"><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div>
     <span className="bar-sep"/>
-    <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
-    <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} onToggleSelected={toggleSelected(setSelected)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
+    <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
+      <option value="all">All</option>
+      <option value="image">Images</option>
+      <option value="video">Videos</option>
+    </select>
+    <span className="bar-sep"/>
+    <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
+    <TopMenuToggle/>
+    <VirtualEntries entries={filteredEntries} view={view} libraryId={libraryId} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
 }
 
 function LibraryTimeline() {
@@ -1626,9 +1697,20 @@ function LibraryTimeline() {
   }, [libraryId, currentFolderId]);
   const filtered = items.filter(item => kind === "all" || item.kind === kind);
   const sorted = sortMedia(filtered, sort);
+  const sortedJSON = sorted.length > 0 ? JSON.stringify(sorted) : "";
+  const scopeKeyRef = useRef<string|undefined>(undefined);
+  if (sortedJSON && scopeKeyRef.current == null) scopeKeyRef.current = `timeline-scope-${Math.random().toString(36).slice(2)}`;
+  useEffect(() => {
+    if (scopeKeyRef.current && sortedJSON) {
+      try { sessionStorage.setItem(scopeKeyRef.current, sortedJSON); } catch { /* quota */ }
+    }
+  }, [sortedJSON]);
   const [selected, setSelected] = useState<ID[]>([]);
-  function applyBulkGPS(updated:Media[]) {
-    setItems(current => current.map(item => updated.find(media => media.id === item.id) ?? item));
+  function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
+    setItems(current => current.map(item => {
+      const p = patches.find(patch => patch.id === item.id);
+      return p ? {...item, ...(p.takenAt != null ? {takenAt:p.takenAt} : {}), ...(p.gps != null ? {gps:p.gps} : {})} : item;
+    }));
     setSelected([]);
   }
   return <main className="browser-page">
@@ -1637,9 +1719,11 @@ function LibraryTimeline() {
         <Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link></div>
       <span className="bar-sep"/>
       <div className="button-group">
-        <button className={kind === "all" ? "active" : ""} onClick={() => setKind("all")}>All</button>
-        <button className={kind === "image" ? "active" : ""} onClick={() => setKind("image")}>Images</button>
-        <button className={kind === "video" ? "active" : ""} onClick={() => setKind("video")}>Videos</button>
+        <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
+          <option value="all">All</option>
+          <option value="image">Images</option>
+          <option value="video">Videos</option>
+        </select>
         <button onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
       </div>
       <span className="bar-sep"/>
@@ -1650,7 +1734,7 @@ function LibraryTimeline() {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"}/>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort="name" scope={scopeKeyRef.current}/>
           )}</div>
         </div>
       )}</div>}
@@ -1728,34 +1812,145 @@ function FavoriteViewRow({view,onChange}:{view:FavoriteView; onChange:()=>void})
   </div>;
 }
 
+type FavoriteItem = {id:ID; name:string; mimeType?:string; isFolder?:boolean};
+
+function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove}:{id:ID; name:string; view:"tile"|"list"; favoriteViewId?:ID; onRemove?:(id:ID)=>void}) {
+  const [busy, setBusy] = useState(false);
+  async function remove(event:MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (!favoriteViewId) return;
+    setBusy(true);
+    try { await api.unfavoriteFolder(favoriteViewId, id); onRemove?.(id); } finally { setBusy(false); }
+  }
+  const navigate = useNavigate();
+  async function openFolder(event?:MouseEvent) {
+    event?.stopPropagation();
+    setBusy(true);
+    try {
+      const libs = await api.libraries();
+      for (const lib of libs) {
+        try {
+          await api.folder(lib.id, id);
+          navigate(`/library/${lib.id}/folder/${id}`);
+          return;
+        } catch (_) {
+          // not in this library, try next
+        }
+      }
+      window.alert("Could not open folder: library not found or access denied.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <article className={`card media folder-card ${view}`} onClick={() => void openFolder()}>
+
+    {view === "tile" && <div className="thumb-wrap"><FolderCover/></div>}
+    <div className="media-text"><strong>{name}</strong></div>
+    {favoriteViewId != null && <button type="button" className="favorite-button active" aria-label={`Remove ${name} from this favorite view`} disabled={busy} onClick={remove}>★</button>}
+  </article>;
+}
+
 function FavoriteViewPage() {
   const {viewId=""} = useParams();
   const favoriteViewId = Number(viewId);
-  const [items, setItems] = useState<Media[]>([]);
+  const [items, setItems] = useState<FavoriteItem[]>([]);
+  const [mediaItems, setMediaItems] = useState<Media[]>([]);
   const [view, setView] = useState<"tile"|"list">("tile");
+  const [displayMode, setDisplayMode] = useState<"folders"|"timeline"|"map">("folders");
+  const [kind, setKind] = useState<"all"|"image"|"video">("all");
+  const [sort, setSort] = useState<"desc"|"asc">("desc");
   const [views, setViews] = useState<FavoriteView[]>([]);
+  const [selected, setSelected] = useState<ID[]>([]);
   const [error, setError] = useState("");
-  const [selectedIds, setSelectedIds] = useState<ID[]>([]);
+  const [loaded, setLoaded] = useState(false);
   function load() {
-    if (Number.isFinite(favoriteViewId)) api.favoriteViewMedia(favoriteViewId).then(setItems).catch(cause => setError((cause as Error).message));
+    if (!Number.isFinite(favoriteViewId)) return;
+    setLoaded(false);
+    Promise.all([
+      api.favoriteViewMedia(favoriteViewId),
+      api.favoriteViewMediaFull(favoriteViewId)
+    ]).then(([itemsData, mediaData]) => {
+      setItems(itemsData);
+      setMediaItems(mediaData);
+      setLoaded(true);
+    }).catch(cause => setError((cause as Error).message));
   }
   useEffect(load, [favoriteViewId]);
   useEffect(() => { api.favoriteViews().then(setViews).catch(() => undefined); }, []);
-  const selected = views.find(view => view.id === Number(viewId));
+  const selectedView = views.find(v => v.id === Number(viewId));
+  const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (kind === "image" ? i.mimeType?.startsWith("image/") : i.mimeType?.startsWith("video/")));
+  const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => m.kind === kind);
+  const sortedMedia = sortMedia(filteredMedia, sort);
+  const sortedJSON = sortedMedia.length > 0 ? JSON.stringify(sortedMedia) : "";
+  const scopeKeyRef = useRef<string|undefined>(undefined);
+  if (sortedJSON && scopeKeyRef.current == null) scopeKeyRef.current = `fav-scope-${Math.random().toString(36).slice(2)}`;
+  useEffect(() => {
+    if (scopeKeyRef.current && sortedJSON) {
+      try { sessionStorage.setItem(scopeKeyRef.current, sortedJSON); } catch { /* quota */ }
+    }
+  }, [sortedJSON]);
+  function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
+    setMediaItems(current => current.map(item => {
+      const p = patches.find(patch => patch.id === item.id);
+      return p ? {...item, ...(p.takenAt != null ? {takenAt:p.takenAt} : {}), ...(p.gps != null ? {gps:p.gps} : {})} : item;
+    }));
+    setSelected([]);
+  }
   return <main className="browser-page">
-    <h1>{selected?.name ?? "Favorite view"}</h1>
+    <h1>{selectedView?.name ?? "Favorite view"}</h1>
     <div className="browser-bar"><div className="browser-bar-inner">
-      <div className="button-group"><Link className="button-like" to="/">Libraries</Link><Link className="button-like" to="/favorites">Favorite views</Link><span className="button-like active">{selected?.name ?? "View"}</span></div>
+      <div className="button-group">
+        <Link className="button-like" to="/">Libraries</Link>
+        <Link className="button-like" to="/favorites">Favorite views</Link>
+        <span className="button-like active">{selectedView?.name ?? "View"}</span>
+      </div>
       <span className="bar-sep"/>
-      <div className="button-group"><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div>
+      <div className="button-group">
+        <button className={displayMode === "folders" ? "active" : ""} onClick={() => setDisplayMode("folders")}>Folders</button>
+        <button className={displayMode === "timeline" ? "active" : ""} onClick={() => setDisplayMode("timeline")}>Timeline</button>
+        <Link className={`button-like ${displayMode === "map" ? "active" : ""}`} to={`/map?favorite=${favoriteViewId}`}>Map</Link>
+      </div>
       <span className="bar-sep"/>
-    <BulkGPSBar items={items} selectedIds={selectedIds} onSelectedIds={setSelectedIds} onUpdated={updated => { setItems(current => current.map(item => updated.find(media => media.id === item.id) ?? item)); setSelectedIds([]); }}/>
+      <div className="button-group">
+        <button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button>
+        <button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button>
+      </div>
+      <span className="bar-sep"/>
+      <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
+        <option value="all">All</option>
+        <option value="image">Images</option>
+        <option value="video">Videos</option>
+      </select>
+      {displayMode === "timeline" && <>
+        <span className="bar-sep"/>
+        <button onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
+      </>}
+      <span className="bar-sep"/>
+      <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
     </div></div>
+    <TopMenuToggle/>
     {error && <p className="error">{error}</p>}
-    {items.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
-      <div className={view === "tile" ? "grid" : "list-view"}>{items.map(item =>
-        <MediaCard key={item.id} item={item} view={view} favoriteViewId={favoriteViewId} selected={selectedIds.includes(item.id)} onToggleSelected={toggleSelected(setSelectedIds)} onFavoriteChange={updated => setItems(current => updated.favorite ? current.map(media => media.id === updated.id ? updated : media) : current.filter(media => media.id !== updated.id))}/>
-      )}</div>}
+    {!loaded && <div className="empty-state"><p>Loading…</p></div>}
+    {loaded && displayMode === "folders" && <>
+      {filteredItems.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
+        <div className={view === "tile" ? "grid" : "list-view"}>{filteredItems.map(item =>
+          item.isFolder
+            ? <FavoriteFolderCard key={`f-${item.id}`} id={item.id} name={item.name} view={view} favoriteViewId={favoriteViewId} onRemove={removedId => setItems(current => current.filter(i => i.id !== removedId || !i.isFolder))}/>
+            : <MediaCard key={item.id} item={{id:item.id, name:item.name, mimeType:item.mimeType??"", favorite:true} as Media} view={view} favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} onFavoriteChange={updated => setItems(current => current.filter(i => i.id !== updated.id || i.isFolder))}/>
+        )}</div>}
+    </>}
+    {loaded && displayMode === "timeline" && <>
+      {sortedMedia.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
+        <div className="timeline-grid">{groupByDate(sortedMedia).map(group =>
+          <div className="timeline-group" key={group.label}>
+            <span className="timeline-group-date">{group.label}</span>
+            <span className="timeline-group-dot" aria-hidden="true"/>
+            <div className="timeline-group-grid">{group.items.map(item =>
+              <MediaCard key={item.id} item={item} view="tile" favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort="name" scope={scopeKeyRef.current}/>
+            )}</div>
+          </div>
+        )}</div>}
+    </>}
   </main>;
 }
 
@@ -1773,7 +1968,27 @@ function FavoriteMediaViewerPage() {
   const item = index >= 0 ? items[index] : fallbackItem;
   const previous = index > 0 ? items[index - 1] : null;
   const next = index >= 0 && index < items.length - 1 ? items[index + 1] : null;
-  useEffect(() => { if (Number.isFinite(favoriteViewId)) api.favoriteViewMedia(favoriteViewId).then(setItems); }, [favoriteViewId]);
+  useEffect(() => {
+    if (!Number.isFinite(favoriteViewId)) return;
+    let cancelled = false;
+    api.favoriteViewMedia(favoriteViewId)
+      .then(async raw => {
+        if (cancelled) return;
+        // Ensure we have full media metadata for playback — favorite API may return minimal records
+        const mediaOnly = raw.filter((i:any) => !i.isFolder) as {id:ID; name:string; mimeType?:string}[];
+        const full = await Promise.all(mediaOnly.map(async it => {
+          try {
+            return await api.media(it.id);
+          } catch {
+            // Fallback to minimal shape so UI can still render — playback may still fail but we tried
+            return { id: it.id, name: it.name, mimeType: it.mimeType ?? "", favorite: true } as Media;
+          }
+        }));
+        if (!cancelled) setItems(full);
+      })
+      .catch(() => { if (!cancelled) setItems([]); });
+    return () => { cancelled = true; };
+  }, [favoriteViewId]);
   useEffect(() => { if (Number.isFinite(currentMediaId)) api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null)); }, [currentMediaId]);
   function go(media:Media|null) {
     if (media) navigate(`/favorites/view/${media.id}?viewId=${encodeURIComponent(viewId)}`);
@@ -1798,16 +2013,20 @@ function FavoriteMediaViewerPage() {
   </main>;
 }
 
-function BulkGPSBar({items,selectedIds,onSelectedIds,onUpdated}:{items:Media[]; selectedIds:ID[]; onSelectedIds:(ids:ID[])=>void; onUpdated:(items:Media[])=>void}) {
+function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdated}:{items:Media[]; selectedIds:ID[]; selectedFolders?:ID[]; onSelectedIds:(ids:ID[])=>void; onUpdated:(patches:{id:ID; takenAt?:string; gps?:string}[])=>void}) {
   const [gps, setGPS] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [shiftHours, setShiftHours] = useState("");
+  const [shiftMinutes, setShiftMinutes] = useState("");
+  const [gpsBusy, setGpsBusy] = useState(false);
+  const [shiftBusy, setShiftBusy] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const [error, setError] = useState("");
   const selected = items.filter(item => selectedIds.includes(item.id));
-  if (items.length === 0) return null;
+  const hasSelection = selectedIds.length > 0 || selectedFolders.length > 0;
   async function save(event:FormEvent) {
     event.preventDefault();
     const trimmed = gps.trim();
-    if (selected.length === 0) {
+    if (!hasSelection) {
       setError("Select at least one item");
       return;
     }
@@ -1815,41 +2034,65 @@ function BulkGPSBar({items,selectedIds,onSelectedIds,onUpdated}:{items:Media[]; 
       setError("GPS is required");
       return;
     }
-    setBusy(true); setError("");
+    setGpsBusy(true); setError("");
     try {
-      const updated = await Promise.all(selected.map(item => api.updateMediaDetails(item.id, {
-        name: item.name,
-        gps: trimmed,
-        takenAt: item.takenAt || null,
-      })));
-      onUpdated(updated);
+      const payload:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string} = {};
+      if (selectedIds.length > 0) payload.selectedIds = selectedIds;
+      if (selectedFolders.length > 0) payload.selectedFolders = selectedFolders;
+      payload.gps = trimmed;
+      const result = await api.bulkUpdateMedia(payload);
+      onUpdated(result);
       setGPS("");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
-      setBusy(false);
+      setGpsBusy(false);
     }
   }
-  async function download() {
-    if (selected.length === 0) {
-      setError("Select at least one item");
-      return;
-    }
-    setBusy(true); setError("");
+  async function shift() {
+    if (!hasSelection) { setError("Select at least one item"); return; }
+    const h = parseFloat(shiftHours) || 0;
+    const m = parseFloat(shiftMinutes) || 0;
+    const total = h * 60 + m;
+    if (total === 0) { setError("Enter hours or minutes"); return; }
+    setShiftBusy(true); setError("");
     try {
-      await api.downloadArchive(selected.map(item => item.id));
+      const payload:{selectedIds?:ID[]; selectedFolders?:ID[]; shiftMinutes?:number} = {};
+      if (selectedIds.length > 0) payload.selectedIds = selectedIds;
+      if (selectedFolders.length > 0) payload.selectedFolders = selectedFolders;
+      payload.shiftMinutes = total;
+      const result = await api.bulkUpdateMedia(payload);
+      onUpdated(result);
+      setShiftHours(""); setShiftMinutes("");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
-      setBusy(false);
+      setShiftBusy(false);
+    }
+  }
+  async function download() {
+    if (selectedIds.length === 0) { setError("Select items to download"); return; }
+    setDownloadBusy(true); setError("");
+    try {
+      await api.downloadArchive(selectedIds);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setDownloadBusy(false);
     }
   }
   return <form className="bulk-toolbar" aria-label="Bulk edit selected media" onSubmit={save}>
-      <label className="gps-label">GPS<input value={gps} onChange={event => setGPS(event.target.value)} placeholder="50.45,30.52"/></label>
-      <button type="submit" disabled={busy || selected.length === 0}>{busy ? "Saving…" : "Apply"}</button>
-      <button type="button" className="secondary" disabled={busy || selected.length === 0} onClick={download}>{busy ? "Zipping…" : "Download"}</button>
+      <input className="bulk-gps-input" aria-label="GPS" value={gps} onChange={event => setGPS(event.target.value)} placeholder="50.45,30.52"/>
+      <button type="submit" disabled={gpsBusy || !hasSelection}>{gpsBusy ? "Saving…" : "Apply"}</button>
       <span className="bar-sep"/>
-      <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>{selected.length} selected</span></div>
+      <div className="shift-group"><span className="shift-label">Time shift</span>
+        <input className="shift-input" value={shiftHours} onChange={event => setShiftHours(event.target.value)} placeholder="h" type="number" step="any"/>
+        <input className="shift-input" value={shiftMinutes} onChange={event => setShiftMinutes(event.target.value)} placeholder="m" type="number" step="any" max="59"/>
+        <button type="button" className="secondary" disabled={shiftBusy || !hasSelection} onClick={shift}>{shiftBusy ? "Shifting…" : "Apply"}</button>
+      </div>
+      <button type="button" className="secondary" disabled={downloadBusy || selectedIds.length === 0} onClick={download}>{downloadBusy ? "Zipping…" : "Download"}</button>
+      <span className="bar-sep"/>
+      <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>selected: {selectedIds.length}{selectedFolders.length ? ` (${selectedFolders.length} folders)` : ""}</span></div>
     {error && <small className="error">{error}</small>}
   </form>;
 }
@@ -1957,7 +2200,7 @@ function groupByDate<T extends {takenAt:string}>(items:readonly T[]): {label:str
   return groups;
 }
 
-function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onOpenFolder}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; selectedIds:ID[]; onToggleSelected:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void}) {
+function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void}) {
   const ref = useRef<HTMLDivElement|null>(null);
   const [viewport, setViewport] = useState({scrollY:window.scrollY, height:window.innerHeight, width:window.innerWidth, top:0});
   const gap = view === "tile" ? 18 : 6;
@@ -1977,21 +2220,24 @@ function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onO
   useEffect(() => {
     function update() {
       const rect = ref.current?.getBoundingClientRect();
-      setViewport({
-        scrollY: window.scrollY,
-        height: window.innerHeight,
-        width: rect?.width || window.innerWidth,
-        top: (rect?.top ?? 0) + window.scrollY,
-      });
+      const vv = window.visualViewport;
+      const scrollY = window.scrollY;
+      const height = vv ? vv.height : window.innerHeight;
+      const width = rect?.width || window.innerWidth;
+      const top = (rect?.top ?? 0) + window.scrollY;
+      setViewport({ scrollY, height, width, top });
     }
     update();
     window.addEventListener("scroll", update, {passive:true});
     window.addEventListener("resize", update);
+    const vv = window.visualViewport;
+    if (vv) { vv.addEventListener("resize", update); vv.addEventListener("scroll", update); }
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
     if (ref.current) observer?.observe(ref.current);
     return () => {
       window.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
+      if (vv) { vv.removeEventListener("resize", update); vv.removeEventListener("scroll", update); }
       observer?.disconnect();
     };
   }, [entries.length, view]);
@@ -2002,14 +2248,14 @@ function VirtualEntries({entries,view,libraryId,selectedIds,onToggleSelected,onO
         const row = Math.floor((start + index) / columns);
         const priority = row >= firstVisibleRow && row < firstVisibleRow + visibleRows;
         return entry.type === "folder" ?
-          <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} priority={priority} onOpenFolder={onOpenFolder}/> :
+          <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} priority={priority} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected}/> :
           <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} priority={priority} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date"/>;
       })}
     </div>
   </div>;
 }
 
-function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void}) {
+function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFolderIds, onToggleFolderSelected}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void; selectedFolderIds?:ID[]; onToggleFolderSelected?:(id:ID)=>void}) {
   const [stats, setStats] = useState<{folders:number; media:number; images:number; videos:number}|null>(null);
   const [statsError, setStatsError] = useState("");
   const [calculating, setCalculating] = useState(false);
@@ -2017,6 +2263,29 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Ent
   const [thumbnailOptionsOpen, setThumbnailOptionsOpen] = useState(false);
   const [thumbnailError, setThumbnailError] = useState("");
   const [statsOpen, setStatsOpen] = useState(false);
+  const [metadataOptionsOpen, setMetadataOptionsOpen] = useState(false);
+  const [metadataError, setMetadataError] = useState("");
+  const [favoriteChooserOpen, setFavoriteChooserOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState({top:0, right:20});
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const menuPopupRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const btn = menuRef.current;
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      setMenuPos({top: r.bottom + 4, right: window.innerWidth - r.right});
+    }
+    function handle(e: Event) {
+      if (menuPopupRef.current && !menuPopupRef.current.contains(e.target as Node) && menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false); setStatsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [menuOpen]);
+  const folderSelected = selectedFolderIds?.includes(entry.id) ?? false;
   async function toggleStats() {
     setStatsOpen(open => !open);
     if (statsOpen || stats) return;
@@ -2055,30 +2324,48 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder}:{entry:Ent
       setRefreshing(false);
     }
   }
+  async function refreshMetadata(recreateExisting:boolean, updateGps:boolean, updateTakenAt:boolean) {
+    setRefreshing(true); setMetadataError("");
+    try {
+      await api.metadataRenew(libraryId, {recreateExisting, updateGps, updateTakenAt});
+      setMetadataOptionsOpen(false);
+    } catch (cause) {
+      setMetadataError((cause as Error).message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+  const folderUrl = `/library/${libraryId}/folder/${entry.id}`;
+  function handleOpen(event:React.MouseEvent) {
+    if (event.button === 1 || event.ctrlKey || event.metaKey) { window.open(folderUrl, "_blank"); event.preventDefault(); return; }
+    onOpenFolder(entry);
+  }
   return <div className={`card library folder-entry ${view === "list" ? "folder-entry-list" : ""}`}>
-    <button type="button" className="folder-thumb-button" aria-label={`Open folder ${entry.name}`} onClick={() => onOpenFolder(entry)}>
+    {onToggleFolderSelected && <label className="select-media" aria-label={`Select ${entry.name}`} onClick={event => event.stopPropagation()}>
+      <input type="checkbox" checked={folderSelected} onChange={() => onToggleFolderSelected(entry.id)}/>
+    </label>}
+    <button type="button" className="folder-thumb-button" aria-label={`Open folder ${entry.name}`} onClick={handleOpen}>
       {view === "tile" && <FolderCover folderId={entry.folderThumbnail} priority={priority}/>}
       {view === "list" && <span className="folder">▰</span>}
     </button>
-    <button type="button" className="folder-title-button" aria-expanded={statsOpen} onClick={toggleStats}><h2>{entry.name}</h2></button>
-    <details className="item-menu folder-menu">
-      <summary aria-label={`Folder menu ${entry.name}`}>⋮</summary>
-      <div className="item-submenu" role="menu" onClick={closeParentDetails}>
-        <button type="button" role="menuitem" disabled={refreshing} onClick={refreshFolder}>{refreshing ? "Refreshing…" : "Refresh items"}</button>
-        <button type="button" role="menuitem" disabled={refreshing} onClick={() => setThumbnailOptionsOpen(true)}>Refresh thumbnails…</button>
-      </div>
-    </details>
-    {thumbnailOptionsOpen && <ThumbnailRefreshModal title={entry.name} busy={refreshing} error={thumbnailError} onClose={() => setThumbnailOptionsOpen(false)} onRefresh={refreshFolderThumbnails}/>}
-    {statsOpen && <div className="folder-stats">
-      {calculating && <p className="muted">Calculating…</p>}
-      {statsError && <p className="error">{statsError}</p>}
-      {stats && <div className="stats-grid">
-        <div><strong>{stats.folders}</strong><span>Folders</span></div>
-        <div><strong>{stats.media}</strong><span>Files</span></div>
-        <div><strong>{stats.images}</strong><span>Images</span></div>
-        <div><strong>{stats.videos}</strong><span>Videos</span></div>
-      </div>}
-    </div>}
+    <button type="button" className="folder-title-button" onClick={handleOpen} onAuxClick={event => { if (event.button === 1) { window.open(folderUrl, "_blank"); event.preventDefault(); } }}><h2>{entry.name}</h2></button>
+    <div className="item-menu folder-menu">
+      <button type="button" className="menu-summary" aria-label={`Folder menu ${entry.name}`} ref={menuRef} onClick={() => { if (!menuOpen) { setMenuOpen(true); if (!stats && !calculating) toggleStats(); } else { setMenuOpen(false); setStatsOpen(false); } }}><span className="menu-dots"/></button>
+      {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef} style={{top: menuPos.top, right: menuPos.right}}>
+        <button type="button" role="menuitem" disabled={refreshing} onClick={() => { setMenuOpen(false); refreshFolder(); }}>{refreshing ? "Refreshing…" : "Refresh items"}</button>
+        <button type="button" role="menuitem" disabled={refreshing} onClick={() => { setMenuOpen(false); setThumbnailOptionsOpen(true); }}>Refresh thumbnails…</button>
+        <button type="button" role="menuitem" disabled={refreshing} onClick={() => { setMenuOpen(false); setMetadataOptionsOpen(true); }}>Refresh metadata…</button>
+        <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setFavoriteChooserOpen(true); }}>Add to favorites…</button>
+        {statsOpen && <>
+          {calculating && <span className="muted">Loading statistics…</span>}
+          {statsError && <span className="error">{statsError}</span>}
+          {stats && <span className="folder-stats-inline">Images: {stats.images} · Videos: {stats.videos}</span>}
+        </>}
+      </div>, document.body)}
+    </div>
+    {favoriteChooserOpen && createPortal(<FolderFavoriteViewChooser folderId={entry.id} folderName={entry.name} onChange={() => {}} onClose={() => setFavoriteChooserOpen(false)}/>, document.body)}
+    {thumbnailOptionsOpen && createPortal(<ThumbnailRefreshModal title={entry.name} busy={refreshing} error={thumbnailError} onClose={() => setThumbnailOptionsOpen(false)} onRefresh={refreshFolderThumbnails}/>, document.body)}
+    {metadataOptionsOpen && createPortal(<MetadataRefreshModal title={entry.name} busy={refreshing} error={metadataError} onClose={() => setMetadataOptionsOpen(false)} onRefresh={refreshMetadata}/>, document.body)}
   </div>;
 }
 
@@ -2151,11 +2438,15 @@ function FolderCover({folderId, priority}:{folderId?:ID; priority?:boolean}) {
   return <div className="folder-cover"><ThumbImage src={api.folderThumbnailUrl(folderId)} priority={priority} kind="folder"/></div>;
 }
 
-function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string}) {
+function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort,scope}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string; scope?:string}) {
   const navigate = useNavigate();
-  const open = () => favoriteViewId != null || libraryId == null ? navigate(`/favorites/view/${item.id}?viewId=${encodeURIComponent(String(favoriteViewId ?? ""))}`) : navigate(libraryItemURL(libraryId, item, sort));
-  return <article className="card media" onClick={open} role="button" tabIndex={0}
-    onKeyDown={event => { if (event.key === "Enter" || event.key === " ") open(); }}>
+  const url = favoriteViewId != null || libraryId == null ? `/favorites/view/${item.id}?viewId=${encodeURIComponent(String(favoriteViewId ?? ""))}` : libraryItemURL(libraryId, item, sort, scope);
+  function handleClick(event:React.MouseEvent) {
+    if (event.button === 1 || event.ctrlKey || event.metaKey) { window.open(url, "_blank"); event.preventDefault(); return; }
+    navigate(url);
+  }
+  return <article className="card media" onClick={handleClick} role="button" tabIndex={0}
+    onKeyDown={event => { if (event.key === "Enter" || event.key === " ") navigate(url); }}>
     {onToggleSelected && <label className="select-media" aria-label={`Select ${item.name}`} onClick={event => event.stopPropagation()}>
       <input type="checkbox" checked={selected} onChange={() => onToggleSelected(item.id)}/>
     </label>}
@@ -2163,7 +2454,7 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,o
       <ThumbImage src={api.thumbnailUrl(item.id)} priority={priority} kind={item.kind}/>
       {item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}
     </div>}
-    <div>
+    <div className="media-text">
       {caption === "date-name"
         ? <><strong>{formatDateTime(item.takenAt)}</strong><small><span>{item.name}</span> ({item.kind}: {formatBytes(item.size)})</small></>
         : caption === "name-date"
@@ -2197,7 +2488,7 @@ function FavoriteButton({item,viewId,onChange}:{item:Media; viewId?:ID; onChange
   const label = favorite && viewId != null ? `Remove ${item.name} from this favorite view` : `Manage favorite views for ${item.name}`;
   return <>
     <button type="button" className={`favorite-button ${favorite ? "active" : ""}`} aria-label={label} disabled={busy} onClick={toggle}>{favorite ? "★" : "☆"}</button>
-    {choosing && <FavoriteViewChooser item={item} onChange={updated => { setFavorite(Boolean(updated.favorite)); onChange?.(updated); }} onClose={() => setChoosing(false)}/>}
+    {choosing && createPortal(<FavoriteViewChooser item={item} onChange={updated => { setFavorite(Boolean(updated.favorite)); onChange?.(updated); }} onClose={() => setChoosing(false)}/>, document.body)} 
   </>;
 }
 
@@ -2242,17 +2533,16 @@ function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item
       setBusy(false);
     }
   }
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Favorite views for ${item.name}`} onClick={event => closeOnBackdropClick(event, onClose)}>
-    <div className="card settings modal favorite-picker">
-      <div className="panel-title"><div><h2>Favorites</h2><p>{item.name}</p></div><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+  return <ModalBackdrop ariaLabel={`Favorite views for ${item.name}`} onClick={event => closeOnBackdropClick(event as any, onClose)}>
+    <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
+      <div className="panel-title"><h2>Favorites: {item.name}</h2><button type="button" onClick={onClose}>Close</button></div>
       {error && <p className="error">{error}</p>}
       {views.length === 0 ? <p className="muted">No favorite views yet. Create one below.</p> :
         <div className="favorite-picker-list">
           {views.map(view => (
-            <label key={view.id} className="favorite-picker-item">
-              <input type="checkbox" checked={view.contains} disabled={busy} onChange={() => toggle(view)}/>
-              <span>{view.name}</span>
-              <small>{view.count} items</small>
+            <label key={view.id} className="favorite-picker-item" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+              <input type="checkbox" checked={view.contains} disabled={busy} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onChange={() => toggle(view)}/>
+              <div className="favorite-picker-main"><span>{view.name}</span><small>{view.count} items</small></div>
             </label>
           ))}
         </div>}
@@ -2261,7 +2551,101 @@ function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item
         <button type="submit" disabled={busy || !newName.trim()}>Create and add</button>
       </form>
     </div>
-  </div>;
+  </ModalBackdrop>;
+}
+
+function FolderFavoriteButton({folderId, folderName, viewId, onChange}:{folderId:ID; folderName:string; viewId?:ID; onChange?:(favorited:boolean)=>void}) {
+  const [favorite, setFavorite] = useState(viewId != null);
+  const [busy, setBusy] = useState(false);
+  const [choosing, setChoosing] = useState(false);
+  useEffect(() => setFavorite(viewId != null), [viewId]);
+  async function toggle(event:MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (!(favorite && viewId != null)) {
+      setChoosing(true);
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.unfavoriteFolder(viewId, folderId);
+      setFavorite(false);
+      onChange?.(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const label = favorite && viewId != null ? `Remove ${folderName} from this favorite view` : `Manage favorite views for ${folderName}`;
+  return <>
+    <button type="button" className={`favorite-button ${favorite ? "active" : ""}`} aria-label={label} disabled={busy} onClick={toggle}>{favorite ? "★" : "☆"}</button>
+    {choosing && createPortal(<FolderFavoriteViewChooser folderId={folderId} folderName={folderName} onChange={favorited => { setFavorite(favorited); onChange?.(favorited); }} onClose={() => setChoosing(false)}/>, document.body)} 
+  </>;
+}
+
+function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{folderId:ID; folderName:string; onChange:(favorited:boolean)=>void; onClose:()=>void}) {
+  const [views, setViews] = useState<FavoriteViewMembership[]>([]);
+  const [newName, setNewName] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.folderFavoriteViews(folderId)
+      .then(setViews)
+      .catch(cause => setError((cause as Error).message));
+  }, [folderId]);
+  async function toggle(view:FavoriteViewMembership) {
+    setBusy(true);
+    setError("");
+    try {
+      if (view.contains) {
+        await api.unfavoriteFolder(view.id, folderId);
+        setViews(current => current.map(v => v.id === view.id ? {...v, contains: false} : v));
+        onChange(false);
+      } else {
+        await api.favoriteFolder(view.id, folderId);
+        setViews(current => current.map(v => v.id === view.id ? {...v, contains: true} : v));
+        onChange(true);
+      }
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function createAndAdd(event:FormEvent) {
+    event.preventDefault();
+    const name = newName.trim();
+    if (!name) return;
+    setBusy(true);
+    setError("");
+    try {
+      const created = await api.createFavoriteView(name);
+      await api.favoriteFolder(created.id, folderId);
+      setViews(current => [...current, {...created, contains:true, count:1}].sort((left, right) => left.name.localeCompare(right.name)));
+      setNewName("");
+      onChange(true);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <ModalBackdrop ariaLabel={`Favorite views for ${folderName}`} onClick={event => closeOnBackdropClick(event as any, onClose)}>
+    <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
+      <div className="panel-title"><h2>Add to favorites: {folderName}</h2><button type="button" onClick={onClose}>Close</button></div>
+      {error && <p className="error">{error}</p>}
+      {views.length > 0 && <div className="favorite-picker-list">
+        {views.map(view => (
+          <label key={view.id} className="favorite-picker-item" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
+            <input type="checkbox" checked={view.contains} disabled={busy} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onChange={() => toggle(view)}/>
+            <div className="favorite-picker-main"><span>{view.name}</span><small>{view.count} items</small></div>
+          </label>
+        ))}
+      </div>}
+      <form className="favorite-picker-form" onSubmit={createAndAdd}>
+        <label>New favorite view<input value={newName} onChange={event => setNewName(event.target.value)} placeholder="Best photos"/></label>
+        <button type="submit" disabled={busy || !newName.trim()}>Create and add</button>
+      </form>
+    </div>
+  </ModalBackdrop>;
 }
 
 function MediaViewerPage() {
@@ -2377,7 +2761,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
     }
     setDrag(null);
   }
-  return <div className="viewer-stage" aria-label={item.name}>
+  return <div className={`viewer-stage ${infoOpen ? "info-open" : ""}`} aria-label={item.name}>
     <div className="viewer-media" onWheel={onImageWheel}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
@@ -2413,6 +2797,7 @@ function eventPoint(event:ReactPointerEvent<HTMLImageElement>) {
 
 function MediaInfo({item}:{item:Media}) {
   const dateFormat = useUserDateFormat();
+  const navigate = useNavigate();
   const [name, setName] = useState(item.name);
   const [gpsValue, setGPSValue] = useState(item.gps ?? "");
   const [takenAt, setTakenAt] = useState(() => formatDateTime(item.takenAt, dateFormat));
@@ -2487,12 +2872,10 @@ function MediaInfo({item}:{item:Media}) {
       <label className="media-edit-row"><span>GPS</span><input value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/></label>
       <div className="action-row">
         <button type="button" disabled={saving || !dirty} onClick={saveDetails}>{saving ? "Saving…" : "Save"}</button>
-        {gps && <Link className="secondary-link" to={`/map?item=${current.id}`}>Open on map</Link>}
+        {gps && <button type="button" className="secondary" onClick={() => navigate(`/map?item=${current.id}`)}>Open on map</button>}
       </div>
-      {error && <p className="error">{error}</p>}{saving && <p className="muted">Saving…</p>}{saved && !saving && <p className="success">Item saved.</p>}
+      {error && <p className="error">{error}</p>}
     </div>
-    {current.gps && gps && <Link className="gps-link" to={`/map?item=${current.id}`}>GPS: {current.gps}</Link>}
-    {current.gps && !gps && <p>GPS: {current.gps}</p>}
     <MetadataSummary metadata={current.metadata}/>
   </div>;
 }
@@ -2501,10 +2884,10 @@ function MetadataSummary({metadata}:{metadata:Record<string, unknown>}) {
   if (Object.keys(metadata ?? {}).length === 0) return <p className="muted">No camera metadata.</p>;
   return <div className="metadata-summary">
     <h3>Metadata</h3>
-    {Object.entries(metadata).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => <section className="metadata-json-section" key={key}>
+    <div className="metadata-sections">{Object.entries(metadata).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => <section className="metadata-json-section" key={key}>
       <h4>{key}</h4>
       <pre>{JSON.stringify(value, null, 2)}</pre>
-    </section>)}
+    </section>)}</div>
   </div>;
 }
 
@@ -2779,9 +3162,10 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
   const [query] = useSearchParams();
   const libraryParam = query.get("library");
   const folderParam = query.get("folder");
+  const favoriteParam = query.get("favorite");
   useEffect(() => {
-    api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined).then(setItems);
-  }, [libraryParam, folderParam]);
+    api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems);
+  }, [libraryParam, folderParam, favoriteParam]);
   const focused = items.find(item => item.id === Number(query.get("item")));
   const focusedGPS = focused ? parseGPS(focused.gps) : null;
   function selectArea(start:L.LatLng, end:L.LatLng) {
@@ -2791,7 +3175,8 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
     api.map(
       libraryParam ? Number(libraryParam) : undefined,
       folderParam ? Number(folderParam) : undefined,
-      {west:southWest.lng, south:southWest.lat, east:northEast.lng, north:northEast.lat}
+      {west:southWest.lng, south:southWest.lat, east:northEast.lng, north:northEast.lat},
+      favoriteParam ? Number(favoriteParam) : undefined
     ).then(selected => setArea({bounds, items: sortMedia(selected, "desc")}));
   }
   function selectCluster(cluster:MapMedia[]) {
@@ -2800,7 +3185,11 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
   }
   return <main className={`map-page ${area ? "panel-open" : ""}`} aria-label="Media map">
     <div className="browser-bar"><div className="browser-bar-inner">
-      <div className="button-group"><Link className="button-like" to={libraryParam ? `/library/${libraryParam}${folderParam ? `/folder/${folderParam}` : ""}` : "/"}>Folders</Link><Link className="button-like" to={libraryParam ? `/library/${libraryParam}/timeline${folderParam ? `/${folderParam}` : ""}` : "/"}>Timeline</Link><Link className="button-like active" to={`/map${libraryParam ? `?library=${libraryParam}${folderParam ? `&folder=${folderParam}` : ""}` : ""}`}>Map</Link></div>
+      <div className="button-group">
+        <Link className="button-like" to={libraryParam ? `/library/${libraryParam}${folderParam ? `/folder/${folderParam}` : ""}` : favoriteParam ? `/favorites/${favoriteParam}` : "/"}>Folders</Link>
+        <Link className="button-like" to={libraryParam ? `/library/${libraryParam}/timeline${folderParam ? `/${folderParam}` : ""}` : "/"}>Timeline</Link>
+        <Link className="button-like active" to={`/map${libraryParam ? `?library=${libraryParam}${folderParam ? `&folder=${folderParam}` : ""}` : favoriteParam ? `?favorite=${favoriteParam}` : ""}`}>Map</Link>
+      </div>
       <span className="bar-sep"/>
       <div className="button-group">
         <button className={`select-area-button ${selectMode ? "active" : ""}`} onClick={() => setSelectMode(value => !value)}>{selectMode ? "Cancel area selection" : "Select area"}</button>

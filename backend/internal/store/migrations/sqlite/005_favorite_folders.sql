@@ -1,0 +1,9 @@
+CREATE TABLE favorite_folders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  favorite_view_id INTEGER NOT NULL REFERENCES favorite_views(id) ON DELETE CASCADE,
+  folder_id INTEGER NOT NULL REFERENCES media_folders(id) ON DELETE CASCADE,
+  UNIQUE (favorite_view_id, folder_id)
+);
+
+CREATE INDEX favorite_folders_favorite_view_idx ON favorite_folders(favorite_view_id);
+CREATE INDEX favorite_folders_folder_idx ON favorite_folders(folder_id);

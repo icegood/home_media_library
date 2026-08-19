@@ -258,15 +258,6 @@ func (s *SQLite) rootPathForFolder(ctx context.Context, folderID int) string {
 	return root
 }
 
-// relativePath returns the on-the-fly path of mediaPath relative to the nearest
-// library root, or "" when the media is not beneath a readable root.
-func (s *SQLite) relativePath(ctx context.Context, folderID int, mediaPath string) string {
-	if root := s.rootPathForFolder(ctx, folderID); root != "" {
-		return pathBelowRoot(root, mediaPath)
-	}
-	return ""
-}
-
 func pathBelowRoot(root, value string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(value, root), "/")
 }
@@ -1153,7 +1144,9 @@ func (s *SQLite) Media(ctx context.Context, id int) (domain.Media, error) {
 	if err != nil {
 		return item, translateErr(err)
 	}
-	item.RelativePath = s.relativePath(ctx, item.FolderID, item.Path)
+	if root := s.rootPathForFolder(ctx, item.FolderID); root != "" {
+		item.RelativePath = strings.TrimPrefix(strings.TrimPrefix(item.Path, root), "/")
+	}
 	return item, nil
 }
 
@@ -1171,18 +1164,20 @@ func (s *SQLite) MediaBatch(ctx context.Context, ids []int) ([]domain.Media, err
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []domain.Media{}
 	for rows.Next() {
 		item, err := scanMedia(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	rows.Close()
 	s.attachRelativePaths(ctx, out)
 	return out, nil
 }
@@ -1220,6 +1215,26 @@ func (s *SQLite) FavoriteViewsForMedia(ctx context.Context, userID, mediaID int)
 		EXISTS(SELECT 1 FROM favorite_view_items fvi2 WHERE fvi2.favorite_view_id = fv.id AND fvi2.media_id = ?)
 		FROM favorite_views fv LEFT JOIN favorite_view_items fvi ON fvi.favorite_view_id = fv.id
 		WHERE fv.user_id = ? GROUP BY fv.id, fv.name ORDER BY fv.name`, mediaID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	views := []domain.FavoriteViewMembership{}
+	for rows.Next() {
+		var view domain.FavoriteViewMembership
+		if err := rows.Scan(&view.ID, &view.Name, &view.Count, &view.Contains); err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, rows.Err()
+}
+
+func (s *SQLite) FavoriteViewsForFolder(ctx context.Context, userID, folderID int) ([]domain.FavoriteViewMembership, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT fv.id, fv.name, COUNT(ff.folder_id),
+		EXISTS(SELECT 1 FROM favorite_folders ff2 WHERE ff2.favorite_view_id = fv.id AND ff2.folder_id = ?)
+		FROM favorite_views fv LEFT JOIN favorite_folders ff ON ff.favorite_view_id = fv.id
+		WHERE fv.user_id = ? GROUP BY fv.id, fv.name ORDER BY fv.name`, folderID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1367,6 +1382,38 @@ func (s *SQLite) IsFavorite(ctx context.Context, userID, mediaID int) (bool, err
 	return ok, err
 }
 
+func (s *SQLite) FavoritesForUser(ctx context.Context, userID int, mediaIDs []int) (map[int]bool, error) {
+	if len(mediaIDs) == 0 {
+		return map[int]bool{}, nil
+	}
+	out := map[int]bool{}
+	for _, id := range mediaIDs {
+		out[id] = false
+	}
+	ph := make([]string, len(mediaIDs))
+	args := make([]any, 0, len(mediaIDs)+1)
+	args = append(args, userID)
+	for i, id := range mediaIDs {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT fvi.media_id FROM favorite_view_items fvi
+		JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
+		WHERE fv.user_id = ? AND fvi.media_id IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLite) UpdateGPS(ctx context.Context, id int, patch domain.GPSPatch) (domain.Media, error) {
 	return s.UpdateMediaDetails(ctx, id, domain.MediaDetailsPatch{GPS: patch.GPS})
 }
@@ -1398,6 +1445,171 @@ func (s *SQLite) UpdateMediaDetails(ctx context.Context, id int, patch domain.Me
 		}
 	}
 	return s.Media(ctx, id)
+}
+
+func (s *SQLite) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error {
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	sets := []string{"metadata_json = ?", "metadata_error = ?"}
+	args := []any{string(metadataJSON), metadataError}
+	gps = strings.TrimSpace(gps)
+	if gps != "" {
+		gpsLat, gpsLng := gpsCoords(gps)
+		sets = append(sets, "gps = ?", "gps_lat = ?", "gps_lng = ?")
+		args = append(args, gps, gpsLat, gpsLng)
+	}
+	if takenAt != "" {
+		if replaceTakenAt {
+			sets = append(sets, "taken_at = ?")
+		} else {
+			sets = append(sets, "taken_at = CASE WHEN taken_at = '' THEN ? ELSE taken_at END")
+		}
+		args = append(args, takenAt)
+	}
+	args = append(args, id)
+	if _, err := s.db.ExecContext(ctx, `UPDATE media SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *SQLite) bulkTargetSub(ctx context.Context, ids []int, folderIDs []int) (cte, targetSub string, args []any) {
+	if len(folderIDs) > 0 {
+		folderPh := make([]string, len(folderIDs))
+		folderArgs := make([]any, len(folderIDs))
+		for i, fid := range folderIDs {
+			folderPh[i] = "?"
+			folderArgs[i] = fid
+		}
+		cte = `WITH RECURSIVE descend(folder_id) AS (
+			SELECT id FROM media_folders WHERE id IN (` + strings.Join(folderPh, ",") + `)
+			UNION ALL
+			SELECT f.id FROM media_folders f JOIN descend d ON f.parent_id = d.folder_id) `
+		targetSub = `SELECT m.id FROM media m JOIN descend d ON m.folder_id = d.folder_id`
+		args = append(args, folderArgs...)
+	}
+	if len(ids) > 0 {
+		idPh := make([]string, len(ids))
+		for i, id := range ids {
+			idPh[i] = "?"
+			args = append(args, id)
+		}
+		if targetSub != "" {
+			targetSub += ` UNION `
+		} else {
+			targetSub = `SELECT id FROM media WHERE id IN (`
+		}
+		if targetSub == `SELECT id FROM media WHERE id IN (` {
+			targetSub += strings.Join(idPh, ",") + `)`
+		} else {
+			targetSub += `SELECT id FROM media WHERE id IN (` + strings.Join(idPh, ",") + `)`
+		}
+	}
+	return
+}
+
+func (s *SQLite) BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs []int, gps string, lat, lng float64) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSub(ctx, ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	setClause := "gps = ?, gps_lat = ?, gps_lng = ?"
+	setArgs := []any{gps, lat, lng}
+	fullArgs := append(setArgs, args...)
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.gps FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		if err := rows.Scan(&r.ID, &r.GPS); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) BulkUpdateMediaSetTime(ctx context.Context, ids []int, folderIDs []int, takenAt string) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSub(ctx, ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	setClause := "taken_at = ?"
+	fullArgs := append([]any{takenAt}, args...)
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.taken_at FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		if err := rows.Scan(&r.ID, &r.TakenAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folderIDs []int, shiftMinutes float64) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSub(ctx, ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	setClause := "taken_at = CASE WHEN taken_at = '' THEN taken_at ELSE datetime(taken_at, ? || ' minutes') || 'Z' END"
+	fullArgs := append(args, shiftMinutes)
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.taken_at FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		if err := rows.Scan(&r.ID, &r.TakenAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) queryMediaByIDs(ctx context.Context, idCond string, idArgs []any) ([]domain.Media, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.id IN (`+idCond+`)`, idArgs...)
+	if err != nil {
+		return nil, err
+	}
+	var out []domain.Media
+	for rows.Next() {
+		item, err := scanMedia(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	s.attachRelativePaths(ctx, out)
+	return out, nil
 }
 
 func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error) {
@@ -2376,4 +2588,62 @@ func idsIN(ids map[int]bool) (string, []any) {
 		args[i] = id
 	}
 	return placeholders, args
+}
+
+func (s *SQLite) FavoriteFolders(ctx context.Context, userID, viewID int) ([]domain.MediaFolder, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT mf.id, mf.parent_id, mf.path FROM favorite_folders ff JOIN media_folders mf ON mf.id = ff.folder_id WHERE ff.favorite_view_id = ?`, viewID)
+	if err != nil {
+		return nil, err
+	}
+	type rawFolder struct {
+		id       int
+		parentID sql.NullInt64
+		path     string
+	}
+	var raw []rawFolder
+	for rows.Next() {
+		var r rawFolder
+		if err := rows.Scan(&r.id, &r.parentID, &r.path); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		raw = append(raw, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	roots := map[int]string{}
+	out := make([]domain.MediaFolder, 0, len(raw))
+	for _, r := range raw {
+		f := domain.MediaFolder{ID: r.id, Path: r.path}
+		if r.parentID.Valid {
+			f.ParentID = int(r.parentID.Int64)
+		}
+		f.Name = filepath.Base(f.Path)
+		root, ok := roots[f.ID]
+		if !ok {
+			root = s.rootPathForFolder(ctx, f.ID)
+			roots[f.ID] = root
+		}
+		if root != "" {
+			f.RelativePath = strings.TrimPrefix(strings.TrimPrefix(f.Path, root), "/")
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+func (s *SQLite) SetFavoriteFolder(ctx context.Context, userID, viewID, folderID int, favorite bool) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM favorite_views WHERE id = ? AND user_id = ?`, viewID, userID).Scan(&exists); err != nil {
+		return translateErr(err)
+	}
+	if favorite {
+		_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO favorite_folders(favorite_view_id, folder_id) VALUES(?,?)`, viewID, folderID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM favorite_folders WHERE favorite_view_id = ? AND folder_id = ?`, viewID, folderID)
+	return err
 }

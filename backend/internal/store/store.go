@@ -49,20 +49,28 @@ type Store interface {
 	MediaByPath(ctx context.Context, path string) (domain.Media, error)
 	FavoriteViews(ctx context.Context, userID int) ([]domain.FavoriteView, error)
 	FavoriteViewsForMedia(ctx context.Context, userID, mediaID int) ([]domain.FavoriteViewMembership, error)
+	FavoriteViewsForFolder(ctx context.Context, userID, folderID int) ([]domain.FavoriteViewMembership, error)
 	CreateFavoriteView(ctx context.Context, userID int, name string) (domain.FavoriteView, error)
 	UpdateFavoriteView(ctx context.Context, userID, viewID int, name string) (domain.FavoriteView, error)
 	DeleteFavoriteView(ctx context.Context, userID, viewID int) error
 	FavoriteMedia(ctx context.Context, userID, viewID int, admin bool) ([]domain.Media, error)
+	FavoriteFolders(ctx context.Context, userID, viewID int) ([]domain.MediaFolder, error)
+	SetFavoriteFolder(ctx context.Context, userID, viewID, folderID int, favorite bool) error
 	SetFavorite(ctx context.Context, userID, viewID, mediaID int, favorite bool) (domain.Media, error)
 	IsFavorite(ctx context.Context, userID, mediaID int) (bool, error)
+	FavoritesForUser(ctx context.Context, userID int, mediaIDs []int) (map[int]bool, error)
 	UpdateGPS(ctx context.Context, id int, patch domain.GPSPatch) (domain.Media, error)
 	UpdateMediaDetails(ctx context.Context, id int, patch domain.MediaDetailsPatch) (domain.Media, error)
+	BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs []int, gps string, lat, lng float64) ([]domain.BulkMediaResult, error)
+	BulkUpdateMediaSetTime(ctx context.Context, ids []int, folderIDs []int, takenAt string) ([]domain.BulkMediaResult, error)
+	BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folderIDs []int, shiftMinutes float64) ([]domain.BulkMediaResult, error)
 	GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error)
 	MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID int, bounds domain.Bounds) ([]domain.MapMedia, error)
 	MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error)
 	MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error)
 	FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error)
 	ThumbnailCleanupRefsForLibrary(ctx context.Context, libraryID int) (domain.ThumbnailCleanupRefs, error)
+	UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error
 	SetMediaActionError(ctx context.Context, id int, action, message string) error
 	PruneFolder(ctx context.Context, rootFolderID int, keepFolders, keepMedia map[int]bool) error
 	CreateLibrary(ctx context.Context, library domain.Library) (domain.Library, error)

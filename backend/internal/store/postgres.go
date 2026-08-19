@@ -1045,6 +1045,26 @@ func (s *Postgres) FavoriteViewsForMedia(ctx context.Context, userID, mediaID in
 	return views, rows.Err()
 }
 
+func (s *Postgres) FavoriteViewsForFolder(ctx context.Context, userID, folderID int) ([]domain.FavoriteViewMembership, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT fv.id, fv.name, COUNT(ff.folder_id),
+		EXISTS(SELECT 1 FROM favorite_folders ff2 WHERE ff2.favorite_view_id = fv.id AND ff2.folder_id = $1)
+		FROM favorite_views fv LEFT JOIN favorite_folders ff ON ff.favorite_view_id = fv.id
+		WHERE fv.user_id = $2 GROUP BY fv.id, fv.name ORDER BY fv.name`, folderID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	views := []domain.FavoriteViewMembership{}
+	for rows.Next() {
+		var view domain.FavoriteViewMembership
+		if err := rows.Scan(&view.ID, &view.Name, &view.Count, &view.Contains); err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, rows.Err()
+}
+
 func (s *Postgres) CreateFavoriteView(ctx context.Context, userID int, name string) (domain.FavoriteView, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -1171,6 +1191,38 @@ func (s *Postgres) IsFavorite(ctx context.Context, userID, mediaID int) (bool, e
 	return ok, err
 }
 
+func (s *Postgres) FavoritesForUser(ctx context.Context, userID int, mediaIDs []int) (map[int]bool, error) {
+	if len(mediaIDs) == 0 {
+		return map[int]bool{}, nil
+	}
+	out := map[int]bool{}
+	for _, id := range mediaIDs {
+		out[id] = false
+	}
+	ph := make([]string, len(mediaIDs))
+	args := make([]any, 0, len(mediaIDs)+1)
+	args = append(args, userID)
+	for i, id := range mediaIDs {
+		ph[i] = "$" + fmt.Sprintf("%d", i+2)
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT fvi.media_id FROM favorite_view_items fvi
+		JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
+		WHERE fv.user_id = $1 AND fvi.media_id IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 func (s *Postgres) UpdateGPS(ctx context.Context, id int, patch domain.GPSPatch) (domain.Media, error) {
 	return s.UpdateMediaDetails(ctx, id, domain.MediaDetailsPatch{GPS: patch.GPS})
 }
@@ -1204,6 +1256,175 @@ func (s *Postgres) UpdateMediaDetails(ctx context.Context, id int, patch domain.
 		}
 	}
 	return s.Media(ctx, id)
+}
+
+func (s *Postgres) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error {
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	gps = strings.TrimSpace(gps)
+	n := 1
+	sets := []string{`metadata_json = $` + strconv.Itoa(n) + `::jsonb`}
+	args := []any{string(metadataJSON)}
+	n++
+	sets = append(sets, `metadata_error = $`+strconv.Itoa(n))
+	args = append(args, metadataError)
+	n++
+	if gps != "" {
+		sets = append(sets, `gps = $`+strconv.Itoa(n))
+		args = append(args, gps)
+		n++
+	}
+	if takenAt != "" {
+		if replaceTakenAt {
+			sets = append(sets, `taken_at = $`+strconv.Itoa(n))
+		} else {
+			sets = append(sets, `taken_at = CASE WHEN taken_at = '' THEN $`+strconv.Itoa(n)+` ELSE taken_at END`)
+		}
+		args = append(args, takenAt)
+		n++
+	}
+	args = append(args, id)
+	if _, err := s.db.ExecContext(ctx, `UPDATE media SET `+strings.Join(sets, ", ")+` WHERE id = $`+strconv.Itoa(n), args...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Postgres) bulkTargetSubPG(ids []int, folderIDs []int) (cte, targetSub string, args []any) {
+	n := 0
+	if len(folderIDs) > 0 {
+		folderPh := make([]string, len(folderIDs))
+		folderArgs := make([]any, len(folderIDs))
+		for i, fid := range folderIDs {
+			n++
+			folderPh[i] = "$" + strconv.Itoa(n)
+			folderArgs[i] = fid
+		}
+		cte = `WITH RECURSIVE descend(folder_id) AS (
+			SELECT id FROM media_folders WHERE id IN (` + strings.Join(folderPh, ",") + `)
+			UNION ALL
+			SELECT f.id FROM media_folders f JOIN descend d ON f.parent_id = d.folder_id) `
+		targetSub = `SELECT m.id FROM media m JOIN descend d ON m.folder_id = d.folder_id`
+		args = append(args, folderArgs...)
+	}
+	if len(ids) > 0 {
+		idPh := make([]string, len(ids))
+		for i, id := range ids {
+			n++
+			idPh[i] = "$" + strconv.Itoa(n)
+			args = append(args, id)
+		}
+		if targetSub != "" {
+			targetSub += ` UNION `
+		} else {
+			targetSub = `SELECT id FROM media WHERE id IN (`
+		}
+		if targetSub == `SELECT id FROM media WHERE id IN (` {
+			targetSub += strings.Join(idPh, ",") + `)`
+		} else {
+			targetSub += `SELECT id FROM media WHERE id IN (` + strings.Join(idPh, ",") + `)`
+		}
+	}
+	return
+}
+
+func (s *Postgres) BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs []int, gps string, lat, lng float64) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSubPG(ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	n := len(args)
+	setClause := "gps = $" + strconv.Itoa(n+1) + ", gps_lat = $" + strconv.Itoa(n+2) + ", gps_lng = $" + strconv.Itoa(n+3)
+	fullArgs := append(args, gps, lat, lng)
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.gps FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		if err := rows.Scan(&r.ID, &r.GPS); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) BulkUpdateMediaSetTime(ctx context.Context, ids []int, folderIDs []int, takenAt string) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSubPG(ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	n := len(args)
+	setClause := "taken_at = $" + strconv.Itoa(n+1)
+	fullArgs := append(args, takenAt)
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.taken_at FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		if err := rows.Scan(&r.ID, &r.TakenAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folderIDs []int, shiftMinutes float64) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSubPG(ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	setClause := "taken_at = CASE WHEN taken_at = '' THEN taken_at ELSE (to_char((taken_at::timestamptz + interval '" + strconv.FormatFloat(shiftMinutes, 'f', -1, 64) + " minutes'), 'YYYY-MM-DD\"T\"HH24:MI:SS') || 'Z') END"
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, args...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.taken_at FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		if err := rows.Scan(&r.ID, &r.TakenAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) queryMediaByIDs(ctx context.Context, idCond string, idArgs []any) ([]domain.Media, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.id IN (`+idCond+`)`, idArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Media
+	for rows.Next() {
+		item, err := scanMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = s.relativePath(ctx, item.FolderID, item.Path)
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error) {
@@ -2129,4 +2350,40 @@ func (s *Postgres) attachRelativePaths(ctx context.Context, items []domain.Media
 			items[index].RelativePath = strings.TrimPrefix(strings.TrimPrefix(items[index].Path, root), "/")
 		}
 	}
+}
+
+func (s *Postgres) FavoriteFolders(ctx context.Context, userID, viewID int) ([]domain.MediaFolder, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT mf.id, mf.parent_id, mf.path FROM favorite_folders ff JOIN media_folders mf ON mf.id = ff.folder_id WHERE ff.favorite_view_id = ?`, viewID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MediaFolder{}
+	for rows.Next() {
+		var f domain.MediaFolder
+		var parentID sql.NullInt64
+		if err := rows.Scan(&f.ID, &parentID, &f.Path); err != nil {
+			return nil, err
+		}
+		if parentID.Valid {
+			f.ParentID = int(parentID.Int64)
+		}
+		f.Name = path.Base(f.Path)
+		f.RelativePath = s.relativePath(ctx, 0, f.Path)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) SetFavoriteFolder(ctx context.Context, userID, viewID, folderID int, favorite bool) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM favorite_views WHERE id = $1 AND user_id = $2`, viewID, userID).Scan(&exists); err != nil {
+		return translateErr(err)
+	}
+	if favorite {
+		_, err := s.db.ExecContext(ctx, `INSERT INTO favorite_folders(favorite_view_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, viewID, folderID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM favorite_folders WHERE favorite_view_id = $1 AND folder_id = $2`, viewID, folderID)
+	return err
 }

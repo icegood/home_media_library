@@ -34,6 +34,7 @@ import (
 	"media-library/backend/internal/embyimport"
 	"media-library/backend/internal/gatewayconfig"
 	"media-library/backend/internal/jobpool"
+	"media-library/backend/internal/metadata"
 	"media-library/backend/internal/scanner"
 	"media-library/backend/internal/scheduler"
 	"media-library/backend/internal/store"
@@ -118,8 +119,11 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/favorite-views/{viewId}/media", a.auth(http.HandlerFunc(a.favoriteViewMedia)))
 	mux.Handle("GET /api/v1/media/{id}", a.auth(http.HandlerFunc(a.media)))
 	mux.Handle("GET /api/v1/media/{id}/favorite-views", a.auth(http.HandlerFunc(a.mediaFavoriteViews)))
+	mux.Handle("GET /api/v1/folders/{id}/favorite-views", a.auth(http.HandlerFunc(a.folderFavoriteViews)))
 	mux.Handle("PUT /api/v1/favorite-views/{viewId}/media/{id}", a.auth(http.HandlerFunc(a.favoriteMedia)))
 	mux.Handle("DELETE /api/v1/favorite-views/{viewId}/media/{id}", a.auth(http.HandlerFunc(a.unfavoriteMedia)))
+	mux.Handle("PUT /api/v1/favorite-views/{viewId}/folders/{folderId}", a.auth(http.HandlerFunc(a.favoriteFolder)))
+	mux.Handle("DELETE /api/v1/favorite-views/{viewId}/folders/{folderId}", a.auth(http.HandlerFunc(a.unfavoriteFolder)))
 	mux.Handle("GET /api/v1/media/{id}/content", a.auth(http.HandlerFunc(a.content)))
 	mux.Handle("POST /api/v1/archive", a.auth(http.HandlerFunc(a.archive)))
 	mux.Handle("GET /api/v1/media/{id}/play", a.auth(http.HandlerFunc(a.play)))
@@ -128,12 +132,13 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/folders/{id}/thumbnail", a.auth(http.HandlerFunc(a.folderThumbnail)))
 	mux.Handle("PATCH /api/v1/media/{id}/gps", a.auth(http.HandlerFunc(a.gps)))
 	mux.Handle("PATCH /api/v1/media/{id}/details", a.auth(http.HandlerFunc(a.mediaDetails)))
+	mux.Handle("PATCH /api/v1/media/bulk", a.auth(http.HandlerFunc(a.bulkMediaUpdate)))
 	mux.Handle("GET /api/v1/map", a.auth(http.HandlerFunc(a.mapItems)))
 	mux.Handle("POST /api/v1/admin/libraries", a.auth(a.admin(http.HandlerFunc(a.createLibrary))))
 	mux.Handle("PUT /api/v1/admin/libraries/{id}", a.auth(a.admin(http.HandlerFunc(a.updateLibrary))))
 	mux.Handle("DELETE /api/v1/admin/libraries/{id}", a.auth(a.admin(http.HandlerFunc(a.deleteLibrary))))
 	mux.Handle("POST /api/v1/admin/libraries/{id}/scan", a.auth(a.admin(http.HandlerFunc(a.scanLibrary))))
-	mux.Handle("POST /api/v1/admin/libraries/{id}/metadata/renew", a.auth(a.admin(http.HandlerFunc(a.scanLibrary))))
+	mux.Handle("POST /api/v1/admin/libraries/{id}/metadata/renew", a.auth(a.admin(http.HandlerFunc(a.metadataRenew))))
 	mux.Handle("POST /api/v1/admin/libraries/{id}/thumbnails", a.auth(a.admin(http.HandlerFunc(a.thumbnailLibrary))))
 	mux.Handle("GET /api/v1/admin/scheduled-tasks", a.auth(a.admin(http.HandlerFunc(a.scheduledTasks))))
 	mux.Handle("POST /api/v1/admin/scheduled-tasks", a.auth(a.admin(http.HandlerFunc(a.createScheduledTask))))
@@ -734,6 +739,20 @@ func (a *API) mediaFavoriteViews(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, views)
 }
 
+func (a *API) folderFavoriteViews(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	folderID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	views, err := a.Store.FavoriteViewsForFolder(r.Context(), p.ID, folderID)
+	if err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, views)
+}
+
 func (a *API) createFavoriteView(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	var input struct {
@@ -791,10 +810,31 @@ func (a *API) favoriteViewMedia(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := a.Store.FavoriteMedia(r.Context(), p.ID, viewID, p.Role == domain.RoleAdmin)
+	full := r.URL.Query().Get("full") == "true"
+	type itemView struct {
+		ID       int    `json:"id"`
+		Name     string `json:"name"`
+		MIMEType string `json:"mimeType,omitempty"`
+		IsFolder bool   `json:"isFolder,omitempty"`
+	}
+	media, err := a.Store.FavoriteMedia(r.Context(), p.ID, viewID, p.Role == domain.RoleAdmin)
 	if err != nil {
 		problem(w, statusFor(err), "favorite view not found")
 		return
+	}
+	if full {
+		writeJSON(w, 200, media)
+		return
+	}
+	items := []itemView{}
+	folders, err := a.Store.FavoriteFolders(r.Context(), p.ID, viewID)
+	if err == nil {
+		for _, f := range folders {
+			items = append(items, itemView{ID: f.ID, Name: f.Name, IsFolder: true})
+		}
+	}
+	for _, m := range media {
+		items = append(items, itemView{ID: m.ID, Name: m.Name, MIMEType: m.MIMEType})
 	}
 	writeJSON(w, 200, items)
 }
@@ -835,6 +875,31 @@ func (a *API) withFavorite(ctx context.Context, p principal, item domain.Media) 
 		item.Favorite = favorite
 	}
 	return item
+}
+
+func (a *API) favoriteFolder(w http.ResponseWriter, r *http.Request) {
+	a.setFavoriteFolder(w, r, true)
+}
+
+func (a *API) unfavoriteFolder(w http.ResponseWriter, r *http.Request) {
+	a.setFavoriteFolder(w, r, false)
+}
+
+func (a *API) setFavoriteFolder(w http.ResponseWriter, r *http.Request, favorite bool) {
+	p := current(r)
+	folderID, ok := pathID(w, r, "folderId")
+	if !ok {
+		return
+	}
+	viewID, ok := pathID(w, r, "viewId")
+	if !ok {
+		return
+	}
+	if err := a.Store.SetFavoriteFolder(r.Context(), p.ID, viewID, folderID, favorite); err != nil {
+		problem(w, statusFor(err), "favorite view not found")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (a *API) gps(w http.ResponseWriter, r *http.Request) {
@@ -929,6 +994,58 @@ func (a *API) mediaDetails(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, item)
 }
 
+func (a *API) bulkMediaUpdate(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	var patch domain.BulkMediaPatch
+	if json.NewDecoder(r.Body).Decode(&patch) != nil {
+		problem(w, 400, "invalid JSON")
+		return
+	}
+	applog.Printf(applog.Debug, "bulkMediaUpdate user=%d ids=%d folders=%d gps=%v takenAt=%v shift=%v", p.ID, len(patch.SelectedIDs), len(patch.SelectedFolders), patch.GPS != nil, patch.TakenAt != nil, patch.ShiftMinutes != nil)
+	if patch.ShiftMinutes != nil && patch.TakenAt != nil {
+		problem(w, 400, "cannot combine shiftMinutes with takenAt")
+		return
+	}
+	storeStart := time.Now()
+	var (
+		results []domain.BulkMediaResult
+		err     error
+	)
+	switch {
+	case patch.GPS != nil:
+		canonical, ok := domain.CanonicalGPS(strings.TrimSpace(*patch.GPS))
+		if !ok {
+			problem(w, 400, "gps must use valid latitude,longitude format")
+			return
+		}
+		gps := canonical
+		if canonical == "" {
+			gps = ""
+		}
+		lat, lng := domain.GPSCoords(canonical)
+		results, err = a.Store.BulkUpdateMediaGPS(r.Context(), patch.SelectedIDs, patch.SelectedFolders, gps, lat, lng)
+	case patch.TakenAt != nil:
+		normalized, ok := normalizeMediaDate(*patch.TakenAt)
+		if !ok {
+			problem(w, 400, "takenAt must be a valid date/time")
+			return
+		}
+		results, err = a.Store.BulkUpdateMediaSetTime(r.Context(), patch.SelectedIDs, patch.SelectedFolders, normalized)
+	case patch.ShiftMinutes != nil && *patch.ShiftMinutes != 0:
+		results, err = a.Store.BulkUpdateMediaShiftTime(r.Context(), patch.SelectedIDs, patch.SelectedFolders, *patch.ShiftMinutes)
+	default:
+		problem(w, 400, "nothing to update")
+		return
+	}
+	if err != nil {
+		applog.Printf(applog.Error, "bulkMediaUpdate store error: %v (%s)", err, time.Since(storeStart).Round(time.Millisecond))
+		problem(w, 500, err.Error())
+		return
+	}
+	applog.Printf(applog.Debug, "bulkMediaUpdate done %d items (%s)", len(results), time.Since(storeStart).Round(time.Millisecond))
+	writeJSON(w, 200, results)
+}
+
 func normalizeMediaDate(value string) (string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -943,7 +1060,7 @@ func normalizeMediaDate(value string) (string, bool) {
 	}
 	for _, layout := range layouts {
 		if parsed, err := time.Parse(layout, value); err == nil {
-			return parsed.Format(time.RFC3339), true
+			return parsed.UTC().Format(time.RFC3339), true
 		}
 	}
 	return "", false
@@ -1612,7 +1729,7 @@ func (a *API) openMedia(w http.ResponseWriter, r *http.Request) (domain.Media, *
 
 func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
-	libraryID, folderID := 0, 0
+	libraryID, folderID, favoriteID := 0, 0, 0
 	if raw := r.URL.Query().Get("library"); raw != "" {
 		id, err := strconv.Atoi(raw)
 		if err != nil || id <= 0 {
@@ -1643,6 +1760,14 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		folderID = fid
+	}
+	if raw := r.URL.Query().Get("favorite"); raw != "" {
+		fid, err := strconv.Atoi(raw)
+		if err != nil || fid <= 0 {
+			problem(w, http.StatusBadRequest, "invalid favorite")
+			return
+		}
+		favoriteID = fid
 	}
 	items, err := func() ([]domain.MapMedia, error) {
 		raw := r.URL.Query().Get("bbox")
@@ -1677,6 +1802,24 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		problem(w, 500, err.Error())
 		return
+	}
+	if favoriteID > 0 {
+		favMedia, err := a.Store.FavoriteMedia(r.Context(), p.ID, favoriteID, p.Role == domain.RoleAdmin)
+		if err != nil {
+			problem(w, statusFor(err), "favorite view not found")
+			return
+		}
+		favSet := make(map[int]bool, len(favMedia))
+		for _, m := range favMedia {
+			favSet[m.ID] = true
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if favSet[item.ID] {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	writeJSON(w, 200, items)
 }
@@ -1818,6 +1961,92 @@ func (a *API) thumbnailLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	job := a.startThumbnailJob(library, input.RecreateExisting)
 	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (a *API) metadataRenew(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	library, err := a.Store.Library(r.Context(), id)
+	if err != nil {
+		problem(w, 404, "library not found")
+		return
+	}
+	var input struct {
+		RecreateExisting bool `json:"recreateExisting"`
+		UpdateGps        bool `json:"updateGps"`
+		UpdateTakenAt    bool `json:"updateTakenAt"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			problem(w, http.StatusBadRequest, "invalid metadata renew request")
+			return
+		}
+	}
+	job := a.startMetadataRenewJob(library, input.RecreateExisting, input.UpdateGps, input.UpdateTakenAt)
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (a *API) startMetadataRenewJob(library domain.Library, recreateExisting, updateGps, updateTakenAt bool) JobStatus {
+	return a.startJob(a.newJob("metadata-renew", library, map[string]any{"recreateExisting": recreateExisting, "updateGps": updateGps, "updateTakenAt": updateTakenAt}), func(job *JobStatus) error {
+		return a.runMetadataRenewJob(job, library, recreateExisting, updateGps, updateTakenAt)
+	})
+}
+
+func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, recreateExisting, updateGps, updateTakenAt bool) error {
+	ctx := a.jobContext(context.Background(), job.ID)
+	items, err := a.Store.MediaForLibrary(ctx, 0, library.ID)
+	if err != nil {
+		return err
+	}
+	a.updateJob(job.ID, func(job *JobStatus) { job.Total = len(items) })
+	type metadataTask struct {
+		item domain.Media
+	}
+	tasks := []metadataTask{}
+	for _, item := range items {
+		tasks = append(tasks, metadataTask{item: item})
+	}
+	if len(tasks) > 0 {
+		work := make([]jobpool.Work, len(tasks))
+		for i, task := range tasks {
+			task := task
+			work[i] = func(ctx context.Context) error {
+				item := task.item
+				a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = item.RelativePath })
+				extracted, err := metadata.New().Extract(ctx, item.Path, item.MIMEType)
+				metadataError := ""
+				if err != nil {
+					metadataError = err.Error()
+				} else {
+					metadataError = extracted.Error
+				}
+				gps := ""
+				if updateGps {
+					gps = extracted.GPS
+				}
+				takenAt := ""
+				if updateTakenAt {
+					takenAt = extracted.TakenAt
+				}
+				if err := a.Store.UpdateMediaMetadata(ctx, item.ID, extracted.Metadata, gps, takenAt, metadataError, recreateExisting); err != nil {
+					applog.Printf(applog.Error, "metadata renew failed for %s: %s", item.RelativePath, err)
+					a.updateJob(job.ID, func(job *JobStatus) {
+						job.Error = fmt.Sprintf("%s: %v", item.RelativePath, err)
+						job.Processed++
+					})
+					return nil
+				}
+				a.updateJob(job.ID, func(job *JobStatus) { job.Processed++ })
+				return nil
+			}
+		}
+		if err := a.runWork(job.ID, ctx, work); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *API) startScanJob(library domain.Library) JobStatus {
