@@ -1,0 +1,98 @@
+diff --git web/src/App.test.tsx web/src/App.test.tsx
+index 4911696..01d8994 100644
+--- web/src/App.test.tsx
++++ web/src/App.test.tsx
+@@ -875,11 +875,11 @@ test("library browser renders folder entries", async () => {
+   fireEvent.click(screen.getByRole("button", {name:"Missing only"}));
+   await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:false}));
+   fireEvent.click(screen.getByLabelText("Folder menu Photos"));
+-  await waitFor(() => expect(container.querySelector(".folder-stats-inline")).toBeInTheDocument());
+-  expect(container.querySelector(".folder-stats-inline")!.textContent).toMatch(/Images:.*1.*Videos:.*1/);
++  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toBeInTheDocument());
++  expect(document.body.querySelector(".folder-stats-inline")!.textContent).toMatch(/Images:.*1.*Videos:.*1/);
+   expect(screen.queryByRole("dialog", {name:"Folder statistics Photos"})).not.toBeInTheDocument();
+   fireEvent.click(screen.getByLabelText("Folder menu Photos"));
+-  await waitFor(() => expect(container.querySelector(".folder-stats-inline")).not.toBeInTheDocument());
++  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).not.toBeInTheDocument());
+ });
+ 
+ test("favorite view renders media and star removes item from that view", async () => {
+diff --git web/src/App.tsx web/src/App.tsx
+index cf2bfcb..fdb3ae8 100644
+--- web/src/App.tsx
++++ web/src/App.tsx
+@@ -1793,7 +1793,28 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove}:{id:ID; n
+     setBusy(true);
+     try { await api.unfavoriteFolder(favoriteViewId, id); onRemove?.(id); } finally { setBusy(false); }
+   }
+-  return <article className={`card media folder-card ${view}`}>
++  const navigate = useNavigate();
++  async function openFolder(event?:MouseEvent) {
++    event?.stopPropagation();
++    setBusy(true);
++    try {
++      const libs = await api.libraries();
++      for (const lib of libs) {
++        try {
++          await api.folder(lib.id, id);
++          navigate(`/library/${lib.id}/folder/${id}`);
++          return;
++        } catch (_) {
++          // not in this library, try next
++        }
++      }
++      window.alert("Could not open folder: library not found or access denied.");
++    } finally {
++      setBusy(false);
++    }
++  }
++  return <article className={`card media folder-card ${view}`} onClick={() => void openFolder()}>
++
+     {view === "tile" && <div className="thumb-wrap"><FolderCover/></div>}
+     <div className="media-text"><strong>{name}</strong></div>
+     {favoriteViewId != null && <button type="button" className="favorite-button active" aria-label={`Remove ${name} from this favorite view`} disabled={busy} onClick={remove}>★</button>}
+@@ -2133,7 +2154,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
+       const r = btn.getBoundingClientRect();
+       setMenuPos({top: r.bottom + 4, right: window.innerWidth - r.right});
+     }
+-    function handle(e:MouseEvent) {
++    function handle(e: Event) {
+       if (menuPopupRef.current && !menuPopupRef.current.contains(e.target as Node) && menuRef.current && !menuRef.current.contains(e.target as Node)) {
+         setMenuOpen(false); setStatsOpen(false);
+       }
+@@ -2344,7 +2365,7 @@ function FavoriteButton({item,viewId,onChange}:{item:Media; viewId?:ID; onChange
+   const label = favorite && viewId != null ? `Remove ${item.name} from this favorite view` : `Manage favorite views for ${item.name}`;
+   return <>
+     <button type="button" className={`favorite-button ${favorite ? "active" : ""}`} aria-label={label} disabled={busy} onClick={toggle}>{favorite ? "★" : "☆"}</button>
+-    {choosing && <FavoriteViewChooser item={item} onChange={updated => { setFavorite(Boolean(updated.favorite)); onChange?.(updated); }} onClose={() => setChoosing(false)}/>}
++    {choosing && createPortal(<FavoriteViewChooser item={item} onChange={updated => { setFavorite(Boolean(updated.favorite)); onChange?.(updated); }} onClose={() => setChoosing(false)}/>, document.body)} 
+   </>;
+ }
+ 
+@@ -2390,7 +2411,7 @@ function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item
+     }
+   }
+   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Favorite views for ${item.name}`} onClick={event => closeOnBackdropClick(event, onClose)}>
+-    <div className="card settings modal favorite-picker">
++    <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()}>
+       <div className="panel-title"><div><h2>Favorites</h2><p>{item.name}</p></div><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+       {error && <p className="error">{error}</p>}
+       {views.length === 0 ? <p className="muted">No favorite views yet. Create one below.</p> :
+@@ -2434,7 +2455,7 @@ function FolderFavoriteButton({folderId, folderName, viewId, onChange}:{folderId
+   const label = favorite && viewId != null ? `Remove ${folderName} from this favorite view` : `Manage favorite views for ${folderName}`;
+   return <>
+     <button type="button" className={`favorite-button ${favorite ? "active" : ""}`} aria-label={label} disabled={busy} onClick={toggle}>{favorite ? "★" : "☆"}</button>
+-    {choosing && <FolderFavoriteViewChooser folderId={folderId} folderName={folderName} onChange={favorited => { setFavorite(favorited); onChange?.(favorited); }} onClose={() => setChoosing(false)}/>}
++    {choosing && createPortal(<FolderFavoriteViewChooser folderId={folderId} folderName={folderName} onChange={favorited => { setFavorite(favorited); onChange?.(favorited); }} onClose={() => setChoosing(false)}/>, document.body)} 
+   </>;
+ }
+ 
+@@ -2486,7 +2507,7 @@ function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{fo
+     }
+   }
+   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Favorite views for ${folderName}`} onClick={event => closeOnBackdropClick(event, onClose)}>
+-    <div className="card settings modal favorite-picker">
++    <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()}>
+       <p><strong>Add to favorites</strong></p>
+       <p className="muted"><small>{folderName}</small></p>
+       {error && <p className="error">{error}</p>}
