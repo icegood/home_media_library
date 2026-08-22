@@ -102,9 +102,8 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  const isBrowserPage = /^\/library\/\d(\/folder\/\d+)?$/.test(location.pathname);
   return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
-    {!isBrowserPage && <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>}
+    <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
@@ -210,6 +209,7 @@ function useBreadcrumb(): Crumb[] | null {
   const pathname = location.pathname;
   const searchParams = new URLSearchParams(location.search);
   const favoritesMatch = pathname.match(/^\/favorites\/view\/[^/]+$/);
+  const favoriteViewMatch = pathname.match(/^\/favorites\/(\d+)$/);
   const rootMatch = pathname.match(/^\/library\/([^/]+)$/);
   const folderMatch = pathname.match(/^\/library\/([^/]+)\/folder\/([^/]+)$/);
   const viewerMatch = pathname.match(/^\/library\/([^/]+)\/view\/([^/]+)$/);
@@ -220,6 +220,7 @@ function useBreadcrumb(): Crumb[] | null {
   const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : timelineFolderMatch ? Number(timelineFolderMatch[2]) : isMap && searchParams.get("folder") ? Number(searchParams.get("folder")) : null;
   const folderData = useFolderEntries(folderID != null ? libraryID : NaN, folderID);
   const [libraries, setLibraries] = useState<Library[]|null>(null);
+  const [favViewName, setFavViewName] = useState<string|null>(null);
   useEffect(() => {
     let cancelled = false;
     setLibraries(null);
@@ -227,8 +228,29 @@ function useBreadcrumb(): Crumb[] | null {
     api.libraries().then(items => { if (!cancelled) setLibraries(items); }).catch(() => setLibraries(null));
     return () => { cancelled = true; };
   }, [pathname, location.search]);
+  useEffect(() => {
+    let cancelled = false;
+    setFavViewName(null);
+    const viewParam = favoriteViewMatch ? favoriteViewMatch[1] : favoritesMatch ? searchParams.get("viewId") : searchParams.get("fav");
+    if (!viewParam) return;
+    api.favoriteViews().then(views => {
+      if (cancelled) return;
+      const v = views.find(x => x.id === Number(viewParam));
+      if (v) setFavViewName(v.name);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [pathname, location.search]);
   return useMemo(() => {
-    if (favoritesMatch) return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
+    if (favoritesMatch) {
+      if (favViewName && searchParams.get("viewId")) {
+        return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}, {label:favViewName, to:`/favorites/${searchParams.get("viewId")}`}];
+      }
+      return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
+    }
+    if (favoriteViewMatch) {
+      if (!favViewName) return null;
+      return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}, {label:favViewName, to:null, current:true}];
+    }
     if (isMap) {
       if (!Number.isFinite(libraryID) || !libraries) return null;
       const library = libraries.find(item => item.id === libraryID);
@@ -243,14 +265,16 @@ function useBreadcrumb(): Crumb[] | null {
     if (!Number.isFinite(libraryID) || !libraries) return null;
     const library = libraries.find(item => item.id === libraryID);
     const timeline = timelineMatch || timelineFolderMatch;
+    const favParam = searchParams.get("fav");
     const base: Crumb[] = [{label: timeline ? "Timeline of Libraries" : "Libraries", to:"/"}];
+    if (favParam) base.push({label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:`/favorites/${favParam}`});
     if (library) base.push({label:library.name, to: timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`});
     if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
       base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`})));
     }
     if ((rootMatch || folderMatch || timeline) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
     return base;
-  }, [libraries, folderData, location]);
+  }, [libraries, favViewName, folderData, location]);
 }
 
 function closeParentDetails(event:MouseEvent<HTMLElement>) {
@@ -1665,9 +1689,16 @@ function Browser() {
     setSelected([]);
   }
   return <main className="browser-page"><div className="browser-bar"><div className="browser-bar-inner">
-    <div className="button-group"><Link className="button-like active" to={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}>Folders</Link><Link className="button-like" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link><Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link></div>
+    <select className="bar-select" value={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`} onChange={event => { const v = event.target.value; if (v.startsWith("/map")) navigate(v); else navigate(v); }}>
+      <option value={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</option>
+      <option value={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</option>
+      <option value={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</option>
+    </select>
     <span className="bar-sep"/>
-    <div className="button-group"><button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button><button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button></div>
+    <select className="bar-select" value={view} onChange={event => setView(event.target.value as "tile"|"list")}>
+      <option value="tile">Tile</option>
+      <option value="list">List</option>
+    </select>
     <span className="bar-sep"/>
     <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
       <option value="all">All</option>
@@ -1676,12 +1707,12 @@ function Browser() {
     </select>
     <span className="bar-sep"/>
     <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
-    <TopMenuToggle/>
-    <VirtualEntries entries={filteredEntries} view={view} libraryId={libraryId} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
+    <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
 }
 
 function LibraryTimeline() {
   const {id="", folderId} = useParams();
+  const navigate = useNavigate();
   const libraryId = Number(id);
   const currentFolderId = folderId == null ? null : Number(folderId);
   const [items, setItems] = useState<Media[]>([]);
@@ -1715,17 +1746,22 @@ function LibraryTimeline() {
   }
   return <main className="browser-page">
     <div className="browser-bar"><div className="browser-bar-inner">
-      <div className="button-group"><Link className="button-like" to={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</Link><Link className="button-like active" to={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</Link>
-        <Link className="button-like" to={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</Link></div>
+      <select className="bar-select" value={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`} onChange={event => { const v = event.target.value; if (v) navigate(v); }}>
+        <option value="">View</option>
+        <option value={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</option>
+        <option value={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</option>
+        <option value={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</option>
+      </select>
       <span className="bar-sep"/>
-      <div className="button-group">
-        <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
-          <option value="all">All</option>
-          <option value="image">Images</option>
-          <option value="video">Videos</option>
-        </select>
-        <button onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
-      </div>
+      <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
+        <option value="all">All</option>
+        <option value="image">Images</option>
+        <option value="video">Videos</option>
+      </select>
+      <select className="bar-select" value={sort} onChange={event => setSort(event.target.value as "desc"|"asc")}>
+        <option value="desc">Newest first</option>
+        <option value="asc">Oldest first</option>
+      </select>
       <span className="bar-sep"/>
     <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
     {sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
@@ -1823,28 +1859,45 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove}:{id:ID; n
     try { await api.unfavoriteFolder(favoriteViewId, id); onRemove?.(id); } finally { setBusy(false); }
   }
   const navigate = useNavigate();
+  async function resolveLibrary(): Promise<ID|null> {
+    const libs = await api.libraries();
+    for (const lib of libs) {
+      try {
+        await api.folder(lib.id, id);
+        return lib.id;
+      } catch (_) {
+        // not in this library, try next
+      }
+    }
+    return null;
+  }
   async function openFolder(event?:MouseEvent) {
     event?.stopPropagation();
     setBusy(true);
     try {
-      const libs = await api.libraries();
-      for (const lib of libs) {
-        try {
-          await api.folder(lib.id, id);
-          navigate(`/library/${lib.id}/folder/${id}`);
-          return;
-        } catch (_) {
-          // not in this library, try next
-        }
-      }
-      window.alert("Could not open folder: library not found or access denied.");
+      const libId = await resolveLibrary();
+      if (libId == null) { window.alert("Could not open folder: library not found or access denied."); return; }
+      navigate(favoriteViewId != null ? `/library/${libId}/folder/${id}?fav=${favoriteViewId}` : `/library/${libId}/folder/${id}`);
     } finally {
       setBusy(false);
     }
   }
-  return <article className={`card media folder-card ${view}`} onClick={() => void openFolder()}>
+  async function openFolderNewTab(event:MouseEvent) {
+    if (!(event.button === 1 || event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setBusy(true);
+    try {
+      const libId = await resolveLibrary();
+      if (libId == null) return;
+      window.open(favoriteViewId != null ? `/library/${libId}/folder/${id}?fav=${favoriteViewId}` : `/library/${libId}/folder/${id}`, "_blank");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <article className={`card media folder-card ${view}`} onClick={event => { if (event.button === 1 || event.ctrlKey || event.metaKey) void openFolderNewTab(event); else void openFolder(); }} onAuxClick={openFolderNewTab}>
 
-    {view === "tile" && <div className="thumb-wrap"><FolderCover/></div>}
+    {view === "tile" && <div className="thumb-wrap"><FolderCover folderId={id}/></div>}
     <div className="media-text"><strong>{name}</strong></div>
     {favoriteViewId != null && <button type="button" className="favorite-button active" aria-label={`Remove ${name} from this favorite view`} disabled={busy} onClick={remove}>★</button>}
   </article>;
@@ -1897,24 +1950,17 @@ function FavoriteViewPage() {
     setSelected([]);
   }
   return <main className="browser-page">
-    <h1>{selectedView?.name ?? "Favorite view"}</h1>
     <div className="browser-bar"><div className="browser-bar-inner">
-      <div className="button-group">
-        <Link className="button-like" to="/">Libraries</Link>
-        <Link className="button-like" to="/favorites">Favorite views</Link>
-        <span className="button-like active">{selectedView?.name ?? "View"}</span>
-      </div>
+      <select className="bar-select" value={displayMode} onChange={event => { const v = event.target.value as "folders"|"timeline"|"map"; if (v === "map") { window.location.href = `/map?favorite=${favoriteViewId}`; } else setDisplayMode(v); }}>
+        <option value="folders">Folders</option>
+        <option value="timeline">Timeline</option>
+        <option value="map">Map</option>
+      </select>
       <span className="bar-sep"/>
-      <div className="button-group">
-        <button className={displayMode === "folders" ? "active" : ""} onClick={() => setDisplayMode("folders")}>Folders</button>
-        <button className={displayMode === "timeline" ? "active" : ""} onClick={() => setDisplayMode("timeline")}>Timeline</button>
-        <Link className={`button-like ${displayMode === "map" ? "active" : ""}`} to={`/map?favorite=${favoriteViewId}`}>Map</Link>
-      </div>
-      <span className="bar-sep"/>
-      <div className="button-group">
-        <button className={view === "tile" ? "active" : ""} onClick={() => setView("tile")}>Tile</button>
-        <button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button>
-      </div>
+      <select className="bar-select" value={view} onChange={event => setView(event.target.value as "tile"|"list")}>
+        <option value="tile">Tile</option>
+        <option value="list">List</option>
+      </select>
       <span className="bar-sep"/>
       <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
         <option value="all">All</option>
@@ -1923,12 +1969,14 @@ function FavoriteViewPage() {
       </select>
       {displayMode === "timeline" && <>
         <span className="bar-sep"/>
-        <button onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
+        <select className="bar-select" value={sort} onChange={event => setSort(event.target.value as "desc"|"asc")}>
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
       </>}
       <span className="bar-sep"/>
       <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
     </div></div>
-    <TopMenuToggle/>
     {error && <p className="error">{error}</p>}
     {!loaded && <div className="empty-state"><p>Loading…</p></div>}
     {loaded && displayMode === "folders" && <>
@@ -2210,7 +2258,7 @@ function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,on
   const viewportTop = Math.max(0, viewport.scrollY - viewport.top);
   const firstVisibleRow = Math.floor(viewportTop / (rowHeight + gap));
   const visibleRows = Math.ceil(viewport.height / (rowHeight + gap));
-  const overscan = 3;
+  const overscan = Math.max(6, visibleRows + 3);
   const firstRow = Math.max(0, firstVisibleRow - overscan);
   const lastRow = Math.min(totalRows, firstVisibleRow + visibleRows + overscan);
   const start = firstRow * columns;
@@ -2218,26 +2266,34 @@ function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,on
   const offsetY = firstRow * (rowHeight + gap);
   const totalHeight = totalRows === 0 ? 0 : totalRows * rowHeight + Math.max(0, totalRows - 1) * gap;
   useEffect(() => {
+    let frame:number|null = null;
     function update() {
+      frame = null;
       const rect = ref.current?.getBoundingClientRect();
       const vv = window.visualViewport;
       const scrollY = window.scrollY;
       const height = vv ? vv.height : window.innerHeight;
       const width = rect?.width || window.innerWidth;
       const top = (rect?.top ?? 0) + window.scrollY;
-      setViewport({ scrollY, height, width, top });
+      setViewport(prev => prev.scrollY === scrollY && prev.height === height && prev.width === width && prev.top === top ? prev : {scrollY, height, width, top});
     }
-    update();
-    window.addEventListener("scroll", update, {passive:true});
-    window.addEventListener("resize", update);
+    function schedule() { if (frame == null) frame = requestAnimationFrame(update); }
+    schedule();
+    window.addEventListener("scroll", schedule, {passive:true});
+    document.addEventListener("scroll", schedule, {passive:true, capture:true});
+    document.addEventListener("scrollend", schedule as EventListener, {passive:true, capture:true});
+    window.addEventListener("resize", schedule);
     const vv = window.visualViewport;
-    if (vv) { vv.addEventListener("resize", update); vv.addEventListener("scroll", update); }
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    if (vv) { vv.addEventListener("resize", schedule); vv.addEventListener("scroll", schedule); }
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
     if (ref.current) observer?.observe(ref.current);
     return () => {
-      window.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-      if (vv) { vv.removeEventListener("resize", update); vv.removeEventListener("scroll", update); }
+      if (frame != null) cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", schedule);
+      document.removeEventListener("scroll", schedule, true);
+      document.removeEventListener("scrollend", schedule as EventListener, true);
+      window.removeEventListener("resize", schedule);
+      if (vv) { vv.removeEventListener("resize", schedule); vv.removeEventListener("scroll", schedule); }
       observer?.disconnect();
     };
   }, [entries.length, view]);
@@ -2963,6 +3019,7 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
   const [hover, setHover] = useState<VideoThumbnail|null>(null);
   const [hoverLeft, setHoverLeft] = useState(0);
   const [playing, setPlaying] = useState(true);
+  const [stopped, setStopped] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(metadataDuration);
   const [offsets, setOffsets] = useState<[number,number]>([0,0]);
@@ -2983,6 +3040,7 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
     return videoRefs[activeRef.current].current;
   }
   function toggle() {
+    if (stopped) { replay(); return; }
     const video = activeVideo();
     if (!video) return;
     if (video.paused) void video.play();
@@ -3009,15 +3067,22 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
     seek(current + delta);
   }
   function stop() {
-    const video = activeVideo();
-    if (video) video.pause();
     if (seekTimer.current !== null) clearTimeout(seekTimer.current);
     seekPending.current = false;
     setPending(null);
     setCurrent(0);
     setPlaying(false);
+    setStopped(true);
+    if (!transcoded) {
+      const video = activeVideo();
+      if (video) { video.pause(); video.currentTime = 0; }
+    } else {
+      for (const ref of videoRefs) ref.current?.pause();
+      setOffsets([0,0]);
+    }
   }
   function replay() {
+    setStopped(false);
     if (seekTimer.current !== null) clearTimeout(seekTimer.current);
     seekPending.current = false;
     setCurrent(0);
@@ -3068,10 +3133,11 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
     </video>;
   }
   return <div className="video-box">
+    {stopped ? <div className="video-stack video-stopped" aria-label="Video stopped"/> :
     <div className="video-stack">
       {renderVideo(active)}
       {transcoded && pending !== null && renderVideo(targetSlot)}
-    </div>
+    </div>}
     {transcoded && <div className="video-badge-wrap">
       <button type="button" className="video-badge" aria-expanded={reportOpen} aria-controls="transcode-reasons"
         onClick={event => { event.stopPropagation(); setReportOpen(v => !v); }}>Transcoded ▾</button>
@@ -3153,6 +3219,7 @@ function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] 
 }
 
 function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
+  const navigate = useNavigate();
   const [items, setItems] = useState<MapMedia[]>([]);
   const [pickedGPS, setPickedGPS] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
@@ -3184,13 +3251,19 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
     setArea({bounds: points.length > 0 ? L.latLngBounds(points) : L.latLngBounds([0,0],[0,0]), items: sortMedia(cluster, "desc")});
   }
   return <main className={`map-page ${area ? "panel-open" : ""}`} aria-label="Media map">
-    <div className="browser-bar"><div className="browser-bar-inner">
-      <div className="button-group">
-        <Link className="button-like" to={libraryParam ? `/library/${libraryParam}${folderParam ? `/folder/${folderParam}` : ""}` : favoriteParam ? `/favorites/${favoriteParam}` : "/"}>Folders</Link>
-        <Link className="button-like" to={libraryParam ? `/library/${libraryParam}/timeline${folderParam ? `/${folderParam}` : ""}` : "/"}>Timeline</Link>
-        <Link className="button-like active" to={`/map${libraryParam ? `?library=${libraryParam}${folderParam ? `&folder=${folderParam}` : ""}` : favoriteParam ? `?favorite=${favoriteParam}` : ""}`}>Map</Link>
-      </div>
-      <span className="bar-sep"/>
+      <div className="browser-bar"><div className="browser-bar-inner">
+        {(() => {
+          const foldersUrl = libraryParam ? `/library/${libraryParam}${folderParam ? `/folder/${folderParam}` : ""}` : favoriteParam ? `/favorites/${favoriteParam}` : "/";
+          const timelineUrl = libraryParam ? `/library/${libraryParam}/timeline${folderParam ? `/${folderParam}` : ""}` : "/";
+          const mapUrl = `/map${libraryParam ? `?library=${libraryParam}${folderParam ? `&folder=${folderParam}` : ""}` : favoriteParam ? `?favorite=${favoriteParam}` : ""}`;
+          return <select className="bar-select" value={mapUrl} onChange={event => { const v = event.target.value; if (v) navigate(v); }}>
+            <option value="">View</option>
+            <option value={foldersUrl}>Folders</option>
+            <option value={timelineUrl}>Timeline</option>
+            <option value={mapUrl}>Map</option>
+          </select>;
+        })()}
+        <span className="bar-sep"/>
       <div className="button-group">
         <button className={`select-area-button ${selectMode ? "active" : ""}`} onClick={() => setSelectMode(value => !value)}>{selectMode ? "Cancel area selection" : "Select area"}</button>
         {area && <button className="secondary" onClick={() => setArea(null)}>Clear selection</button>}

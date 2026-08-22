@@ -161,6 +161,7 @@ header .brand { font-weight: 800; margin-right: auto; letter-spacing: -.03em; fo
 .top-menu-handle { position: fixed; z-index: 2200; top: 10px; left: 50%; transform: translateX(-50%); min-width: 54px; height: 42px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--overlay-border); background: var(--handle-bg); color: var(--overlay-text); font-weight: 900; box-shadow: 0 12px 30px #0008; }
 .top-menu-handle:hover { background: var(--handle-hover); }
 .top-menu-open .top-menu-handle { top: 74px; }
+.top-menu-open:has(.browser-page .browser-bar) > .top-menu-handle { top: 160px; }
 .top-menu-handle.under-bar { position: relative; top: auto; left: auto; transform: none; display: block; margin: 4px auto; z-index: auto; box-shadow: none; }
 
 /* ===== Nav & menus ===== */
@@ -359,6 +360,11 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .bar-sep { width: 1px; height: 24px; margin: 0 4px; background: var(--border-strong); flex-shrink: 0; }
 .button-group button, .button-group .button-like { background: var(--surface-interactive); color: var(--text); border: 1px solid var(--border-strong); border-radius: 999px; padding: 9px 12px; text-decoration: none; font-weight: 700; font-size: .9rem; cursor: pointer; }
 .button-group button.active, .button-group .button-like.active { background: var(--primary-text); color: white; }
+.breadcrumb-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 700; font-size: .9rem; }
+.breadcrumb-bar a { color: var(--text-link); text-decoration: none; }
+.breadcrumb-bar a:hover { text-decoration: underline; }
+.breadcrumb-bar span:last-child { color: var(--text); font-weight: 800; }
+.breadcrumb-sep { color: var(--text-muted); }
 .bar-select { appearance: none; background: var(--surface-interactive) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236b7280'/%3E%3C/svg%3E") no-repeat right 10px center; background-size: 10px; color: var(--text); border: 1px solid var(--border-strong); border-radius: 999px; padding: 9px 28px 9px 12px; font-weight: 700; font-size: .9rem; cursor: pointer; line-height: 1; }
 
 /* ===== Bulk toolbar ===== */
@@ -369,7 +375,7 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .gps-label input[type="text"] { border: none; background: transparent; outline: none; font-size: .9rem; width: 140px; padding: 0; color: var(--text); }
 .shift-group { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 12px; }
 .shift-label { font-weight: 700; font-size: .9rem; white-space: nowrap; }
-.bulk-gps-input { border: none; background: transparent; outline: none; font-size: .9rem; width: 160px; padding: 0; color: var(--text); }
+.bulk-gps-input { border: 1px solid var(--border-strong); background: var(--surface-interactive); outline: none; font-size: .9rem; width: 160px; padding: 9px 12px; color: var(--text); border-radius: 999px; }
 .shift-input { border: none; background: transparent; outline: none; font-size: .9rem; width: 48px; padding: 0; color: var(--text); text-align: center; }
 .bulk-check { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .bulk-check .check { display: flex; align-items: center; gap: 8px; }
@@ -550,6 +556,7 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .video-box { position: relative; width: 100%; }
 .video-stack { display: grid; }
 .video-stack video { grid-area: 1/1; width: 100%; }
+.video-stack.video-stopped { aspect-ratio: 16/9; background: #000; border-radius: inherit; }
 .video-box video { display: block; width: 100%; max-height: calc(100vh - 126px); background: var(--surface); }
 .video-badge-wrap { position: absolute; top: 10px; left: 10px; z-index: 2; }
 .video-badge { padding: 4px 10px; border-radius: 8px; background: var(--badge-bg); color: #fff; font-size: .75rem; font-weight: 600; letter-spacing: .02em; box-shadow: var(--shadow-sm); cursor: pointer; }

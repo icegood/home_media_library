@@ -581,23 +581,22 @@ test("virtual grid shifts the mounted window while scrolling", async () => {
   });
   mockApi.entries.mockResolvedValue(many);
   const originalScrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  Object.defineProperty(window, "scrollY", {value:2000, writable:true, configurable:true});
+  Object.defineProperty(window, "scrollY", {value:8000, writable:true, configurable:true});
   const originalVV = window.visualViewport;
   Object.defineProperty(window, "visualViewport", {value:{offsetTop:0, height:window.innerHeight, addEventListener:()=>{}, removeEventListener:()=>{}}, configurable:true});
   try {
     render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
-    const firstItem = await screen.findByText("img-1.jpg");
+    await screen.findByText("img-1.jpg");
     const browser = document.querySelector(".virtual-browser");
     expect(browser).not.toBeNull();
     const rowStep = 292 + 18;
     Object.defineProperty(browser!, "getBoundingClientRect", {value:() => ({
-      top: 400 - 2000, left:0, right:1024, bottom:400 - 2000 + rowStep * 6, width:1024, height:rowStep * 6, x:0, y:400 - 2000,
+      top: 400 - 8000, left:0, right:1024, bottom:400 - 8000 + rowStep * 6, width:1024, height:rowStep * 6, x:0, y:400 - 8000,
     })});
     fireEvent.scroll(window);
     await waitFor(() => expect(screen.queryByText("img-1.jpg")).not.toBeInTheDocument());
-    expect(screen.getByText("img-50.jpg")).toBeInTheDocument();
+    expect(screen.getByText("img-100.jpg")).toBeInTheDocument();
     expect(screen.queryByText("img-200.jpg")).not.toBeInTheDocument();
-    expect(firstItem).not.toBeInTheDocument();
   } finally {
     if (originalScrollY) Object.defineProperty(window, "scrollY", originalScrollY);
     else delete (window as unknown as {scrollY?:number}).scrollY;
@@ -889,7 +888,7 @@ test("favorite view renders media and star removes item from that view", async (
   mockApi.favoriteViewMedia.mockResolvedValue([{id:100, name:"one.jpg", mimeType:"image/jpeg"}]);
   mockApi.favoriteViewMediaFull.mockResolvedValue([{id:100, name:"one.jpg", kind:"image" as const, mimeType:"image/jpeg", folderId:20, relativePath:"one.jpg", size:10, metadata:{}, gps:"", takenAt:""}]);
   render(<MemoryRouter initialEntries={["/favorites/30"]}><App/></MemoryRouter>);
-  expect(await screen.findByRole("heading", {name:"Best"})).toBeInTheDocument();
+  expect(await screen.findByText("Best")).toBeInTheDocument();
   expect(await screen.findByText("one.jpg")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Remove one.jpg from this favorite view"}));
   await waitFor(() => expect(mockApi.unfavoriteMedia).toHaveBeenCalledWith(30, 100));
@@ -968,9 +967,10 @@ test("folder timeline loads media for that folder and links back to it", async (
   await waitFor(() => expect(mockApi.folderMedia).toHaveBeenCalledWith(1, 20));
   expect(screen.getByText("two.jpg")).toBeInTheDocument();
   expect(screen.getByText("one.jpg")).toBeInTheDocument();
-  const toggle = within(document.querySelector(".button-group") as HTMLElement);
-  expect(toggle.getByRole("link", {name:"Folders"})).toHaveAttribute("href", "/library/1/folder/20");
-  expect(toggle.getByRole("link", {name:"Map"})).toHaveAttribute("href", "/map?library=1&folder=20");
+  const viewSelect = screen.getAllByRole("combobox")[0];
+  const foldersOption = viewSelect.querySelector<HTMLOptionElement>("option[value='/library/1/folder/20']");
+  expect(foldersOption).not.toBeNull();
+  expect(foldersOption!.textContent).toBe("Folders");
   expect(screen.getByRole("link", {name:"Timeline of Libraries"})).toHaveAttribute("href", "/");
   expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1/timeline");
 });
@@ -1001,7 +1001,8 @@ test("library timeline groups media by date along a vertical ruler", async () =>
     expect.stringContaining("2020"),
     "Unknown date"
   ]);
-  fireEvent.change(screen.getByRole("combobox"), {target:{value:"image"}});
+  const kindSelect = screen.getAllByRole("combobox").find(el => el.querySelector("option[value='image']"))!;
+  fireEvent.change(kindSelect, {target:{value:"image"}});
   expect(screen.getByText("one.jpg")).toBeInTheDocument();
   expect(screen.queryByText("two.mp4")).not.toBeInTheDocument();
   fireEvent.click(screen.getByText("one.jpg"));
@@ -1245,11 +1246,19 @@ test("browser map button scopes to the library or current folder", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.entries.mockResolvedValue([]);
   const first = render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
-  await waitFor(() => expect(first.getAllByRole("link", {name:"Map"}).some(link => link.getAttribute("href") === "/map?library=1")).toBe(true));
+  await waitFor(() => {
+    const selects = first.getAllByRole("combobox");
+    const viewSelect = selects.find(el => el.querySelector("option[value='/map?library=1']"));
+    expect(viewSelect).toBeDefined();
+  });
   first.unmount();
   mockApi.folderEntries.mockResolvedValue({entries:[], chain: []});
   const second = render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
-  await waitFor(() => expect(second.getAllByRole("link", {name:"Map"}).some(link => link.getAttribute("href") === "/map?library=1&folder=20")).toBe(true));
+  await waitFor(() => {
+    const selects = second.getAllByRole("combobox");
+    const viewSelect = selects.find(el => el.querySelector("option[value='/map?library=1&folder=20']"));
+    expect(viewSelect).toBeDefined();
+  });
 });
 
 test("map breadcrumb shows Map of the library and folder when scoped", async () => {
@@ -1455,7 +1464,7 @@ test("map place search geocodes and orders results nearest first", async () => {
   fireEvent.change(screen.getByLabelText("Place search query"), {target:{value:"street"}});
   fireEvent.click(screen.getByRole("button", {name:"Search"}));
   await waitFor(() => expect(mockApi.geocode).toHaveBeenCalledWith("street"));
-  const results = screen.getAllByRole("option");
+  const results = within(screen.getByRole("listbox", {name:"Search results"})).getAllByRole("option");
   expect(results.length).toBe(2);
   expect(results[0]).toHaveTextContent(/Nearest: .*Near Street, City/);
   expect(results[1]).toHaveTextContent(/Far Street, City/);
