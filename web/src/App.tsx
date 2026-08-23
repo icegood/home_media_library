@@ -1,4 +1,4 @@
-import { createContext, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
@@ -8,6 +8,8 @@ import { appVersion, appRevision, appBuildDate, appStack } from "./generated-ver
 import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
+export const StreamChunkSizeCtx = createContext(10000);
+export const DEFAULT_STREAM_CHUNK_SIZE = 10000;
 
 function TopMenuToggle() {
   const {open, toggle} = useContext(TopMenuCtx);
@@ -42,6 +44,7 @@ export function App() {
   const [theme, setTheme] = useState<"light"|"dark"|"forest"|"system">("light");
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [zoom, setZoom] = useState(100);
+  const [streamChunkSize, setStreamChunkSize] = useState(DEFAULT_STREAM_CHUNK_SIZE);
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const shellRef = useRef<HTMLDivElement|null>(null);
@@ -69,7 +72,7 @@ export function App() {
   }, [zoom]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); syncUserDefaultThumbs(settings); }).catch(() => undefined);
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); }).catch(() => undefined);
   }, [user?.id]);
   useEffect(() => {
     function closeTopMenus(event:PointerEvent) {
@@ -102,7 +105,7 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
+  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
@@ -121,7 +124,7 @@ export function App() {
           <button type="button" className="logout-button" role="menuitem" onClick={handleLogout}>Logout</button>
         </div>
       </details></header>
-    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
+    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} streamChunkSize={streamChunkSize} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onStreamChunkSizeChange={setStreamChunkSize} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
     {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)}/>}
     <Routes>
       <Route path="/" element={<Libraries/>}/>
@@ -139,7 +142,7 @@ export function App() {
       <Route path="/admin/settings" element={<Navigate to="/admin"/>}/>
       <Route path="*" element={<NotFound/>}/>
     </Routes>
-  </div></TopMenuCtx.Provider>;
+  </div></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
 }
 
 function NotFound() {
@@ -180,8 +183,8 @@ function cachedFolderEntries(key: string): Promise<FolderEntries> | undefined {
   return undefined;
 }
 
-function useFolderEntries(libraryId:number, folderId:number|null): FolderEntries | null {
-  const key = `${libraryId}/${folderId ?? ""}`;
+function useFolderEntries(libraryId:number, folderId:number|null, chainOnly = false): FolderEntries | null {
+  const key = `${libraryId}/${folderId ?? ""}${chainOnly ? "/chain" : ""}`;
   const [data, setData] = useState<FolderEntries|null>(null);
   useEffect(() => {
     if (!Number.isFinite(libraryId)) return;
@@ -189,9 +192,10 @@ function useFolderEntries(libraryId:number, folderId:number|null): FolderEntries
     setData(null);
     let promise = cachedFolderEntries(key);
     if (!promise) {
+      const range = chainOnly ? {offset:0, limit:1} : undefined;
       promise = folderId == null
-        ? api.entries(libraryId).then(entries => ({entries, chain: []}))
-        : api.folderEntries(libraryId, folderId);
+        ? api.entries(libraryId, range).then(entries => ({entries, chain: []}))
+        : api.folderEntries(libraryId, folderId, range);
       folderEntriesCache.set(key, {promise, expires: Date.now() + FOLDER_ENTRIES_TTL_MS});
     }
     promise.then(result => { if (!cancelled) setData(result); })
@@ -218,9 +222,12 @@ function useBreadcrumb(): Crumb[] | null {
   const isMap = pathname === "/map";
   const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : timelineMatch ? Number(timelineMatch[1]) : timelineFolderMatch ? Number(timelineFolderMatch[1]) : isMap && searchParams.get("library") ? Number(searchParams.get("library")) : NaN;
   const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : timelineFolderMatch ? Number(timelineFolderMatch[2]) : isMap && searchParams.get("folder") ? Number(searchParams.get("folder")) : null;
-  const folderData = useFolderEntries(folderID != null ? libraryID : NaN, folderID);
+  const folderData = useFolderEntries(folderID != null ? libraryID : NaN, folderID, true);
   const [libraries, setLibraries] = useState<Library[]|null>(null);
   const [favViewName, setFavViewName] = useState<string|null>(null);
+  const [viewerItemName, setViewerItemName] = useState<string|null>(null);
+  const favoriteViewerMatch = pathname.match(/^\/favorites\/view\/([^/]+)$/);
+  const viewerItemId = favoriteViewerMatch ? Number(favoriteViewerMatch[1]) : viewerMatch && searchParams.get("item") != null ? Number(searchParams.get("item")) : NaN;
   useEffect(() => {
     let cancelled = false;
     setLibraries(null);
@@ -240,12 +247,23 @@ function useBreadcrumb(): Crumb[] | null {
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [pathname, location.search]);
+  useEffect(() => {
+    let cancelled = false;
+    setViewerItemName(null);
+    const params = new URLSearchParams(location.search);
+    const scopedViewer = viewerMatch != null && (params.get("root") != null || ["w","s","e","n"].every(key => params.get(key) != null));
+    const favViewer = viewerMatch != null && params.get("fav") != null;
+    if (!favoriteViewerMatch && !scopedViewer && !favViewer) return;
+    if (!Number.isFinite(viewerItemId) || viewerItemId <= 0) return;
+    api.media(viewerItemId).then(media => { if (!cancelled) setViewerItemName(media.name); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [pathname, location.search]);
   return useMemo(() => {
     if (favoritesMatch) {
-      if (favViewName && searchParams.get("viewId")) {
-        return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}, {label:favViewName, to:`/favorites/${searchParams.get("viewId")}`}];
-      }
-      return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
+      const crumbs: Crumb[] = [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
+      if (favViewName && searchParams.get("viewId")) crumbs.push({label:favViewName, to:`/favorites/${searchParams.get("viewId")}`});
+      if (viewerItemName) crumbs.push({label:viewerItemName, to:null, current:true});
+      return crumbs;
     }
     if (favoriteViewMatch) {
       if (!favViewName) return null;
@@ -262,19 +280,37 @@ function useBreadcrumb(): Crumb[] | null {
       base[base.length - 1] = {...base[base.length - 1], current:true};
       return base;
     }
+    if (viewerMatch) {
+      const rootParam = searchParams.get("root");
+      const bw = searchParams.get("w"), bs = searchParams.get("s"), be = searchParams.get("e"), bn = searchParams.get("n");
+      const hasBounds = [bw,bs,be,bn].every(v => v != null);
+      if ((rootParam != null || hasBounds) && Number.isFinite(libraryID) && libraries && viewerItemName) {
+        const library = libraries.find(item => item.id === libraryID);
+        if (!library) return null;
+        const origin = rootParam != null
+          ? `/library/${libraryID}/timeline${rootParam !== "all" ? `/${rootParam}` : ""}`
+          : `/map?library=${libraryID}&w=${bw}&s=${bs}&e=${be}&n=${bn}`;
+        return [{label:"Timeline of Libraries", to:"/"}, {label:library.name, to:origin}, {label:viewerItemName, to:null, current:true}];
+      }
+    }
     if (!Number.isFinite(libraryID) || !libraries) return null;
     const library = libraries.find(item => item.id === libraryID);
     const timeline = timelineMatch || timelineFolderMatch;
     const favParam = searchParams.get("fav");
+    const favSuffix = favParam ? `?fav=${encodeURIComponent(favParam)}` : "";
     const base: Crumb[] = [{label: timeline ? "Timeline of Libraries" : "Libraries", to:"/"}];
     if (favParam) base.push({label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:`/favorites/${favParam}`});
-    if (library) base.push({label:library.name, to: timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`});
+    if (library) base.push({label:library.name, to:(timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`) + favSuffix});
     if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
-      base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`})));
+      base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:(timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`) + favSuffix})));
+    }
+    if (viewerMatch && favParam && viewerItemName) {
+      base.push({label:viewerItemName, to:null, current:true});
+      return base;
     }
     if ((rootMatch || folderMatch || timeline) && base.length > 0) base[base.length - 1] = {...base[base.length - 1], current:true};
     return base;
-  }, [libraries, favViewName, folderData, location]);
+  }, [libraries, favViewName, viewerItemName, folderData, location]);
 }
 
 function closeParentDetails(event:MouseEvent<HTMLElement>) {
@@ -1331,14 +1367,16 @@ function ResetPassword() {
   </form></main>;
 }
 
-function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZoomChange, onUserChanged, onClose}:{
-  user:User; theme:"light"|"dark"|"forest"|"system"; zoom:number; resolvedTheme:"light"|"dark"|"forest";
+function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, onThemeChange, onZoomChange, onStreamChunkSizeChange, onUserChanged, onClose}:{
+  user:User; theme:"light"|"dark"|"forest"|"system"; zoom:number; streamChunkSize:number; resolvedTheme:"light"|"dark"|"forest";
   onThemeChange:(theme:"light"|"dark"|"forest"|"system")=>void;
   onZoomChange:(zoom:number)=>void;
+  onStreamChunkSizeChange:(size:number)=>void;
   onUserChanged:(user:User)=>void; onClose:()=>void;
 }) {
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"forest"|"system">(theme);
   const [draftZoom, setDraftZoom] = useState(zoom);
+  const [draftStreamChunkSize, setDraftStreamChunkSize] = useState(streamChunkSize);
   const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264-aac-mp4");
   const [codecOpen, setCodecOpen] = useState(false);
   const [thumbPickerOpen, setThumbPickerOpen] = useState<"image"|"video"|"folder"|null>(null);
@@ -1361,6 +1399,7 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
       setDefaultThumbVideo(settings.defaultThumbVideo || "mountains");
       setDefaultThumbFolder(settings.defaultThumbFolder || "mountains");
       setDateFormat(normalizeDateFormat(settings.dateFormat));
+      setDraftStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize));
       setLoaded(true);
     }).catch(() => undefined);
   }, [user.id]);
@@ -1386,10 +1425,11 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
   async function saveSettings() {
     setSaving(true); setError(""); setSaved(false);
     try {
-      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
-      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
+      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
+      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
       onThemeChange(draftTheme);
       onZoomChange(draftZoom);
+      onStreamChunkSizeChange(normalizeStreamChunkSize(draftStreamChunkSize));
       setSaved(true);
     } catch (cause) { setError(notify(cause)); } finally { setSaving(false); }
   }
@@ -1435,6 +1475,11 @@ function UserSettingsModal({user, theme, zoom, resolvedTheme, onThemeChange, onZ
           )}
         </select></label>
         <small>Scales the whole interface, including folder and file names.</small>
+      </fieldset>
+      <fieldset><legend>Media loading</legend>
+        <label>Items per request<input type="number" min={1} max={10000} value={draftStreamChunkSize}
+          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftStreamChunkSize(next); setSaved(false); } }}/></label>
+        <small>Folder items are fetched in chunks of this size. A value above your largest folder (for example 10000) loads every folder with a single request. Lower values (about 10) show the first pictures sooner on slow connections; thumbnails always appear independently as they load.</small>
       </fieldset>
       <fieldset><legend>Video fallback profile</legend>
         <span className="settings-label">Transcode schema</span>
@@ -1665,18 +1710,16 @@ function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string
 }
 
 function Browser() {
-  const {id="", folderId} = useParams(); const navigate = useNavigate();
+  const {id="", folderId} = useParams(); const navigate = useNavigate(); const location = useLocation();
   const libraryId = Number(id);
   const currentFolderId = folderId == null ? null : Number(folderId);
-  const folderData = useFolderEntries(libraryId, currentFolderId);
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const favParam = new URLSearchParams(location.search).get("fav");
   const [view, setView] = useState<"tile"|"list">("tile");
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
+  const streamChunkSize = useContext(StreamChunkSizeCtx);
+  const {entries, setEntries, done:entriesDone, loading:entriesLoading, loadMore} = useBufferedFolderEntries(libraryId, currentFolderId, kind !== "all", streamChunkSize);
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
-  useEffect(() => {
-    setEntries(folderData?.entries ?? []);
-  }, [folderData]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
   const filteredEntries = kind === "all" ? entries : entries.filter(entry => entry.type === "folder" || entry.media?.kind === kind);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
@@ -1707,7 +1750,7 @@ function Browser() {
     </select>
     <span className="bar-sep"/>
     <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
-    <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}`)}/></main>;
+    <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone}/></main>;
 }
 
 function LibraryTimeline() {
@@ -1728,14 +1771,6 @@ function LibraryTimeline() {
   }, [libraryId, currentFolderId]);
   const filtered = items.filter(item => kind === "all" || item.kind === kind);
   const sorted = sortMedia(filtered, sort);
-  const sortedJSON = sorted.length > 0 ? JSON.stringify(sorted) : "";
-  const scopeKeyRef = useRef<string|undefined>(undefined);
-  if (sortedJSON && scopeKeyRef.current == null) scopeKeyRef.current = `timeline-scope-${Math.random().toString(36).slice(2)}`;
-  useEffect(() => {
-    if (scopeKeyRef.current && sortedJSON) {
-      try { sessionStorage.setItem(scopeKeyRef.current, sortedJSON); } catch { /* quota */ }
-    }
-  }, [sortedJSON]);
   const [selected, setSelected] = useState<ID[]>([]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setItems(current => current.map(item => {
@@ -1770,7 +1805,7 @@ function LibraryTimeline() {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort="name" scope={scopeKeyRef.current}/>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind}}/>
           )}</div>
         </div>
       )}</div>}
@@ -1908,6 +1943,8 @@ function FavoriteViewPage() {
   const favoriteViewId = Number(viewId);
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [mediaItems, setMediaItems] = useState<Media[]>([]);
+  const [mediaLoaded, setMediaLoaded] = useState(false);
+  const mediaLoadingRef = useRef(false);
   const [view, setView] = useState<"tile"|"list">("tile");
   const [displayMode, setDisplayMode] = useState<"folders"|"timeline"|"map">("folders");
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
@@ -1916,32 +1953,37 @@ function FavoriteViewPage() {
   const [selected, setSelected] = useState<ID[]>([]);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
-  function load() {
+  useEffect(() => {
     if (!Number.isFinite(favoriteViewId)) return;
     setLoaded(false);
-    Promise.all([
-      api.favoriteViewMedia(favoriteViewId),
-      api.favoriteViewMediaFull(favoriteViewId)
-    ]).then(([itemsData, mediaData]) => {
-      setItems(itemsData);
-      setMediaItems(mediaData);
-      setLoaded(true);
-    }).catch(cause => setError((cause as Error).message));
-  }
-  useEffect(load, [favoriteViewId]);
+    setMediaItems([]);
+    setMediaLoaded(false);
+    mediaLoadingRef.current = false;
+    setError("");
+    api.favoriteViewMedia(favoriteViewId)
+      .then(itemsData => { setItems(itemsData); setLoaded(true); })
+      .catch(cause => setError((cause as Error).message));
+  }, [favoriteViewId]);
+  useEffect(() => {
+    function ensureMedia() {
+      if (!Number.isFinite(favoriteViewId) || mediaLoadingRef.current || !displayMode) return;
+      if (displayMode !== "timeline" || mediaLoaded) return;
+      mediaLoadingRef.current = true;
+      api.favoriteViewMediaFull(favoriteViewId, true)
+        .then(mediaData => { setMediaItems(mediaData); setMediaLoaded(true); })
+        .catch(cause => setError((cause as Error).message))
+        .finally(() => { mediaLoadingRef.current = false; });
+    }
+    ensureMedia();
+  }, [favoriteViewId, displayMode, mediaLoaded]);
   useEffect(() => { api.favoriteViews().then(setViews).catch(() => undefined); }, []);
   const selectedView = views.find(v => v.id === Number(viewId));
   const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (kind === "image" ? i.mimeType?.startsWith("image/") : i.mimeType?.startsWith("video/")));
+  const orderedItems = useMemo(() => [...filteredItems].sort((a, b) =>
+    Number(Boolean(b.isFolder)) - Number(Boolean(a.isFolder)) || a.name.localeCompare(b.name, undefined, {sensitivity:"base"}) || a.id - b.id
+  ), [filteredItems]);
   const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => m.kind === kind);
   const sortedMedia = sortMedia(filteredMedia, sort);
-  const sortedJSON = sortedMedia.length > 0 ? JSON.stringify(sortedMedia) : "";
-  const scopeKeyRef = useRef<string|undefined>(undefined);
-  if (sortedJSON && scopeKeyRef.current == null) scopeKeyRef.current = `fav-scope-${Math.random().toString(36).slice(2)}`;
-  useEffect(() => {
-    if (scopeKeyRef.current && sortedJSON) {
-      try { sessionStorage.setItem(scopeKeyRef.current, sortedJSON); } catch { /* quota */ }
-    }
-  }, [sortedJSON]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setMediaItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -1951,7 +1993,7 @@ function FavoriteViewPage() {
   }
   return <main className="browser-page">
     <div className="browser-bar"><div className="browser-bar-inner">
-      <select className="bar-select" value={displayMode} onChange={event => { const v = event.target.value as "folders"|"timeline"|"map"; if (v === "map") { window.location.href = `/map?favorite=${favoriteViewId}`; } else setDisplayMode(v); }}>
+      <select className="bar-select" aria-label="Display mode" value={displayMode} onChange={event => { const v = event.target.value as "folders"|"timeline"|"map"; if (v === "map") { window.location.href = `/map?favorite=${favoriteViewId}`; } else setDisplayMode(v); }}>
         <option value="folders">Folders</option>
         <option value="timeline">Timeline</option>
         <option value="map">Map</option>
@@ -1980,21 +2022,22 @@ function FavoriteViewPage() {
     {error && <p className="error">{error}</p>}
     {!loaded && <div className="empty-state"><p>Loading…</p></div>}
     {loaded && displayMode === "folders" && <>
-      {filteredItems.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
-        <div className={view === "tile" ? "grid" : "list-view"}>{filteredItems.map(item =>
+      {orderedItems.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
+        <div className={view === "tile" ? "grid" : "list-view"}>{orderedItems.map(item =>
           item.isFolder
             ? <FavoriteFolderCard key={`f-${item.id}`} id={item.id} name={item.name} view={view} favoriteViewId={favoriteViewId} onRemove={removedId => setItems(current => current.filter(i => i.id !== removedId || !i.isFolder))}/>
             : <MediaCard key={item.id} item={{id:item.id, name:item.name, mimeType:item.mimeType??"", favorite:true} as Media} view={view} favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} onFavoriteChange={updated => setItems(current => current.filter(i => i.id !== updated.id || i.isFolder))}/>
         )}</div>}
     </>}
     {loaded && displayMode === "timeline" && <>
-      {sortedMedia.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
+      {!mediaLoaded ? <div className="empty-state"><p>Loading…</p></div> :
+        sortedMedia.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
         <div className="timeline-grid">{groupByDate(sortedMedia).map(group =>
           <div className="timeline-group" key={group.label}>
             <span className="timeline-group-date">{group.label}</span>
             <span className="timeline-group-dot" aria-hidden="true"/>
-            <div className="timeline-group-grid">{group.items.map(item =>
-              <MediaCard key={item.id} item={item} view="tile" favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort="name" scope={scopeKeyRef.current}/>
+            <div className="timeline-group-grid">{group.items.map((item, itemIndex) =>
+              <MediaCard key={`${item.id}-${itemIndex}`} item={item} view="tile" favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "asc" : "desc"}/>
             )}</div>
           </div>
         )}</div>}
@@ -2009,17 +2052,19 @@ function FavoriteMediaViewerPage() {
   const viewId = query.get("viewId") ?? "";
   const favoriteViewId = Number(viewId);
   const currentMediaId = Number(mediaId);
+  const sortParam = query.get("sort") ?? "date";
   const [items, setItems] = useState<Media[]>([]);
   const [fallbackItem, setFallbackItem] = useState<Media|null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
-  const index = items.findIndex(media => media.id === currentMediaId);
-  const item = index >= 0 ? items[index] : fallbackItem;
-  const previous = index > 0 ? items[index - 1] : null;
-  const next = index >= 0 && index < items.length - 1 ? items[index + 1] : null;
+  const orderedItems = useMemo(() => sortParam === "name" ? items : sortMedia(items, sortParam === "date-asc" ? "asc" : "desc"), [items, sortParam]);
+  const index = orderedItems.findIndex(media => media.id === currentMediaId);
+  const item = index >= 0 ? orderedItems[index] : fallbackItem;
+  const previous = index > 0 ? orderedItems[index - 1] : null;
+  const next = index >= 0 && index < orderedItems.length - 1 ? orderedItems[index + 1] : null;
   useEffect(() => {
     if (!Number.isFinite(favoriteViewId)) return;
     let cancelled = false;
-    api.favoriteViewMedia(favoriteViewId)
+    api.favoriteViewMedia(favoriteViewId, true)
       .then(async raw => {
         if (cancelled) return;
         // Ensure we have full media metadata for playback — favorite API may return minimal records
@@ -2039,7 +2084,7 @@ function FavoriteMediaViewerPage() {
   }, [favoriteViewId]);
   useEffect(() => { if (Number.isFinite(currentMediaId)) api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null)); }, [currentMediaId]);
   function go(media:Media|null) {
-    if (media) navigate(`/favorites/view/${media.id}?viewId=${encodeURIComponent(viewId)}`);
+    if (media) navigate(`/favorites/view/${media.id}?viewId=${encodeURIComponent(viewId)}&sort=${encodeURIComponent(sortParam)}`);
   }
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
@@ -2248,66 +2293,76 @@ function groupByDate<T extends {takenAt:string}>(items:readonly T[]): {label:str
   return groups;
 }
 
-function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void}) {
-  const ref = useRef<HTMLDivElement|null>(null);
-  const [viewport, setViewport] = useState({scrollY:window.scrollY, height:window.innerHeight, width:window.innerWidth, top:0});
-  const gap = view === "tile" ? 18 : 6;
-  const rowHeight = view === "tile" ? 292 : 78;
-  const columns = view === "tile" ? Math.max(1, Math.floor((viewport.width + gap) / (190 + gap))) : 1;
-  const totalRows = Math.ceil(entries.length / columns);
-  const viewportTop = Math.max(0, viewport.scrollY - viewport.top);
-  const firstVisibleRow = Math.floor(viewportTop / (rowHeight + gap));
-  const visibleRows = Math.ceil(viewport.height / (rowHeight + gap));
-  const overscan = Math.max(6, visibleRows + 3);
-  const firstRow = Math.max(0, firstVisibleRow - overscan);
-  const lastRow = Math.min(totalRows, firstVisibleRow + visibleRows + overscan);
-  const start = firstRow * columns;
-  const end = Math.min(entries.length, lastRow * columns);
-  const offsetY = firstRow * (rowHeight + gap);
-  const totalHeight = totalRows === 0 ? 0 : totalRows * rowHeight + Math.max(0, totalRows - 1) * gap;
-  useEffect(() => {
-    let frame:number|null = null;
-    function update() {
-      frame = null;
-      const rect = ref.current?.getBoundingClientRect();
-      const vv = window.visualViewport;
-      const scrollY = window.scrollY;
-      const height = vv ? vv.height : window.innerHeight;
-      const width = rect?.width || window.innerWidth;
-      const top = (rect?.top ?? 0) + window.scrollY;
-      setViewport(prev => prev.scrollY === scrollY && prev.height === height && prev.width === width && prev.top === top ? prev : {scrollY, height, width, top});
+export function normalizeStreamChunkSize(value:number) {
+  return Number.isFinite(value) && value >= 1 ? Math.min(Math.round(value), 10000) : DEFAULT_STREAM_CHUNK_SIZE;
+}
+
+export function useBufferedFolderEntries(libraryId:number, folderId:number|null, exhaustive:boolean, chunkSizeRaw:number) {
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [done, setDone] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const loadingRef = useRef(false);
+  const doneRef = useRef(false);
+  const offsetRef = useRef(0);
+  const chunkSize = normalizeStreamChunkSize(chunkSizeRaw);
+  const loadMore = useCallback(async () => {
+    if (loadingRef.current || doneRef.current || !Number.isFinite(libraryId)) return;
+    loadingRef.current = true;
+    setLoading(true);
+    try {
+      const batch = folderId == null
+        ? await api.entries(libraryId, {offset:offsetRef.current, limit:chunkSize})
+        : (await api.folderEntries(libraryId, folderId, {offset:offsetRef.current, limit:chunkSize})).entries;
+      if (batch.length > 0) setEntries(prev => {
+        const keyOf = (entry:Entry) => entry.type === "folder" ? `f${entry.id}` : `m${entry.media?.id}`;
+        const known = new Set(prev.map(keyOf));
+        return [...prev, ...batch.filter(entry => !known.has(keyOf(entry)))];
+      });
+      offsetRef.current += batch.length;
+      if (batch.length < chunkSize) { doneRef.current = true; setDone(true); }
+    } catch {
+      doneRef.current = true;
+      setDone(true);
+    } finally {
+      loadingRef.current = false;
+      setLoading(false);
     }
-    function schedule() { if (frame == null) frame = requestAnimationFrame(update); }
-    schedule();
-    window.addEventListener("scroll", schedule, {passive:true});
-    document.addEventListener("scroll", schedule, {passive:true, capture:true});
-    document.addEventListener("scrollend", schedule as EventListener, {passive:true, capture:true});
-    window.addEventListener("resize", schedule);
-    const vv = window.visualViewport;
-    if (vv) { vv.addEventListener("resize", schedule); vv.addEventListener("scroll", schedule); }
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
-    if (ref.current) observer?.observe(ref.current);
-    return () => {
-      if (frame != null) cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", schedule);
-      document.removeEventListener("scroll", schedule, true);
-      document.removeEventListener("scrollend", schedule as EventListener, true);
-      window.removeEventListener("resize", schedule);
-      if (vv) { vv.removeEventListener("resize", schedule); vv.removeEventListener("scroll", schedule); }
-      observer?.disconnect();
-    };
-  }, [entries.length, view]);
-  if (entries.length === 0) return <div className="empty-state"><p>No items here.</p></div>;
-  return <div ref={ref} className={`virtual-browser ${view === "tile" ? "virtual-tile" : "virtual-list"}`} style={{height:totalHeight}}>
-    <div className={view === "tile" ? "grid virtual-window" : "list-view virtual-window"} style={{transform:`translateY(${offsetY}px)`}}>
-      {entries.slice(start, end).map((entry, index) => {
-        const row = Math.floor((start + index) / columns);
-        const priority = row >= firstVisibleRow && row < firstVisibleRow + visibleRows;
-        return entry.type === "folder" ?
-          <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} priority={priority} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected}/> :
-          <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} priority={priority} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date"/>;
-      })}
+  }, [libraryId, folderId, chunkSize]);
+  useEffect(() => {
+    if (!Number.isFinite(libraryId)) return;
+    setEntries([]); setDone(false); setLoading(false);
+    loadingRef.current = false; doneRef.current = false; offsetRef.current = 0;
+    void loadMore();
+  }, [libraryId, folderId, loadMore]);
+  useEffect(() => {
+    if (!exhaustive || doneRef.current) return;
+    void loadMore();
+  }, [exhaustive, entries.length, loadMore]);
+  return {entries, setEntries, done, loading, loadMore};
+}
+
+function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onLoadMore,moreLoading,moreDone}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean}) {
+  const sentinelRef = useRef<HTMLDivElement|null>(null);
+  useEffect(() => {
+    if (moreDone || !onLoadMore) return;
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    let active = true;
+    const io = new IntersectionObserver(observed => {
+      if (active && observed.some(item => item.isIntersecting)) onLoadMore();
+    }, {rootMargin:"800px 0px"});
+    io.observe(el);
+    return () => { active = false; io.disconnect(); };
+  }, [moreDone, onLoadMore, entries.length]);
+  if (entries.length === 0 && (moreDone ?? true)) return <div className="empty-state"><p>No items here.</p></div>;
+  return <div className={`cv-browser ${view === "tile" ? "virtual-tile" : "virtual-list"}`}>
+    <div className={view === "tile" ? "grid" : "list-view"}>
+      {entries.map(entry => entry.type === "folder" ?
+        <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected}/> :
+        <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date"/>
+      )}
     </div>
+    {!moreDone && <div ref={sentinelRef} className="load-more">{moreLoading ? <span>Loading…</span> : null}</div>}
   </div>;
 }
 
@@ -2494,9 +2549,12 @@ function FolderCover({folderId, priority}:{folderId?:ID; priority?:boolean}) {
   return <div className="folder-cover"><ThumbImage src={api.folderThumbnailUrl(folderId)} priority={priority} kind="folder"/></div>;
 }
 
-function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort,scope}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string; scope?:string}) {
+function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort,nav}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string; nav?:ItemNav}) {
   const navigate = useNavigate();
-  const url = favoriteViewId != null || libraryId == null ? `/favorites/view/${item.id}?viewId=${encodeURIComponent(String(favoriteViewId ?? ""))}` : libraryItemURL(libraryId, item, sort, scope);
+  const favoriteSort = sort === "asc" ? "date-asc" : sort === "desc" ? "date" : null;
+  const url = favoriteViewId != null || libraryId == null
+    ? `/favorites/view/${item.id}?viewId=${encodeURIComponent(String(favoriteViewId ?? ""))}${favoriteSort ? `&sort=${favoriteSort}` : ""}`
+    : libraryItemURL(libraryId, item, sort, nav);
   function handleClick(event:React.MouseEvent) {
     if (event.button === 1 || event.ctrlKey || event.metaKey) { window.open(url, "_blank"); event.preventDefault(); return; }
     navigate(url);
@@ -2718,23 +2776,35 @@ function MediaViewerPage() {
   const [fallbackItem, setFallbackItem] = useState<Media|null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const sortParam = query.get("sort") ?? "name";
-  const scopeParam = query.get("scope");
+  const rootParam = query.get("root");
+  const kindParam = query.get("kind");
+  const w = query.get("w"), s = query.get("s"), e = query.get("e"), n = query.get("n");
+  const bounds = w != null && s != null && e != null && n != null
+    ? {west:Number(w), south:Number(s), east:Number(e), north:Number(n)}
+    : null;
   const [scopedMedia, setScopedMedia] = useState<Media[]|null>(null);
   useEffect(() => {
-    if (scopeParam == null) {
+    let cancelled = false;
+    if (bounds && Number.isFinite(bounds.west)) {
+      api.map(libraryId, undefined, bounds).then(items => {
+        if (!cancelled) setScopedMedia(items.filter(m => m.libraryId === libraryId));
+      }).catch(() => { if (!cancelled) setScopedMedia(null); });
+    } else if (rootParam != null) {
+      const load = rootParam === "all" ? api.libraryMedia(libraryId) : api.folderMedia(libraryId, Number(rootParam));
+      load.then(items => {
+        if (cancelled) return;
+        setScopedMedia(kindParam === "image" || kindParam === "video" ? items.filter(m => m.kind === kindParam) : items);
+      }).catch(() => { if (!cancelled) setScopedMedia(null); });
+    } else {
       setScopedMedia(null);
-      return;
     }
-    try {
-      const raw = sessionStorage.getItem(scopeParam);
-      setScopedMedia(raw ? (JSON.parse(raw) as Media[]) : null);
-    } catch {
-      setScopedMedia(null);
-    }
-  }, [scopeParam]);
-  const folderMedia = scopedMedia
-    ? sortParam === "name" ? scopedMedia : sortMedia(scopedMedia, sortParam === "date-asc" ? "asc" : "desc")
-    : sortParam === "name" ? items.filter(media => media.folderId === routeFolderId) : sortMedia(items.filter(media => media.folderId === routeFolderId), sortParam === "date-asc" ? "asc" : "desc");
+    return () => { cancelled = true; };
+  }, [libraryId, rootParam, kindParam, w, s, e, n]);
+  const folderMedia = useMemo(() => {
+    const base = scopedMedia ?? items.filter(media => media.folderId === routeFolderId);
+    if (sortParam === "name") return base;
+    return sortMedia(base, sortParam === "date-asc" ? "asc" : "desc");
+  }, [scopedMedia, items, routeFolderId, sortParam]);
   const index = folderMedia.findIndex(media => media.id === currentMediaId);
   const item = index >= 0 ? folderMedia[index] : fallbackItem;
   const previous = index > 0 ? folderMedia[index - 1] : null;
@@ -2743,8 +2813,9 @@ function MediaViewerPage() {
     if (index >= 0 || !Number.isFinite(currentMediaId)) return;
     api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null));
   }, [currentMediaId, index]);
+  const nav:ItemNav = useMemo(() => bounds && Number.isFinite(bounds.west) ? {bounds} : rootParam != null ? {root:rootParam, kind: kindParam === "image" || kindParam === "video" ? kindParam : "all"} : {}, [bounds, rootParam, kindParam]);
   function go(media:Media|null) {
-    if (media) navigate(libraryItemURL(libraryId, media, sortParam, scopeParam ?? undefined));
+    if (media) navigate(libraryItemURL(libraryId, media, sortParam, nav));
   }
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
@@ -2767,10 +2838,23 @@ function MediaViewerPage() {
   </main>;
 }
 
-function libraryItemURL(libraryId:ID, item:Media, sort:string = "name", scope?:string) {
+export interface ItemNav {
+  root?:string;
+  kind?:"all"|"image"|"video";
+  bounds?:{west:number; south:number; east:number; north:number};
+}
+
+function libraryItemURL(libraryId:ID, item:Media, sort:string = "name", nav?:ItemNav) {
   const query = new URLSearchParams({item:String(item.id)});
   if (sort !== "name") query.set("sort", sort);
-  if (scope) query.set("scope", scope);
+  if (nav?.root != null) query.set("root", nav.root);
+  if (nav?.kind != null && nav.kind !== "all") query.set("kind", nav.kind);
+  if (nav?.bounds) {
+    query.set("w", String(nav.bounds.west));
+    query.set("s", String(nav.bounds.south));
+    query.set("e", String(nav.bounds.east));
+    query.set("n", String(nav.bounds.north));
+  }
   return `/library/${libraryId}/view/${item.folderId}?${query.toString()}`;
 }
 
@@ -3280,7 +3364,7 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
     </div>
-    {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
+    {area && <MapAreaPanel items={area.items} bounds={{west:area.bounds.getWest(), south:area.bounds.getSouth(), east:area.bounds.getEast(), north:area.bounds.getNorth()}} onClear={() => setArea(null)}/>}
   </main>;
 }
 
@@ -3409,14 +3493,9 @@ function SelectionRectangle({bounds}:{bounds:L.LatLngBounds}) {
   return null;
 }
 
-function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
+function MapAreaPanel({items,bounds,onClear}:{items:MapMedia[]; bounds:{west:number; south:number; east:number; north:number}; onClear:()=>void}) {
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   const sorted = useMemo(() => sortMedia(items, sort), [items, sort]);
-  const scope = useMemo(() => {
-    const key = `map-scope-${Math.random().toString(36).slice(2)}`;
-    sessionStorage.setItem(key, JSON.stringify(items));
-    return key;
-  }, [items]);
   const visible = useProgressiveReveal(sorted, 100);
   const groups = groupByDate(visible);
   return <aside className="map-timeline-panel" aria-label="Selected area">
@@ -3432,15 +3511,15 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MapAreaItem key={item.id} item={item} scope={scope} sort={sort}/>
+            <MapAreaItem key={item.id} item={item} bounds={bounds} sort={sort}/>
           )}</div>
         </div>
       )}</div>}
   </aside>;
 }
 
-function MapAreaItem({item,scope,sort}:{item:MapMedia; scope:string; sort:"desc"|"asc"}) {
-  return <Link className="map-area-item" to={libraryItemURL(item.libraryId, item, sort === "asc" ? "date-asc" : "date", scope)} aria-label={`Open ${item.name} in folder`}>
+function MapAreaItem({item,bounds,sort}:{item:MapMedia; bounds:{west:number; south:number; east:number; north:number}; sort:"desc"|"asc"}) {
+  return <Link className="map-area-item" to={libraryItemURL(item.libraryId, item, sort === "asc" ? "date-asc" : "date", {bounds})} aria-label={`Open ${item.name} in folder`}>
     <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
     <small>{item.name}</small>
   </Link>;

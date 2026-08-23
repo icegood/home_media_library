@@ -12,6 +12,14 @@ function authUrl(path:string) {
   return `${base}${path}`;
 }
 
+export function rangeQuery(range?:{offset?:number; limit?:number}) {
+  if (!range || (range.offset == null && range.limit == null)) return "";
+  const params = new URLSearchParams();
+  if (range.offset != null) params.set("offset", String(range.offset));
+  if (range.limit != null) params.set("limit", String(range.limit));
+  return `?${params.toString()}`;
+}
+
 async function call<T>(path:string, init:RequestInit = {}):Promise<T> {
   const response = await fetch(`${base}${path}`, {
     ...init,
@@ -97,9 +105,11 @@ export const api = {
   importEmby: (input:{configRoot:string; pathMappings:{from:string; to:string}[]}) =>
     call<EmbyImportResult>("/admin/import/emby", {method:"POST", body:JSON.stringify(input)}),
   filesystem: (path = "") => call<FilesystemListing>(`/admin/filesystem?path=${encodeURIComponent(path)}`),
-  entries: (libraryId:ID) => call<Entry[]>(`/libraries/${libraryId}/entries`),
+  entries: (libraryId:ID, range?:{offset?:number; limit?:number}) =>
+    call<Entry[]>(`/libraries/${libraryId}/entries${rangeQuery(range)}`),
   folder: (libraryId:ID, folderId:ID) => call<MediaFolder>(`/libraries/${libraryId}/folders/${folderId}`),
-  folderEntries: (libraryId:ID, folderId:ID) => call<FolderEntries>(`/libraries/${libraryId}/folders/${folderId}/entries`),
+  folderEntries: (libraryId:ID, folderId:ID, range?:{offset?:number; limit?:number}) =>
+    call<FolderEntries>(`/libraries/${libraryId}/folders/${folderId}/entries${rangeQuery(range)}`),
   libraryMedia: (libraryId:ID) => call<Media[]>(`/libraries/${libraryId}/media`),
   folderMedia: (libraryId:ID, folderId:ID) => call<Media[]>(`/libraries/${libraryId}/folders/${folderId}/media`),
   favoriteViews: () => call<FavoriteView[]>("/favorite-views"),
@@ -108,8 +118,8 @@ export const api = {
   createFavoriteView: (name:string) => call<FavoriteView>("/favorite-views", {method:"POST", body:JSON.stringify({name})}),
   updateFavoriteView: (id:ID, name:string) => call<FavoriteView>(`/favorite-views/${id}`, {method:"PUT", body:JSON.stringify({name})}),
   deleteFavoriteView: (id:ID) => call<void>(`/favorite-views/${id}`, {method:"DELETE"}),
-  favoriteViewMedia: (id:ID) => call<{id:ID; name:string; mimeType?:string; isFolder?:boolean}[]>(`/favorite-views/${id}/media`),
-  favoriteViewMediaFull: (id:ID) => call<Media[]>(`/favorite-views/${id}/media?full=true`),
+  favoriteViewMedia: (id:ID, expand=false) => call<{id:ID; name:string; mimeType?:string; isFolder?:boolean}[]>(`/favorite-views/${id}/media${expand ? "?expand=true" : ""}`),
+  favoriteViewMediaFull: (id:ID, expand=false) => call<Media[]>(`/favorite-views/${id}/media?full=true${expand ? "&expand=true" : ""}`),
   favoriteFolder: (viewId:ID, folderId:ID) => call<{ok:boolean}>(`/favorite-views/${viewId}/folders/${folderId}`, {method:"PUT"}),
   unfavoriteFolder: (viewId:ID, folderId:ID) => call<{ok:boolean}>(`/favorite-views/${viewId}/folders/${folderId}`, {method:"DELETE"}),
   media: (id:ID) => call<Media>(`/media/${id}`),
@@ -225,6 +235,7 @@ export interface UserSettings {
   codec:TranscodeSchemaId;
   zoom:number;
   dateFormat:"auto"|"iso"|"dmy"|"dmy-ss"|"mdy"|"mdy-ss";
+  streamChunkSize:number;
   defaultThumbImage:string;
   defaultThumbVideo:string;
   defaultThumbFolder:string;

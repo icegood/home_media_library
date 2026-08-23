@@ -13,3 +13,7 @@ runtime/
 # Host Android/Capacitor build output (only when web/android/ is present)
 web/android/.gradle/
 web/android/app/build/
+
+# Generated / installed dependencies
+web/node_modules/
+web/src/generated-version.ts

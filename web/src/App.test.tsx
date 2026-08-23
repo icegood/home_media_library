@@ -1,7 +1,7 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { App, resetFolderEntriesCache } from "./App";
+import { App, resetFolderEntriesCache, useBufferedFolderEntries } from "./App";
 
 const mockApi = vi.hoisted(() => ({
   setupStatus: vi.fn(),
@@ -419,7 +419,7 @@ test("regular user has no settings menu and picks theme in user settings", async
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
@@ -441,7 +441,7 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"system"}});
   expect(document.documentElement.dataset.theme).toBe("light");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
@@ -478,7 +478,7 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await within(dialog).findByRole("option", {name:/VP9 \+ Opus → WebM/}));
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 
   fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
   fireEvent.blur(within(dialog).getByLabelText("Email address"));
@@ -507,11 +507,11 @@ test("user settings modal changes zoom grade numerically", async () => {
   expect(document.documentElement.style.fontSize).toBe("120%");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Zoom"}), {target:{value:"80"}});
   expect(document.documentElement.style.fontSize).toBe("80%");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 });
 
 test("user settings saves a configured date format", async () => {
@@ -523,7 +523,7 @@ test("user settings saves a configured date format", async () => {
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"dmy"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 });
 
 test("user settings saves the date format with seconds", async () => {
@@ -536,7 +536,7 @@ test("user settings saves the date format with seconds", async () => {
   expect(within(dialog).getByRole("option", {name:"16.08.2026 14:30:15"})).toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"dmy-ss"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 });
 
 test("user settings saves the american date format with seconds", async () => {
@@ -549,59 +549,83 @@ test("user settings saves the american date format with seconds", async () => {
   expect(within(dialog).getByRole("option", {name:"08/16/2026 2:30:15 PM"})).toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"mdy-ss"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 });
 
-test("virtual grid mounts only the visible window of many entries first", async () => {
-  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  const many = Array.from({length:200}, (_, index) => {
+function pagedEntries(many:ReturnType<typeof makeMany>) {
+  return (_libraryId:number, range?:{offset?:number; limit?:number}) => {
+    const offset = range?.offset ?? 0;
+    const limit = range?.limit ?? many.length;
+    return Promise.resolve(many.slice(offset, offset + limit));
+  };
+}
+
+function makeMany(count:number) {
+  return Array.from({length:count}, (_, index) => {
     const media = {
       id:index + 1, folderId:20, relativePath:`img-${index + 1}.jpg`, name:`img-${index + 1}.jpg`,
       kind:"image" as const, mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""
     };
     return {id:media.id, name:media.name, relativePath:media.relativePath, type:"media" as const, media};
   });
+}
+
+test("long folder lists render every entry and rely on content-visibility for offscreen skipping", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const many = makeMany(200);
   mockApi.entries.mockResolvedValue(many);
   render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
   await screen.findByText("img-1.jpg");
-  const mounted = document.querySelectorAll(".media");
-  expect(mounted.length).toBeGreaterThan(0);
-  expect(mounted.length).toBeLessThan(many.length);
-  expect(screen.queryByText("img-200.jpg")).not.toBeInTheDocument();
+  const browser = document.querySelector(".cv-browser");
+  expect(browser).not.toBeNull();
+  const mounted = document.querySelectorAll(".cv-browser .card");
+  expect(mounted.length).toBe(many.length);
+  expect(screen.getByText("img-200.jpg")).toBeInTheDocument();
 });
 
-test("virtual grid shifts the mounted window while scrolling", async () => {
+test("folder entries hook pages by the configured chunk size", async () => {
+  const many = makeMany(45);
+  mockApi.entries.mockImplementation(pagedEntries(many));
+  const {result} = renderHook(() => useBufferedFolderEntries(1, null, false, 10));
+  await waitFor(() => expect(result.current.entries.length).toBe(10));
+  expect(mockApi.entries).toHaveBeenLastCalledWith(1, {offset:0, limit:10});
+  await act(async () => { await result.current.loadMore(); });
+  expect(result.current.entries.length).toBe(20);
+  await act(async () => { await result.current.loadMore(); });
+  await act(async () => { await result.current.loadMore(); });
+  expect(result.current.entries.length).toBe(40);
+  expect(result.current.done).toBe(false);
+  await act(async () => { await result.current.loadMore(); });
+  expect(result.current.entries.length).toBe(45);
+  expect(result.current.done).toBe(true);
+  expect(mockApi.entries).toHaveBeenLastCalledWith(1, {offset:40, limit:10});
+});
+
+test("buffered folder list survives scrolling with a single full request", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  const many = Array.from({length:200}, (_, index) => {
-    const media = {
-      id:index + 1, folderId:20, relativePath:`img-${index + 1}.jpg`, name:`img-${index + 1}.jpg`,
-      kind:"image" as const, mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""
-    };
-    return {id:media.id, name:media.name, relativePath:media.relativePath, type:"media" as const, media};
-  });
-  mockApi.entries.mockResolvedValue(many);
-  const originalScrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  Object.defineProperty(window, "scrollY", {value:8000, writable:true, configurable:true});
-  const originalVV = window.visualViewport;
-  Object.defineProperty(window, "visualViewport", {value:{offsetTop:0, height:window.innerHeight, addEventListener:()=>{}, removeEventListener:()=>{}}, configurable:true});
-  try {
-    render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
-    await screen.findByText("img-1.jpg");
-    const browser = document.querySelector(".virtual-browser");
-    expect(browser).not.toBeNull();
-    const rowStep = 292 + 18;
-    Object.defineProperty(browser!, "getBoundingClientRect", {value:() => ({
-      top: 400 - 8000, left:0, right:1024, bottom:400 - 8000 + rowStep * 6, width:1024, height:rowStep * 6, x:0, y:400 - 8000,
-    })});
-    fireEvent.scroll(window);
-    await waitFor(() => expect(screen.queryByText("img-1.jpg")).not.toBeInTheDocument());
-    expect(screen.getByText("img-100.jpg")).toBeInTheDocument();
-    expect(screen.queryByText("img-200.jpg")).not.toBeInTheDocument();
-  } finally {
-    if (originalScrollY) Object.defineProperty(window, "scrollY", originalScrollY);
-    else delete (window as unknown as {scrollY?:number}).scrollY;
-    Object.defineProperty(window, "visualViewport", {value:originalVV, configurable:true});
-  }
+  const many = makeMany(200);
+  mockApi.entries.mockImplementation(pagedEntries(many));
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  await screen.findByText("img-1.jpg");
+  await screen.findByText("img-200.jpg");
+  fireEvent.scroll(window);
+  await waitFor(() => expect(screen.getByText("img-200.jpg")).toBeInTheDocument());
+  expect(screen.getByText("img-1.jpg")).toBeInTheDocument();
+});
+
+test("user settings saves the media loading batch size", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  const batchInput = within(dialog).getByLabelText(/Items per request/);
+  expect(batchInput).toHaveValue(10000);
+  fireEvent.change(batchInput, {target:{value:"25"}});
+  expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
 });
 
 test("login forgot password flow requests a reset link", async () => {
@@ -895,6 +919,19 @@ test("favorite view renders media and star removes item from that view", async (
   expect(screen.queryByText("one.jpg")).not.toBeInTheDocument();
 });
 
+test("favorite view skips expanded media fetch until timeline mode opens", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:1}]);
+  mockApi.favoriteViewMedia.mockResolvedValue([{id:100, name:"one.jpg", mimeType:"image/jpeg"}]);
+  mockApi.favoriteViewMediaFull.mockResolvedValue([{id:100, name:"one.jpg", kind:"image" as const, mimeType:"image/jpeg", folderId:20, relativePath:"one.jpg", size:10, metadata:{}, gps:"", takenAt:"2024-05-01T10:00:00Z"}]);
+  render(<MemoryRouter initialEntries={["/favorites/30"]}><App/></MemoryRouter>);
+  expect(await screen.findByText("one.jpg")).toBeInTheDocument();
+  expect(mockApi.favoriteViewMediaFull).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Display mode"), {target:{value:"timeline"}});
+  await waitFor(() => expect(mockApi.favoriteViewMediaFull).toHaveBeenCalledWith(30, true));
+  await waitFor(() => expect(document.body.querySelector(".timeline-group-date")).toHaveTextContent("2024"));
+});
+
 test("library media card shows favorite views with checkboxes and toggles membership", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
   mockApi.mediaFavoriteViews.mockResolvedValue([
@@ -1038,7 +1075,7 @@ test("media name and gps are saved only after explicit save", async () => {
 
 test("media info shows the date in the configured format, copyable, and pasting saves it", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"});
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"});
   mockApi.folderEntries.mockResolvedValue({entries:[
     {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:00Z"}}
   ], chain: []});
@@ -1063,7 +1100,7 @@ test("media info shows the date in the configured format, copyable, and pasting 
 
 test("media info shows and parses the date format with seconds", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"});
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"});
   mockApi.folderEntries.mockResolvedValue({entries:[
     {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:56Z"}}
   ], chain: []});
@@ -1218,7 +1255,7 @@ test("media viewer up link goes to containing folder", async () => {
   mockApi.folderEntries.mockResolvedValue({entries:[{id:100, name:"one.jpg", relativePath:"Trips/Day1/one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"Trips/Day1/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByRole("link", {name:"Photos"}));
-  await waitFor(() => expect(mockApi.folderEntries).toHaveBeenCalledWith(1, 20));
+  await waitFor(() => expect(mockApi.folderEntries).toHaveBeenCalledWith(1, 20, {offset:0, limit:1}));
 });
 
 test("folder breadcrumb links go through the folder chain to the library root", async () => {
@@ -1275,6 +1312,32 @@ test("map breadcrumb shows Map of the library and folder when scoped", async () 
   expect(screen.getByText("Nested")).toBeInTheDocument();
 });
 
+test("breadcrumb keeps favorite origin in subfolders opened from a favorite view", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:2}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"},
+    {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}
+  ]});
+  render(<MemoryRouter initialEntries={["/library/1/folder/21?fav=30"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(screen.getByText("Nested")).toBeInTheDocument());
+  expect(await screen.findByText("Best")).toBeInTheDocument();
+  expect(screen.getByRole("link", {name:"Best"})).toHaveAttribute("href", "/favorites/30");
+  expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1?fav=30");
+  expect(screen.getByRole("link", {name:"Photos"})).toHaveAttribute("href", "/library/1/folder/20?fav=30");
+});
+
+test("viewer opened from a favorite view shows the view and item in breadcrumbs", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:2}]);
+  mockApi.media.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""});
+  render(<MemoryRouter initialEntries={["/favorites/view/100?viewId=30"]}><App/></MemoryRouter>);
+  const breadcrumb = await screen.findByLabelText("Breadcrumb");
+  await waitFor(() => expect(breadcrumb).toHaveTextContent("Favorites"));
+  await waitFor(() => expect(breadcrumb).toHaveTextContent("one.jpg"));
+  expect(breadcrumb).toHaveTextContent("Best");
+});
+
 test("unscoped map keeps the Media Library brand in the header", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
@@ -1287,7 +1350,7 @@ test("media viewer without item query redirects to library root", async () => {
   mockApi.entries.mockResolvedValue([]);
   render(<MemoryRouter initialEntries={["/library/1/view/20"]}><App/></MemoryRouter>);
   await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Libraries / Family"));
-  await waitFor(() => expect(mockApi.entries).toHaveBeenCalledWith(1));
+  await waitFor(() => expect(mockApi.entries).toHaveBeenCalledWith(1, {offset:0, limit:10000}));
 });
 
 test("image zoom is preserved when navigating between neighboring files", async () => {

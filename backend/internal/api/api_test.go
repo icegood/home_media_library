@@ -164,6 +164,132 @@ func TestFolderEntriesIncludeChain(t *testing.T) {
 	}
 }
 
+func TestEntriesRangeParams(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+
+	if _, err := f.store.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID,
+		FolderID: f.folderID, Path: filepath.Join(f.mediaRoot, "family", "2025", "zeta.jpg"),
+		RelativePath: "2025/zeta.jpg", Name: "zeta.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg"}); err != nil {
+		t.Fatal(err)
+	}
+
+	fetchEntries := func(url string) []map[string]any {
+		t.Helper()
+		response := request(f.handler, http.MethodGet, url, alice, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("entries status = %d: %s", response.Code, response.Body)
+		}
+		var items []map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+			t.Fatal(err)
+		}
+		return items
+	}
+
+	rootURL := fmt.Sprintf("/api/v1/libraries/%d/entries", f.libraryID)
+	root := fetchEntries(rootURL)
+	if len(root) != 1 {
+		t.Fatalf("root returned %d entries, want single root wrapper", len(root))
+	}
+	if got := fetchEntries(rootURL+"?offset=5"); len(got) != 0 {
+		t.Fatalf("root offset past end returned %d entries, want 0", len(got))
+	}
+	if got := fetchEntries(rootURL+"?limit=1"); len(got) != 1 {
+		t.Fatalf("root limit=1 returned %d entries, want 1", len(got))
+	}
+
+	folderURL := fmt.Sprintf("/api/v1/libraries/%d/folders/%d/entries", f.libraryID, f.folderID)
+	fullFolder := request(f.handler, http.MethodGet, folderURL, alice, nil)
+	var fullResult domain.FolderEntries
+	if err := json.Unmarshal(fullFolder.Body.Bytes(), &fullResult); err != nil {
+		t.Fatal(err)
+	}
+	all := fullResult.Entries
+	if len(all) != 2 || fullResult.Chain == nil {
+		t.Fatalf("folder entries = %#v, want 2 media entries with chain", all)
+	}
+
+	window := request(f.handler, http.MethodGet, folderURL+"?offset=1&limit=1", alice, nil)
+	var folderResult domain.FolderEntries
+	if err := json.Unmarshal(window.Body.Bytes(), &folderResult); err != nil {
+		t.Fatal(err)
+	}
+	if folderResult.Chain == nil {
+		t.Fatal("chain must always be present")
+	}
+	if len(folderResult.Entries) != 1 || folderResult.Entries[0].ID != all[1].ID {
+		t.Fatalf("folder window = %#v, want only entry %d", folderResult.Entries, all[1].ID)
+	}
+
+	folderOffset := request(f.handler, http.MethodGet, folderURL+"?offset=1", alice, nil)
+	var offsetResult domain.FolderEntries
+	if err := json.Unmarshal(folderOffset.Body.Bytes(), &offsetResult); err != nil {
+		t.Fatal(err)
+	}
+	offset := offsetResult.Entries
+	if len(offset) != 1 || offset[0].ID != all[1].ID {
+		t.Fatalf("folder offset=1 = %#v, want entry %d", offset, all[1].ID)
+	}
+
+	folderPast := request(f.handler, http.MethodGet, folderURL+"?offset=10", alice, nil)
+	var pastResult domain.FolderEntries
+	if err := json.Unmarshal(folderPast.Body.Bytes(), &pastResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(pastResult.Entries) != 0 {
+		t.Fatalf("folder offset past end returned %d entries, want 0", len(pastResult.Entries))
+	}
+}
+
+func TestUserSettingsStreamChunkSize(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	settingsURL := "/api/v1/settings"
+
+	response := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("get settings status = %d: %s", response.Code, response.Body)
+	}
+	var fetched domain.UserSettings
+	if err := json.Unmarshal(response.Body.Bytes(), &fetched); err != nil {
+		t.Fatal(err)
+	}
+	if fetched.StreamChunkSize != 10000 {
+		t.Fatalf("default stream chunk size = %d, want 10000", fetched.StreamChunkSize)
+	}
+
+	body, _ := json.Marshal(map[string]any{"theme": "dark", "codec": "h264-aac-mp4", "zoom": 100,
+		"dateFormat": "auto", "streamChunkSize": 25, "defaultThumbImage": "mountains",
+		"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains"})
+	saved := request(f.handler, http.MethodPut, settingsURL, alice, body)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("put settings status = %d: %s", saved.Code, saved.Body)
+	}
+	refetched := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+	var updated domain.UserSettings
+	if err := json.Unmarshal(refetched.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.StreamChunkSize != 25 {
+		t.Fatalf("saved stream chunk size = %d, want 25", updated.StreamChunkSize)
+	}
+
+	bad, _ := json.Marshal(map[string]any{"theme": "dark", "codec": "h264-aac-mp4", "zoom": 100,
+		"dateFormat": "auto", "streamChunkSize": 10001, "defaultThumbImage": "mountains",
+		"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains"})
+	if got := request(f.handler, http.MethodPut, settingsURL, alice, bad).Code; got != http.StatusBadRequest {
+		t.Fatalf("stream chunk size 10001 status = %d, want 400", got)
+	}
+	big, _ := json.Marshal(map[string]any{"theme": "dark", "codec": "h264-aac-mp4", "zoom": 100,
+		"dateFormat": "auto", "streamChunkSize": 5000, "defaultThumbImage": "mountains",
+		"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains"})
+	savedBig := request(f.handler, http.MethodPut, settingsURL, alice, big)
+	if savedBig.Code != http.StatusOK {
+		t.Fatalf("stream chunk size 5000 status = %d: %s", savedBig.Code, savedBig.Body)
+	}
+}
+
 func TestDeleteLibraryRemovesOrphanThumbnailFiles(t *testing.T) {
 	f := setup(t)
 	admin := login(t, f.handler, "admin")

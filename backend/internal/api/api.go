@@ -460,6 +460,7 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		Codec              string `json:"codec"`
 		Zoom               int    `json:"zoom"`
 		DateFormat         string `json:"dateFormat"`
+		StreamChunkSize    int    `json:"streamChunkSize"`
 		DefaultThumbImage  string `json:"defaultThumbImage"`
 		DefaultThumbVideo  string `json:"defaultThumbVideo"`
 		DefaultThumbFolder string `json:"defaultThumbFolder"`
@@ -486,6 +487,14 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "zoom must be between 80 and 140")
 		return
 	}
+	chunk := input.StreamChunkSize
+	if chunk == 0 {
+		chunk = domain.DefaultUserSettings().StreamChunkSize
+	}
+	if chunk < 1 || chunk > 10000 {
+		problem(w, http.StatusBadRequest, "stream chunk size must be between 1 and 10000")
+		return
+	}
 	thumbs := domain.DefaultUserSettings()
 	thumbs.DefaultThumbImage, err = normalizeDefaultThumb(input.DefaultThumbImage)
 	if err != nil {
@@ -502,7 +511,7 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat,
+	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat, StreamChunkSize: chunk,
 		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder}
 	settings.DateFormat = normalizeDateFormat(settings.DateFormat)
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {
@@ -598,6 +607,26 @@ func (a *API) libraryStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+func pageSlice[T any](r *http.Request, items []T) []T {
+	q := r.URL.Query()
+	if q.Get("offset") == "" && q.Get("limit") == "" {
+		return items
+	}
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(items) {
+		offset = len(items)
+	}
+	items = items[offset:]
+	if limit > 0 && limit < len(items) {
+		items = items[:limit]
+	}
+	return items
+}
+
 func (a *API) entries(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	id, ok := pathID(w, r, "id")
@@ -616,7 +645,7 @@ func (a *API) entries(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, items)
+	writeJSON(w, 200, pageSlice(r, items))
 }
 
 func (a *API) folderEntries(w http.ResponseWriter, r *http.Request) {
@@ -641,6 +670,7 @@ func (a *API) folderEntries(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	result.Entries = pageSlice(r, result.Entries)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -811,13 +841,20 @@ func (a *API) favoriteViewMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	full := r.URL.Query().Get("full") == "true"
+	expand := r.URL.Query().Get("expand") == "true"
 	type itemView struct {
 		ID       int    `json:"id"`
 		Name     string `json:"name"`
 		MIMEType string `json:"mimeType,omitempty"`
 		IsFolder bool   `json:"isFolder,omitempty"`
 	}
-	media, err := a.Store.FavoriteMedia(r.Context(), p.ID, viewID, p.Role == domain.RoleAdmin)
+	var media []domain.Media
+	var err error
+	if expand {
+		media, err = a.Store.FavoriteMediaExpanded(r.Context(), p.ID, viewID, p.Role == domain.RoleAdmin)
+	} else {
+		media, err = a.Store.FavoriteMedia(r.Context(), p.ID, viewID, p.Role == domain.RoleAdmin)
+	}
 	if err != nil {
 		problem(w, statusFor(err), "favorite view not found")
 		return
@@ -1804,7 +1841,7 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if favoriteID > 0 {
-		favMedia, err := a.Store.FavoriteMedia(r.Context(), p.ID, favoriteID, p.Role == domain.RoleAdmin)
+		favMedia, err := a.Store.FavoriteMediaExpanded(r.Context(), p.ID, favoriteID, p.Role == domain.RoleAdmin)
 		if err != nil {
 			problem(w, statusFor(err), "favorite view not found")
 			return

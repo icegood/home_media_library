@@ -96,6 +96,10 @@ type UserSettings struct {
 	// DateFormat controls how dates are rendered (and pasted back) in the web
 	// UI: "auto" uses the browser locale, explicit ids select a fixed layout.
 	DateFormat string `json:"dateFormat"`
+	// StreamChunkSize is the number of media items the folder browser fetches
+	// and reveals per step while scrolling; smaller batches show first items
+	// sooner, larger batches load big folders with fewer requests.
+	StreamChunkSize int `json:"streamChunkSize"`
 	// DefaultThumbImage/Video/Folder pick the placeholder picture shown for
 	// media whose thumbnail has not been generated yet. Values are ids in the
 	// web UI's built-in picture catalog.
@@ -106,7 +110,7 @@ type UserSettings struct {
 
 func DefaultUserSettings() UserSettings {
 	return UserSettings{
-		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100, DateFormat: "auto",
+		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100, DateFormat: "auto", StreamChunkSize: 10000,
 		DefaultThumbImage: "mountains", DefaultThumbVideo: "mountains", DefaultThumbFolder: "mountains",
 	}
 }

@@ -1347,6 +1347,55 @@ func (s *SQLite) FavoriteMedia(ctx context.Context, userID, viewID int, admin bo
 	return out, nil
 }
 
+func (s *SQLite) FavoriteMediaExpanded(ctx context.Context, userID, viewID int, admin bool) ([]domain.Media, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM favorite_views WHERE id = ? AND user_id = ?`, viewID, userID).Scan(&exists); err != nil {
+		return nil, translateErr(err)
+	}
+	sub, subArgs := accessibleSubtree(userID, admin)
+	query := `WITH RECURSIVE sub(id) AS (` + sub + `
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id),
+		fav_folders(id) AS (SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ?),
+		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id),
+		mentions(media_id) AS (
+			SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ?
+			UNION ALL
+			SELECT m2.id FROM media m2 JOIN folder_sub fs ON m2.folder_id = fs.id
+		)
+	SELECT ` + mediaColumns + ` FROM mentions JOIN media m ON m.id = mentions.media_id
+	WHERE (? = 1 OR m.folder_id IN (SELECT id FROM sub))
+	ORDER BY m.name`
+	args := append([]any{}, subArgs...)
+	args = append(args, viewID, viewID)
+	if admin {
+		args = append(args, 1)
+	} else {
+		args = append(args, 0)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := []domain.Media{}
+	for rows.Next() {
+		item, err := scanMedia(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		item.Favorite = true
+		out = append(out, item)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	s.attachRelativePaths(ctx, out)
+	return out, nil
+}
+
 func (s *SQLite) SetFavorite(ctx context.Context, userID, viewID, mediaID int, favorite bool) (domain.Media, error) {
 	if _, err := s.Media(ctx, mediaID); err != nil {
 		return domain.Media{}, err

@@ -54,6 +54,7 @@ type Store interface {
 	UpdateFavoriteView(ctx context.Context, userID, viewID int, name string) (domain.FavoriteView, error)
 	DeleteFavoriteView(ctx context.Context, userID, viewID int) error
 	FavoriteMedia(ctx context.Context, userID, viewID int, admin bool) ([]domain.Media, error)
+	FavoriteMediaExpanded(ctx context.Context, userID, viewID int, admin bool) ([]domain.Media, error)
 	FavoriteFolders(ctx context.Context, userID, viewID int) ([]domain.MediaFolder, error)
 	SetFavoriteFolder(ctx context.Context, userID, viewID, folderID int, favorite bool) error
 	SetFavorite(ctx context.Context, userID, viewID, mediaID int, favorite bool) (domain.Media, error)
