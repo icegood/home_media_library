@@ -751,7 +751,7 @@ func (s *SQLite) ImportSnapshot(ctx context.Context, snapshot domain.ImportSnaps
 }
 
 func (s *SQLite) loadRoots(ctx context.Context, libraryID int) []domain.LibraryRoot {
-	rows, err := s.db.QueryContext(ctx, `SELECT lr.folder_id, f.path FROM library_roots lr
+	rows, err := s.db.QueryContext(ctx, `SELECT lr.folder_id, f.path, COALESCE(lr.watch, 0) FROM library_roots lr
 		JOIN media_folders f ON f.id = lr.folder_id
 		WHERE lr.library_id = ? ORDER BY f.path`, libraryID)
 	if err != nil {
@@ -761,30 +761,107 @@ func (s *SQLite) loadRoots(ctx context.Context, libraryID int) []domain.LibraryR
 	roots := []domain.LibraryRoot{}
 	for rows.Next() {
 		var root domain.LibraryRoot
-		if err := rows.Scan(&root.ID, &root.Path); err != nil {
+		var watch bool
+		if err := rows.Scan(&root.ID, &root.Path, &watch); err != nil {
 			continue
 		}
+		root.Watch = watch
 		roots = append(roots, root)
 	}
 	return roots
 }
 
-func (s *SQLite) LibraryStats(ctx context.Context, libraryID int) (domain.LibraryStats, error) {
-	var stats domain.LibraryStats
+// WatchedRoots returns every library root flagged for filesystem watching.
+func (s *SQLite) WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT lr.library_id, f.path FROM library_roots lr
+		JOIN media_folders f ON f.id = lr.folder_id
+		WHERE COALESCE(lr.watch, 0) = 1 ORDER BY lr.library_id, f.path`)
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	defer rows.Close()
+	out := []domain.WatchedRoot{}
+	for rows.Next() {
+		var root domain.WatchedRoot
+		if err := rows.Scan(&root.LibraryID, &root.Path); err != nil {
+			continue
+		}
+		out = append(out, root)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) LibraryStats(ctx context.Context, libraryID int) (domain.KindStats, error) {
+	var stats domain.KindStats
 	query := `WITH RECURSIVE sub(id) AS (
 		SELECT lr.folder_id FROM library_roots lr WHERE lr.library_id = ?
 		UNION ALL
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
 	)
-	SELECT COUNT(*),
-		(SELECT COUNT(*) FROM media m JOIN sub ON m.folder_id = sub.id),
-		(SELECT COUNT(*) FROM media m JOIN sub ON m.folder_id = sub.id WHERE m.mime_type LIKE 'video/%'),
-		(SELECT COUNT(*) FROM media m JOIN sub ON m.folder_id = sub.id WHERE m.mime_type LIKE 'image/%')
-	FROM sub WHERE id NOT IN (SELECT folder_id FROM library_roots WHERE library_id = ?)`
-	err := s.db.QueryRowContext(ctx, query, libraryID, libraryID).
-		Scan(&stats.Folders, &stats.Files, &stats.Videos, &stats.Images)
+	SELECT (SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'image'),
+		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'video')`
+	err := s.db.QueryRowContext(ctx, query, libraryID).
+		Scan(&stats.Images, &stats.Videos)
 	if err != nil {
-		return domain.LibraryStats{}, translateErr(err)
+		return domain.KindStats{}, translateErr(err)
+	}
+	return stats, nil
+}
+
+// FolderStats aggregates media kinds over the folder and every subfolder in
+// one recursive query. FolderChain validates existence and read access.
+func (s *SQLite) FolderStats(ctx context.Context, userID, libraryID, folderID int) (domain.KindStats, error) {
+	if _, err := s.FolderChain(ctx, libraryID, folderID); err != nil {
+		return domain.KindStats{}, err
+	}
+	var stats domain.KindStats
+	query := `WITH RECURSIVE sub(id) AS (
+		SELECT f.id FROM media_folders f WHERE f.id = ?
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
+	)
+	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+	FROM media m JOIN sub ON m.folder_id = sub.id
+	JOIN media_mime_types mmt ON mmt.value = m.mime_type`
+	if err := s.db.QueryRowContext(ctx, query, folderID).Scan(&stats.Images, &stats.Videos); err != nil {
+		return domain.KindStats{}, translateErr(err)
+	}
+	return stats, nil
+}
+
+// FavoriteViewStats aggregates media kinds over direct mentions plus the full
+// contents of favorite folders, mirroring FavoriteMediaExpanded's scope.
+func (s *SQLite) FavoriteViewStats(ctx context.Context, userID, viewID int, admin bool) (domain.KindStats, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM favorite_views WHERE id = ? AND user_id = ?`, viewID, userID).Scan(&exists); err != nil {
+		return domain.KindStats{}, translateErr(err)
+	}
+	var stats domain.KindStats
+	sub, subArgs := accessibleSubtree(userID, admin)
+	query := `WITH RECURSIVE sub(id) AS (` + sub + `
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id),
+		fav_folders(id) AS (SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ?),
+		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id),
+		mentions(media_id) AS (
+			SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ?
+			UNION ALL
+			SELECT m2.id FROM media m2 JOIN folder_sub fs ON m2.folder_id = fs.id
+		)
+	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+	FROM mentions JOIN media m ON m.id = mentions.media_id
+	JOIN media_mime_types mmt ON mmt.value = m.mime_type
+	WHERE (? = 1 OR m.folder_id IN (SELECT id FROM sub))`
+	args := append([]any{}, subArgs...)
+	if admin {
+		args = append(args, viewID, viewID, 1)
+	} else {
+		args = append(args, viewID, viewID, 0)
+	}
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&stats.Images, &stats.Videos); err != nil {
+		return domain.KindStats{}, translateErr(err)
 	}
 	return stats, nil
 }
@@ -804,13 +881,13 @@ func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) (
 	var rows *sql.Rows
 	var err error
 	if admin {
-		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path, COALESCE(lr.watch, 0)
 			FROM libraries l
 			LEFT JOIN library_roots lr ON lr.library_id = l.id
 			LEFT JOIN media_folders f ON f.id = lr.folder_id
 			ORDER BY l.name, f.path`)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path, COALESCE(lr.watch, 0)
 			FROM libraries l
 			JOIN library_access la ON la.library_id = l.id AND la.user_id = ?
 			LEFT JOIN library_roots lr ON lr.library_id = l.id
@@ -828,7 +905,8 @@ func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) (
 		var name string
 		var rootID sql.NullInt64
 		var rootPath sql.NullString
-		if err := rows.Scan(&id, &name, &rootID, &rootPath); err != nil {
+		var rootWatch sql.NullBool
+		if err := rows.Scan(&id, &name, &rootID, &rootPath, &rootWatch); err != nil {
 			return nil, err
 		}
 		library, ok := libraries[id]
@@ -842,10 +920,13 @@ func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) (
 			if !admin {
 				path = ""
 			}
-			library.Roots = append(library.Roots, domain.LibraryRoot{ID: int(rootID.Int64), Path: path})
+			library.Roots = append(library.Roots, domain.LibraryRoot{ID: int(rootID.Int64), Path: path, Watch: rootWatch.Bool})
 		}
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.fillLibraryStats(ctx, libraries, admin, userID); err != nil {
 		return nil, err
 	}
 	out := make([]domain.Library, 0, len(order))
@@ -853,6 +934,47 @@ func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) (
 		out = append(out, *libraries[id])
 	}
 	return out, nil
+}
+
+// fillLibraryStats computes images/videos for every listed library in one
+// grouped recursive pass instead of one query per library.
+func (s *SQLite) fillLibraryStats(ctx context.Context, libraries map[int]*domain.Library, admin bool, userID int) error {
+	if len(libraries) == 0 {
+		return nil
+	}
+	accessFilter := ""
+	args := []any{}
+	if !admin {
+		accessFilter = `JOIN library_access la ON la.library_id = lr.library_id AND la.user_id = ?`
+		args = append(args, userID)
+	}
+	query := `WITH RECURSIVE tree(library_id, folder_id) AS (
+		SELECT lr.library_id, lr.folder_id FROM library_roots lr ` + accessFilter + `
+		UNION ALL
+		SELECT tree.library_id, f.id FROM media_folders f JOIN tree ON f.parent_id = tree.folder_id
+	)
+	SELECT tree.library_id,
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+	FROM tree JOIN media m ON m.folder_id = tree.folder_id
+	JOIN media_mime_types mmt ON mmt.value = m.mime_type
+	GROUP BY tree.library_id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return translateErr(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var stats domain.KindStats
+		if err := rows.Scan(&id, &stats.Images, &stats.Videos); err != nil {
+			return translateErr(err)
+		}
+		if library, ok := libraries[id]; ok {
+			library.Stats = stats
+		}
+	}
+	return rows.Err()
 }
 
 func (s *SQLite) Library(ctx context.Context, id int) (domain.Library, error) {
@@ -1181,6 +1303,46 @@ func (s *SQLite) MediaBatch(ctx context.Context, ids []int) ([]domain.Media, err
 	s.attachRelativePaths(ctx, out)
 	return out, nil
 }
+// MediaInFolders returns every media item inside the given folders,
+// including all nested subfolders.
+func (s *SQLite) MediaInFolders(ctx context.Context, folderIDs []int) ([]domain.Media, error) {
+	if len(folderIDs) == 0 {
+		return []domain.Media{}, nil
+	}
+	unique := dedupeInts(folderIDs)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, 0, len(unique))
+	for _, id := range unique {
+		args = append(args, id)
+	}
+	// Relative paths are computed against the nearest library-root ancestor so
+	// archives of nested folders keep their on-disk structure.
+	rootExpr := `COALESCE((SELECT rf.path FROM media_folders rf JOIN library_roots lr ON lr.folder_id = rf.id WHERE f.path LIKE rf.path || '/' || '%' OR f.path = rf.path ORDER BY length(rf.path) DESC LIMIT 1), f.path)`
+	rel := relativePathExpr("m.path", "sub.root_path")
+	query := `WITH RECURSIVE sub(id, root_path) AS (
+		SELECT f.id, ` + rootExpr + ` FROM media_folders f WHERE f.id IN (` + placeholders + `)
+		UNION ALL
+		SELECT child.id, sub.root_path FROM media_folders child JOIN sub ON child.parent_id = sub.id
+	)
+	SELECT ` + mediaColumns + `, ` + rel + ` FROM media m JOIN sub ON m.folder_id = sub.id ORDER BY ` + rel
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Media{}
+	for rows.Next() {
+		var relativePath string
+		item, err := scanMedia(rows, &relativePath)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = relativePath
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 
 func (s *SQLite) MediaByPath(ctx context.Context, mediaPath string) (domain.Media, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.path = ?`, normalizePath(mediaPath))
@@ -2079,8 +2241,8 @@ func (s *SQLite) CreateLibrary(ctx context.Context, library domain.Library) (dom
 		return domain.Library{}, err
 	}
 	for _, root := range roots {
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id) VALUES(?,?)`,
-			id, root.ID); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id, watch) VALUES(?,?,?)`,
+			id, root.ID, root.Watch); err != nil {
 			return domain.Library{}, err
 		}
 	}
@@ -2113,8 +2275,8 @@ func (s *SQLite) UpdateLibrary(ctx context.Context, library domain.Library) erro
 		return err
 	}
 	for _, root := range roots {
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id) VALUES(?,?)`,
-			library.ID, root.ID); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id, watch) VALUES(?,?,?)`,
+			library.ID, root.ID, root.Watch); err != nil {
 			return err
 		}
 	}
@@ -2144,7 +2306,7 @@ func (s *SQLite) ensureRoots(ctx context.Context, roots []domain.LibraryRoot) ([
 			continue
 		}
 		seen[folderID] = true
-		out = append(out, domain.LibraryRoot{ID: folderID, Path: root.Path})
+		out = append(out, domain.LibraryRoot{ID: folderID, Path: root.Path, Watch: root.Watch})
 	}
 	for i := range out {
 		for j := range out {
@@ -2612,16 +2774,7 @@ func boolInt(value bool) int {
 	return 0
 }
 
-// BeginBulk is intentionally a no-op for SQLite. The server owns one process-wide
-// SQLite handle with SetMaxOpenConns(1), so saves use the same exclusive
-// connection and each statement remains its own small transaction. That keeps
-// progress/job writes visible while refresh is running.
-func (s *SQLite) BeginBulk() error { return nil }
-
-func (s *SQLite) EndBulk() error { return nil }
-
-func (s *SQLite) AbortBulk() error { return nil }
-
+// idsIN builds an `id IN (...)` predicate from a set of IDs.
 func idsIN(ids map[int]bool) (string, []any) {
 	values := make([]int, 0, len(ids))
 	for id := range ids {

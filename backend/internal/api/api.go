@@ -54,13 +54,16 @@ type API struct {
 	Shutdown          func()
 	ContainerStop     func(context.Context) error
 	WorkerPool        *jobpool.Pool
+	OnLibrariesChanged func()
 	Version           string
 	Revision          string
 	BuildDate         string
 	jobMu             sync.Mutex
+	jobCond           *sync.Cond
 	jobs              map[string]*JobStatus
 	jobCancels        map[string]context.CancelFunc
 	jobContexts       map[string]context.Context
+	jobSaves          map[string]time.Time
 	folderRefsMu      sync.Mutex
 	folderRefs        map[int]folderRefsEntry
 }
@@ -107,6 +110,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/about", a.auth(http.HandlerFunc(a.about)))
 	mux.Handle("GET /api/v1/libraries", a.auth(http.HandlerFunc(a.libraries)))
 	mux.Handle("GET /api/v1/libraries/{id}/stats", a.auth(http.HandlerFunc(a.libraryStats)))
+	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}/stats", a.auth(http.HandlerFunc(a.folderStats)))
 	mux.Handle("GET /api/v1/libraries/{id}/entries", a.auth(http.HandlerFunc(a.entries)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}", a.auth(http.HandlerFunc(a.folder)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}/entries", a.auth(http.HandlerFunc(a.folderEntries)))
@@ -117,6 +121,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/favorite-views/{viewId}", a.auth(http.HandlerFunc(a.updateFavoriteView)))
 	mux.Handle("DELETE /api/v1/favorite-views/{viewId}", a.auth(http.HandlerFunc(a.deleteFavoriteView)))
 	mux.Handle("GET /api/v1/favorite-views/{viewId}/media", a.auth(http.HandlerFunc(a.favoriteViewMedia)))
+	mux.Handle("GET /api/v1/favorite-views/{viewId}/stats", a.auth(http.HandlerFunc(a.favoriteViewStats)))
 	mux.Handle("GET /api/v1/media/{id}", a.auth(http.HandlerFunc(a.media)))
 	mux.Handle("GET /api/v1/media/{id}/favorite-views", a.auth(http.HandlerFunc(a.mediaFavoriteViews)))
 	mux.Handle("GET /api/v1/folders/{id}/favorite-views", a.auth(http.HandlerFunc(a.folderFavoriteViews)))
@@ -602,6 +607,49 @@ func (a *API) libraryStats(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (a *API) folderStats(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	folderID, ok := pathID(w, r, "folderId")
+	if !ok {
+		return
+	}
+	if !a.requireRead(w, r, p, id) {
+		return
+	}
+	stats, err := a.Store.FolderStats(r.Context(), p.ID, id, folderID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "folder not found in library")
+			return
+		}
+		problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (a *API) favoriteViewStats(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	viewID, ok := pathID(w, r, "viewId")
+	if !ok {
+		return
+	}
+	stats, err := a.Store.FavoriteViewStats(r.Context(), p.ID, viewID, p.Role == domain.RoleAdmin)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "favorite view not found")
+			return
+		}
+		problem(w, statusFor(err), "could not compute favorite view statistics")
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
@@ -1125,13 +1173,16 @@ const maxArchiveFiles = 1000
 
 func (a *API) archive(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
-	var input struct{ IDs []int }
-	if json.NewDecoder(r.Body).Decode(&input) != nil || len(input.IDs) == 0 {
-		problem(w, http.StatusBadRequest, "media ids are required")
+	var input struct {
+		IDs     []int `json:"ids"`
+		Folders []int `json:"folders"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil || (len(input.IDs) == 0 && len(input.Folders) == 0) {
+		problem(w, http.StatusBadRequest, "media ids or folders are required")
 		return
 	}
-	if len(input.IDs) > maxArchiveFiles {
-		problem(w, http.StatusBadRequest, fmt.Sprintf("too many files: %d > %d", len(input.IDs), maxArchiveFiles))
+	if len(input.IDs) > maxArchiveFiles || len(input.Folders) > maxArchiveFiles {
+		problem(w, http.StatusBadRequest, fmt.Sprintf("too many files: %d > %d", len(input.IDs)+len(input.Folders), maxArchiveFiles))
 		return
 	}
 	unique := dedupeInts(input.IDs)
@@ -1142,6 +1193,25 @@ func (a *API) archive(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(items) != len(unique) {
 		problem(w, http.StatusNotFound, "some media items were not found")
+		return
+	}
+	folderItems, err := a.Store.MediaInFolders(r.Context(), dedupeInts(input.Folders))
+	if err != nil {
+		problem(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	seen := map[int]bool{}
+	for _, item := range items {
+		seen[item.ID] = true
+	}
+	for _, item := range folderItems {
+		if !seen[item.ID] {
+			seen[item.ID] = true
+			items = append(items, item)
+		}
+	}
+	if len(items) > maxArchiveFiles {
+		problem(w, http.StatusBadRequest, fmt.Sprintf("too many files: %d > %d", len(items), maxArchiveFiles))
 		return
 	}
 	for _, item := range items {
@@ -1159,7 +1229,7 @@ func (a *API) archive(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		entry, err := archive.Create(uniqueArchiveName(item.Name, item.ID, used))
+		entry, err := archive.Create(archiveEntryName(item, used))
 		if err == nil {
 			_, err = io.Copy(entry, file)
 		}
@@ -1170,14 +1240,25 @@ func (a *API) archive(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func uniqueArchiveName(name string, id int, used map[string]bool) string {
+// archiveEntryName prefers the library-relative path so folder archives keep
+// their on-disk structure; exact duplicates get a numeric suffix.
+func archiveEntryName(item domain.Media, used map[string]bool) string {
+	name := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(item.RelativePath, "/")))
 	base := filepath.Base(name)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = fmt.Sprintf("file_%d", id)
+	if name == "" || name == "." || base == "" || base == "/" || strings.HasPrefix(name, "../") || strings.Contains(name, "/../") {
+		fallback := fmt.Sprintf("file_%d%s", item.ID, filepath.Ext(item.Name))
+		name = fallback
+		base = fallback
 	}
-	candidate := base
+	dir := filepath.Dir(name)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	candidate := name
 	for suffix := 2; used[candidate]; suffix++ {
-		candidate = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(base, filepath.Ext(base)), suffix, filepath.Ext(base))
+		if dir == "." || dir == "" {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, suffix, filepath.Ext(base))
+		} else {
+			candidate = fmt.Sprintf("%s (%d)%s", name[:len(name)-len(base)]+stem, suffix, filepath.Ext(base))
+		}
 	}
 	used[candidate] = true
 	return candidate
@@ -1876,6 +1957,9 @@ func (a *API) createLibrary(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, err.Error())
 		return
 	}
+	if a.OnLibrariesChanged != nil {
+		a.OnLibrariesChanged()
+	}
 	writeJSON(w, 201, library)
 }
 
@@ -1903,6 +1987,9 @@ func (a *API) updateLibrary(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, err.Error())
 		return
 	}
+	if a.OnLibrariesChanged != nil {
+		a.OnLibrariesChanged()
+	}
 	updated, _ := a.Store.Library(r.Context(), existing.ID)
 	writeJSON(w, 200, updated)
 }
@@ -1925,6 +2012,9 @@ func (a *API) deleteLibrary(w http.ResponseWriter, r *http.Request) {
 	if err := a.Store.DeleteScheduledTasksForLibrary(r.Context(), id); err != nil {
 		applog.Printf(applog.Error, "could not remove scheduled tasks for deleted library %d: %v", id, err)
 	}
+	if a.OnLibrariesChanged != nil {
+		a.OnLibrariesChanged()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1932,7 +2022,8 @@ func (a *API) libraryInput(w http.ResponseWriter, r *http.Request) (string, []do
 	var input struct {
 		Name  string `json:"name"`
 		Roots []struct {
-			Path string `json:"path"`
+			Path  string `json:"path"`
+			Watch bool   `json:"watch"`
 		} `json:"roots"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || strings.TrimSpace(input.Name) == "" || len(input.Roots) == 0 {
@@ -1958,7 +2049,7 @@ func (a *API) libraryInput(w http.ResponseWriter, r *http.Request) (string, []do
 			return "", nil, false
 		}
 		paths[root.Path] = true
-		roots = append(roots, domain.LibraryRoot{ID: domain.InvalidID, Path: root.Path})
+		roots = append(roots, domain.LibraryRoot{ID: domain.InvalidID, Path: root.Path, Watch: root.Watch})
 	}
 	return strings.TrimSpace(input.Name), roots, true
 }
@@ -2025,7 +2116,25 @@ func (a *API) metadataRenew(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, job)
 }
 
+// activeJob returns a snapshot of an active (running or paused) job of the
+// same category for the same library. Running two jobs of the same kind would
+// duplicate work and spawn competing thumbnail chains, so starters return the
+// existing job instead.
+func (a *API) activeJob(category string, libraryID int) (JobStatus, bool) {
+	a.jobMu.Lock()
+	defer a.jobMu.Unlock()
+	for _, job := range a.jobs {
+		if job.Category == category && job.LibraryID == libraryID && (job.Status == "running" || job.Status == "paused") {
+			return *job, true
+		}
+	}
+	return JobStatus{}, false
+}
+
 func (a *API) startMetadataRenewJob(library domain.Library, recreateExisting, updateGps, updateTakenAt bool) JobStatus {
+	if existing, ok := a.activeJob("metadata-renew", library.ID); ok {
+		return existing
+	}
 	return a.startJob(a.newJob("metadata-renew", library, map[string]any{"recreateExisting": recreateExisting, "updateGps": updateGps, "updateTakenAt": updateTakenAt}), func(job *JobStatus) error {
 		return a.runMetadataRenewJob(job, library, recreateExisting, updateGps, updateTakenAt)
 	})
@@ -2033,11 +2142,18 @@ func (a *API) startMetadataRenewJob(library domain.Library, recreateExisting, up
 
 func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, recreateExisting, updateGps, updateTakenAt bool) error {
 	ctx := a.jobContext(context.Background(), job.ID)
+	extractor := metadata.New()
 	items, err := a.Store.MediaForLibrary(ctx, 0, library.ID)
 	if err != nil {
 		return err
 	}
-	a.updateJob(job.ID, func(job *JobStatus) { job.Total = len(items) })
+	// Resume after a restart: MediaForLibrary returns items in a stable
+	// relative-path order, so skipping the persisted Processed count continues
+	// where the interrupted run stopped (off by at most one save interval).
+	// Files added or removed between the runs can shift the offset; any item
+	// skipped this way is picked up by the next renew.
+	items = applyRenewResume(items, job.Processed)
+	a.updateJob(job.ID, func(job *JobStatus) { job.Total = len(items) + job.Processed })
 	type metadataTask struct {
 		item domain.Media
 	}
@@ -2052,7 +2168,7 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, recrea
 			work[i] = func(ctx context.Context) error {
 				item := task.item
 				a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = item.RelativePath })
-				extracted, err := metadata.New().Extract(ctx, item.Path, item.MIMEType)
+				extracted, err := extractor.Extract(ctx, item.Path, item.MIMEType)
 				metadataError := ""
 				if err != nil {
 					metadataError = err.Error()
@@ -2086,7 +2202,22 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, recrea
 	return nil
 }
 
+// applyRenewResume drops the first processed items from a stable-ordered list
+// so an interrupted renew continues instead of re-extracting everything.
+func applyRenewResume(items []domain.Media, processed int) []domain.Media {
+	if processed <= 0 {
+		return items
+	}
+	if processed >= len(items) {
+		return nil
+	}
+	return items[processed:]
+}
+
 func (a *API) startScanJob(library domain.Library) JobStatus {
+	if existing, ok := a.activeJob("scan", library.ID); ok {
+		return existing
+	}
 	return a.startJob(a.newJob("scan", library, nil), func(job *JobStatus) error {
 		return a.runScanJob(job, library)
 	})
@@ -2098,11 +2229,6 @@ func (a *API) runScanJob(job *JobStatus, library domain.Library) error {
 	if err != nil {
 		return err
 	}
-	total, err := a.Scanner.CountMediaFiles(ctx, library)
-	if err != nil {
-		return err
-	}
-	a.updateJob(job.ID, func(job *JobStatus) { job.Total = total })
 	scanner := a.Scanner.WithProgress(func(path string, media bool) error {
 		// The walk (media=false) blocks while the job is paused. Media imports
 		// run on the shared worker pool, which parks paused jobs' work, so they
@@ -2119,6 +2245,8 @@ func (a *API) runScanJob(job *JobStatus, library domain.Library) error {
 			}
 		})
 		return nil
+	}).WithTotalReady(func(total int) {
+		a.updateJob(job.ID, func(job *JobStatus) { job.Total = total })
 	}).WithPool(job.ID, a.WorkerPool, func() bool {
 		return a.jobPaused(job.ID)
 	})
@@ -2131,6 +2259,9 @@ func (a *API) runScanJob(job *JobStatus, library domain.Library) error {
 }
 
 func (a *API) startThumbnailJob(library domain.Library, recreateExisting ...bool) JobStatus {
+	if existing, ok := a.activeJob("thumbnail-create", library.ID); ok {
+		return existing
+	}
 	recreate := len(recreateExisting) > 0 && recreateExisting[0]
 	return a.startJob(a.newJob("thumbnail-create", library, map[string]any{"recreateExisting": recreate}), func(job *JobStatus) error {
 		return a.runThumbnailJob(job, library, recreate)
@@ -2143,6 +2274,9 @@ func (a *API) cleanupOrphanThumbnails(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) startOrphanThumbnailCleanupJob() JobStatus {
+	if existing, ok := a.activeJob("orphan-thumbnail-cleanup", 0); ok {
+		return existing
+	}
 	return a.startJob(a.newJob("orphan-thumbnail-cleanup", domain.Library{ID: 0, Name: "All libraries"}, nil), func(job *JobStatus) error {
 		return a.runOrphanThumbnailCleanupJob(job)
 	})
@@ -2376,6 +2510,9 @@ func (a *API) startJob(job JobStatus, run func(*JobStatus) error) JobStatus {
 	if a.jobContexts == nil {
 		a.jobContexts = map[string]context.Context{}
 	}
+	if a.jobSaves == nil {
+		a.jobSaves = map[string]time.Time{}
+	}
 	copy := job
 	a.jobs[job.ID] = &copy
 	a.jobCancels[job.ID] = cancel
@@ -2411,6 +2548,7 @@ func (a *API) runJob(snapshot *JobStatus, run func(*JobStatus) error, cancel con
 	a.jobMu.Lock()
 	delete(a.jobCancels, snapshot.ID)
 	delete(a.jobContexts, snapshot.ID)
+	delete(a.jobSaves, snapshot.ID)
 	a.jobMu.Unlock()
 }
 
@@ -2490,24 +2628,44 @@ func (a *API) jobContext(parent context.Context, id string) context.Context {
 	return ctx
 }
 
+// jobPauseCond returns the condition variable bound to jobMu, creating it on
+// first use (the API struct is built as a literal in main and tests).
+func (a *API) jobPauseCond() *sync.Cond {
+	if a.jobCond == nil {
+		a.jobCond = sync.NewCond(&a.jobMu)
+	}
+	return a.jobCond
+}
+
+// waitJobRunnable blocks while the job is paused and returns as soon as the
+// job resumes, is cancelled, or ctx is done. Wakeups are event-driven: every
+// job state change (controlJob/updateJob) broadcasts on the shared cond.
 func (a *API) waitJobRunnable(ctx context.Context, id string) error {
+	a.jobMu.Lock()
+	defer a.jobMu.Unlock()
+	cond := a.jobPauseCond()
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			a.jobMu.Lock()
+			a.jobPauseCond().Broadcast()
+			a.jobMu.Unlock()
+		case <-stop:
+		}
+	}()
+	defer close(stop)
 	for {
-		a.jobMu.Lock()
 		job := a.jobs[id]
-		paused := job != nil && job.Paused
 		cancelling := job != nil && job.Status == "cancelling"
-		a.jobMu.Unlock()
+		paused := job != nil && job.Paused
 		if cancelling {
 			return context.Canceled
 		}
-		if !paused {
+		if !paused || ctx.Err() != nil {
 			return ctx.Err()
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
+		cond.Wait()
 	}
 }
 
@@ -2537,20 +2695,32 @@ func (a *API) runWork(jobID string, ctx context.Context, work []jobpool.Work) er
 
 func (a *API) updateJob(id string, update func(*JobStatus)) {
 	var copy JobStatus
+	should := false
 	a.jobMu.Lock()
 	if job := a.jobs[id]; job != nil {
 		update(job)
 		copy = *job
+		now := time.Now()
+		should = shouldPersistJobProgress(copy, a.jobSaves[id], now)
+		if should {
+			a.jobSaves[id] = now
+		}
+		a.jobPauseCond().Broadcast()
 	}
 	a.jobMu.Unlock()
-	if shouldPersistJobProgress(copy) {
+	if should {
 		if err := a.Store.SaveJob(context.Background(), copy); err != nil {
 			applog.Printf(applog.Error, "could not persist job %s: %v", copy.ID, err)
 		}
 	}
 }
 
-func shouldPersistJobProgress(job JobStatus) bool {
+// jobProgressSaveInterval throttles walk-phase progress writes (CurrentPath
+// ticks with no processed items yet), so the store is not hit once per
+// directory on large trees.
+const jobProgressSaveInterval = 2 * time.Second
+
+func shouldPersistJobProgress(job JobStatus, lastSave time.Time, now time.Time) bool {
 	if job.ID == "" {
 		return false
 	}
@@ -2558,7 +2728,9 @@ func shouldPersistJobProgress(job JobStatus) bool {
 		return true
 	}
 	if job.Total > 0 && job.Processed == 0 {
-		return true
+		// The first of these updates persists immediately (zero lastSave);
+		// later ones are pure path ticks.
+		return now.Sub(lastSave) >= jobProgressSaveInterval
 	}
 	return job.Processed%10 == 0
 }
@@ -2744,6 +2916,9 @@ func (a *API) vacuumDB(w http.ResponseWriter, r *http.Request) {
 // startVacuumJob starts a database vacuum background job. The second return
 // value is false when the configured store does not support vacuuming.
 func (a *API) startVacuumJob() (JobStatus, bool) {
+	if existing, ok := a.activeJob("vacuum", 0); ok {
+		return existing, true
+	}
 	provider, ok := a.Store.(interface {
 		Vacuum(context.Context) error
 	})
@@ -2904,6 +3079,7 @@ func (a *API) pruneFinishedJobs(now time.Time) {
 			delete(a.jobs, id)
 			delete(a.jobCancels, id)
 			delete(a.jobContexts, id)
+			delete(a.jobSaves, id)
 		}
 	}
 }
@@ -2998,6 +3174,7 @@ func (a *API) controlJob(id string, update func(*JobStatus) error) (JobStatus, b
 		copy.Error = err.Error()
 		return copy, true
 	}
+	a.jobPauseCond().Broadcast()
 	copy = *job
 	a.jobMu.Unlock()
 	if err := a.Store.SaveJob(context.Background(), copy); err != nil {
@@ -3280,7 +3457,7 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		certificateExpiresAt = expires.Format("2006-01-02")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"httpEnabled": transport.HTTPEnabled,
+		"httpEnabled":  transport.HTTPEnabled,
 		"httpsEnabled": transport.HTTPSEnabled, "publicDns": transport.PublicDNS,
 		"acmeEmail":                 transport.ACMEEmail,
 		"httpsCertificateExpiresAt": certificateExpiresAt,

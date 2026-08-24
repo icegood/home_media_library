@@ -82,7 +82,8 @@ func TestPoolLiveResize(t *testing.T) {
 	}
 }
 
-func TestPoolPauseParksWork(t *testing.T) {	pool := New(2, 2)
+func TestPoolPauseParksWork(t *testing.T) {
+	pool := New(2, 2)
 	defer pool.Close()
 	var executed atomic.Int64
 	work := make([]Work, 6)
@@ -270,6 +271,27 @@ func TestPoolWorkersSharedAcrossJobs(t *testing.T) {
 	if err := pool.Wait(ctx, "b"); err != nil {
 		t.Fatalf("Wait b: %v", err)
 	}
+}
+
+// TestPoolCancelAloneReportsCanceled verifies that CancelJob makes Wait return
+// context.Canceled even when the job's context was never cancelled — the
+// previous behavior returned nil and let the caller mark a cancelled job done.
+func TestPoolCancelAloneReportsCanceled(t *testing.T) {
+	pool := New(1, 1)
+	defer pool.Close()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	pool.Submit("job", context.Background(), false, []Work{func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}})
+	<-started
+	pool.CancelJob("job")
+	if err := pool.Wait(context.Background(), "job"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait error = %v, want context.Canceled", err)
+	}
+	close(release)
 }
 
 func waitUntil(t *testing.T, cond func() bool) {

@@ -22,6 +22,7 @@ import (
 	"media-library/backend/internal/scheduler"
 	"media-library/backend/internal/store"
 	"media-library/backend/internal/transcode"
+	"media-library/backend/internal/watcher"
 )
 
 // Build-time values injected via -ldflags (see Dockerfile). They are exposed to
@@ -99,6 +100,10 @@ func main() {
 		BuildDate:         buildDate,
 	}
 	handler := apiInstance.Handler()
+
+	watcherInstance := watcher.New(repository, apiInstance)
+	apiInstance.OnLibrariesChanged = watcherInstance.Refresh
+	go watcherInstance.Run(stopCtx)
 
 	go scheduler.Loop(stopCtx, repository, apiInstance)
 

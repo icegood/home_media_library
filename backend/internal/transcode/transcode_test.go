@@ -59,15 +59,15 @@ func TestSchemaArgumentsCoverAllProfiles(t *testing.T) {
 
 func TestContentTypePerSchema(t *testing.T) {
 	tests := map[string]string{
-		"h264-aac-mp4":   `video/mp4; codecs="avc1.42E01E,mp4a.40.2"`,
-		"h264-opus-mp4":  `video/mp4; codecs="avc1.42E01E,opus"`,
-		"vp9-opus-webm":  `video/webm; codecs="vp9,opus"`,
+		"h264-aac-mp4":    `video/mp4; codecs="avc1.42E01E,mp4a.40.2"`,
+		"h264-opus-mp4":   `video/mp4; codecs="avc1.42E01E,opus"`,
+		"vp9-opus-webm":   `video/webm; codecs="vp9,opus"`,
 		"vp9-vorbis-webm": `video/webm; codecs="vp9,vorbis"`,
-		"av1-opus-webm":  `video/webm; codecs="av01.0.04M.08,opus"`,
-		"hevc-aac-mp4":   `video/mp4; codecs="hvc1,mp4a.40.2"`,
-		"hevc-opus-mp4":  `video/mp4; codecs="hvc1,opus"`,
+		"av1-opus-webm":   `video/webm; codecs="av01.0.04M.08,opus"`,
+		"hevc-aac-mp4":    `video/mp4; codecs="hvc1,mp4a.40.2"`,
+		"hevc-opus-mp4":   `video/mp4; codecs="hvc1,opus"`,
 		"vp8-vorbis-webm": `video/webm; codecs="vp8,vorbis"`,
-		"vp8-opus-webm":  `video/webm; codecs="vp8,opus"`,
+		"vp8-opus-webm":   `video/webm; codecs="vp8,opus"`,
 	}
 	for id, want := range tests {
 		schema, _ := ParseSchema(id)

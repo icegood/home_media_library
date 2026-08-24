@@ -2,6 +2,22 @@
 
 This skill describes how to run Playwright end-to-end tests for the web UI in this repository.
 
+## Canonical way (Docker, sanctioned)
+
+    sh deploy/start.sh e2e
+
+What it does:
+- resolves the @playwright/test version from web/package-lock.json,
+- builds `media-library-playwright:local` from web/Dockerfile.playwright
+  (official mcr playwright base image with matching browsers + npm ci),
+- runs all web/e2e/*.pw.ts specs against the RUNNING stack at
+  BASE_URL (default http://localhost:$WEB_PORT from deploy/.env; override with E2E_BASE_URL),
+- writes videos/traces/reports into web/test-output/.
+
+The stack must already be up: run `sh deploy/start.sh local-build` first.
+Never run the specs inside the published nginx web image; never install
+browsers on the host.
+
 Principles
 - Do not run Playwright tests in the published nginx web image. Tests require a Node runtime and browser dependencies.
 - Preferred: run Playwright inside a dedicated test container that uses the official Playwright Docker images (they include browser binaries and OS deps).

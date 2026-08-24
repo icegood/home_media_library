@@ -131,6 +131,127 @@ func TestLibraryAccessIsPerUser(t *testing.T) {
 	}
 }
 
+func TestFolderStatsAggregateRecursively(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	library, err := f.store.Library(context.Background(), f.libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := f.store.UpsertFolder(context.Background(), domain.MediaFolder{
+		ID: domain.InvalidID, ParentID: f.folderID,
+		Path: filepath.Join(f.mediaRoot, "family", "2025", "deep"), RelativePath: "2025/deep",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	videoPath := filepath.Join(f.mediaRoot, "family", "2025", "deep", "clip.mp4")
+	if err := os.MkdirAll(filepath.Dir(videoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.UpsertMedia(context.Background(), domain.Media{
+		ID: domain.InvalidID, FolderID: sub.ID, Path: videoPath, RelativePath: "2025/deep/clip.mp4",
+		Name: "clip.mp4", Kind: domain.KindVideo, MIMEType: "video/mp4", Size: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	statsURL := fmt.Sprintf("/api/v1/libraries/%d/folders/%d/stats", f.libraryID, f.folderID)
+	response := request(f.handler, http.MethodGet, statsURL, admin, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("stats status = %d: %s", response.Code, response.Body)
+	}
+	var stats domain.KindStats
+	if err := json.Unmarshal(response.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Images != 1 || stats.Videos != 1 {
+		t.Fatalf("stats = %#v, want 1 image (direct) + 1 video (nested)", stats)
+	}
+	if _, err := f.store.Library(context.Background(), library.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFavoriteViewStatsCountFolderContents(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	create := request(f.handler, http.MethodPost, "/api/v1/favorite-views", alice, []byte(`{"name":"Stats"}`))
+	var view domain.FavoriteView
+	if err := json.NewDecoder(create.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	if response := request(f.handler, http.MethodPut, fmt.Sprintf("/api/v1/favorite-views/%d/media/%d", view.ID, f.photoID), alice, nil); response.Code != http.StatusOK {
+		t.Fatalf("favorite media status = %d: %s", response.Code, response.Body)
+	}
+	library, err := f.store.Library(context.Background(), f.libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder, err := f.store.UpsertFolder(context.Background(), domain.MediaFolder{
+		ID: domain.InvalidID, ParentID: library.Roots[0].ID,
+		Path: filepath.Join(f.mediaRoot, "family", "trip"), RelativePath: "trip",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	extraPath := filepath.Join(f.mediaRoot, "family", "trip", "pic.png")
+	if err := os.MkdirAll(filepath.Dir(extraPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extraPath, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.UpsertMedia(context.Background(), domain.Media{
+		ID: domain.InvalidID, FolderID: folder.ID, Path: extraPath, RelativePath: "trip/pic.png",
+		Name: "pic.png", Kind: domain.KindImage, MIMEType: "image/png", Size: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if response := request(f.handler, http.MethodPut, fmt.Sprintf("/api/v1/favorite-views/%d/folders/%d", view.ID, folder.ID), alice, nil); response.Code != http.StatusOK {
+		t.Fatalf("favorite folder status = %d: %s", response.Code, response.Body)
+	}
+	response := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/favorite-views/%d/stats", view.ID), alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("favorite stats status = %d: %s", response.Code, response.Body)
+	}
+	var stats domain.KindStats
+	if err := json.Unmarshal(response.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Images != 2 || stats.Videos != 0 {
+		t.Fatalf("stats = %#v, want 2 images (mention + folder content)", stats)
+	}
+}
+
+func TestLibrariesListEmbedsRecursiveStats(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	response := request(f.handler, http.MethodGet, "/api/v1/libraries", admin, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("libraries status = %d: %s", response.Code, response.Body)
+	}
+	var libraries []domain.Library
+	if err := json.Unmarshal(response.Body.Bytes(), &libraries); err != nil {
+		t.Fatal(err)
+	}
+	var family *domain.Library
+	for index := range libraries {
+		if libraries[index].ID == f.libraryID {
+			family = &libraries[index]
+		}
+	}
+	if family == nil {
+		t.Fatalf("library %d missing from list", f.libraryID)
+	}
+	// Fixture holds the 2025 subfolder (1 folder below root) with trip.jpg.
+	if family.Stats.Images != 1 || family.Stats.Videos != 0 {
+		t.Fatalf("embedded stats = %#v, want 1 image / 0 videos", family.Stats)
+	}
+}
+
 func TestFolderEntriesIncludeChain(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")
@@ -192,10 +313,10 @@ func TestEntriesRangeParams(t *testing.T) {
 	if len(root) != 1 {
 		t.Fatalf("root returned %d entries, want single root wrapper", len(root))
 	}
-	if got := fetchEntries(rootURL+"?offset=5"); len(got) != 0 {
+	if got := fetchEntries(rootURL + "?offset=5"); len(got) != 0 {
 		t.Fatalf("root offset past end returned %d entries, want 0", len(got))
 	}
-	if got := fetchEntries(rootURL+"?limit=1"); len(got) != 1 {
+	if got := fetchEntries(rootURL + "?limit=1"); len(got) != 1 {
 		t.Fatalf("root limit=1 returned %d entries, want 1", len(got))
 	}
 
@@ -616,18 +737,22 @@ func TestLibraryStatsEndpoint(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &libraries); err != nil {
 		t.Fatal(err)
 	}
-	if len(libraries) != 1 || libraries[0].Stats.Folders != 0 {
-		t.Fatalf("default listing should omit statistics: %#v", libraries)
+	if len(libraries) != 1 {
+		t.Fatalf("alice should see exactly her library: %#v", libraries)
+	}
+	// Statistics are embedded in the listing and computed server-side.
+	if libraries[0].Stats.Images != 1 || libraries[0].Stats.Videos != 0 {
+		t.Fatalf("embedded stats = %#v, want 1 image / 0 videos", libraries[0].Stats)
 	}
 	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/stats", f.libraryID), alice, nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("alice stats status = %d: %s", response.Code, response.Body)
 	}
-	var stats domain.LibraryStats
+	var stats domain.KindStats
 	if err := json.Unmarshal(response.Body.Bytes(), &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Folders != 1 || stats.Files != 1 || stats.Images != 1 || stats.Videos != 0 {
+	if stats.Images != 1 || stats.Videos != 0 {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
 	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/stats", f.libraryID), bob, nil).Code; got != http.StatusForbidden {
@@ -772,8 +897,8 @@ func TestMediaArchiveDownloadsZip(t *testing.T) {
 	if len(reader.File) != 1 {
 		t.Fatalf("zip entries = %d, want 1", len(reader.File))
 	}
-	if reader.File[0].Name != "trip.jpg" {
-		t.Fatalf("zip entry name = %q, want trip.jpg", reader.File[0].Name)
+	if reader.File[0].Name != "2025/trip.jpg" {
+		t.Fatalf("zip entry name = %q, want 2025/trip.jpg", reader.File[0].Name)
 	}
 	rc, err := reader.File[0].Open()
 	if err != nil {
@@ -786,6 +911,27 @@ func TestMediaArchiveDownloadsZip(t *testing.T) {
 	}
 	if string(content) != "image" {
 		t.Fatalf("zip content = %q, want %q", content, "image")
+	}
+}
+
+func TestMediaArchiveFromFolderKeepsStructure(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	body, _ := json.Marshal(map[string]any{"folders": []int{f.folderID}})
+	response := request(f.handler, http.MethodPost, "/api/v1/archive", alice, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("folder archive status = %d: %s", response.Code, response.Body)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(response.Body.Bytes()), int64(response.Body.Len()))
+	if err != nil {
+		t.Fatalf("response is not a valid zip: %v", err)
+	}
+	if len(reader.File) != 1 || reader.File[0].Name != "2025/trip.jpg" {
+		names := make([]string, 0, len(reader.File))
+		for _, entry := range reader.File {
+			names = append(names, entry.Name)
+		}
+		t.Fatalf("zip entries = %v, want [2025/trip.jpg]", names)
 	}
 }
 

@@ -108,14 +108,17 @@ func (p *Pool) SetJobPaused(jobID string, paused bool) {
 }
 
 // CancelJob drops a job's queued work. In-flight work keeps running; Wait
-// returns context.Canceled once no work remains.
+// returns context.Canceled once no work remains, even when the caller never
+// cancels the job's own context.
 func (p *Pool) CancelJob(jobID string) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
-	if q := p.queues[jobID]; q != nil {
+	if q := p.queues[jobID]; q != nil && !q.done {
 		q.done = true
+		q.failed = true
+		q.err = context.Canceled
 	}
 	p.cond.Broadcast()
 	p.mu.Unlock()

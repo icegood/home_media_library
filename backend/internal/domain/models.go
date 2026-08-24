@@ -172,7 +172,7 @@ type Library struct {
 	ID    int           `json:"id"`
 	Name  string        `json:"name"`
 	Roots []LibraryRoot `json:"roots"`
-	Stats LibraryStats  `json:"stats,omitempty"`
+	Stats KindStats     `json:"stats"`
 }
 
 type FavoriteView struct {
@@ -188,17 +188,26 @@ type FavoriteViewMembership struct {
 	Contains bool `json:"contains"`
 }
 
-type LibraryStats struct {
-	Folders int `json:"folders"`
-	Files   int `json:"files"`
-	Images  int `json:"images"`
-	Videos  int `json:"videos"`
+// KindStats is the statistics shape used everywhere (library listings,
+// per-library endpoint, folder and favorite-view menus): image/video counts.
+type KindStats struct {
+	Images int `json:"images"`
+	Videos int `json:"videos"`
 }
 
 type LibraryRoot struct {
 	// ID is the media_folders.id value selected as this library root.
 	ID   int    `json:"id"`
 	Path string `json:"path,omitempty"`
+	// Watch enables inotify-triggered incremental rescans for this root
+	// (opt-in, off by default).
+	Watch bool `json:"watch"`
+}
+
+// WatchedRoot is a library root flagged for filesystem watching.
+type WatchedRoot struct {
+	LibraryID int    `json:"libraryId"`
+	Path      string `json:"path"`
 }
 
 type Kind string
@@ -302,11 +311,11 @@ type MediaDetailsPatch struct {
 }
 
 type BulkMediaPatch struct {
-	SelectedIDs      []int  `json:"selectedIds"`
-	SelectedFolders  []int  `json:"selectedFolders"`
-	GPS              *string `json:"gps"`
-	TakenAt          *string `json:"takenAt"`
-	ShiftMinutes     *float64 `json:"shiftMinutes"`
+	SelectedIDs     []int    `json:"selectedIds"`
+	SelectedFolders []int    `json:"selectedFolders"`
+	GPS             *string  `json:"gps"`
+	TakenAt         *string  `json:"takenAt"`
+	ShiftMinutes    *float64 `json:"shiftMinutes"`
 }
 
 type BulkMediaResult struct {

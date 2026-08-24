@@ -4,9 +4,10 @@ set -eu
 cd "$(dirname "$0")"
 
 if [ "$#" -ne 1 ]; then
-  echo "Usage: sh deploy/start.sh [prod|local-build]" >&2
+  echo "Usage: sh deploy/start.sh [prod|local-build|e2e]" >&2
   echo "  prod        Pull and run versioned production images from deploy/compose.yaml." >&2
   echo "  local-build Build local backend/web sources, then run the same stack." >&2
+  echo "  e2e         Run Playwright end-to-end tests against the running stack." >&2
   exit 2
 fi
 
@@ -97,10 +98,33 @@ case "$mode" in
     docker compose --env-file .env -f compose.yaml -f compose.local.yaml up -d --remove-orphans
     ;;
 
+  e2e)
+    ensure_env .env .env.default
+    set -a
+    . ./.env
+    set +a
+    base_url="${E2E_BASE_URL:-http://localhost:${WEB_PORT:-8080}}"
+    pw_version="$(grep -A1 '"node_modules/@playwright/test"' ../web/package-lock.json | sed -n 's/.*"version": "\([^"]*\)".*/\1/p' | head -1)"
+    if [ -z "$pw_version" ]; then
+      echo "Cannot resolve the @playwright/test version from web/package-lock.json." >&2
+      exit 1
+    fi
+    echo "Building Playwright runner (@playwright/test ${pw_version})..."
+    docker build --build-arg PW_VERSION="$pw_version" \
+      -f ../web/Dockerfile.playwright -t media-library-playwright:local ..
+    mkdir -p ../web/test-output
+    # The stack must already be running (start.sh local-build / prod).
+    docker run --rm --network host \
+      -e BASE_URL="$base_url" \
+      -v "$(cd .. && pwd)/web/test-output:/app/test-output" \
+      media-library-playwright:local
+    ;;
+
   *)
-    echo "Usage: sh deploy/start.sh [prod|local-build]" >&2
+    echo "Usage: sh deploy/start.sh [prod|local-build|e2e]" >&2
     echo "  prod        Pull and run versioned production images from deploy/compose.yaml." >&2
     echo "  local-build Build local backend/web sources, then run the same stack." >&2
+    echo "  e2e         Run Playwright end-to-end tests against the running stack." >&2
     exit 2
     ;;
 esac

@@ -48,7 +48,7 @@ INSERT INTO UserItemShares VALUES
   (2,5,0);`)
 
 	snapshot, err := Read(context.Background(), Options{
-		ConfigRoot: dir,
+		ConfigRoot:   dir,
 		PathMappings: []PathMapping{{From: "/data1", To: "/media/data1"}, {From: "/data2", To: "/media/data2"}},
 	})
 	if err != nil {

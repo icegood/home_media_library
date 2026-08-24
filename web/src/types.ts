@@ -2,9 +2,9 @@ export type Role = "admin" | "regular";
 export type ID = number;
 export interface User { id:ID; login:string; role:Role; email?:string }
 export interface LibraryUserAccess { user:User; allowed:boolean }
-export interface LibraryRoot { id:ID; path?:string }
-export interface LibraryStats { folders:number; files:number; images:number; videos:number }
-export interface Library { id:ID; name:string; roots?:LibraryRoot[]; stats?:LibraryStats }
+export interface LibraryRoot { id:ID; path?:string; watch?:boolean }
+export interface KindStats { images:number; videos:number }
+export interface Library { id:ID; name:string; roots?:LibraryRoot[]; stats?:KindStats }
 export interface FavoriteView { id:ID; name:string; count:number }
 export interface FavoriteViewMembership extends FavoriteView { contains:boolean }
 export interface Media {

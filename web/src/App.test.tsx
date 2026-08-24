@@ -33,6 +33,8 @@ const mockApi = vi.hoisted(() => ({
   folder: vi.fn(),
   folderEntries: vi.fn(),
   folderMedia: vi.fn(),
+  folderStats: vi.fn(),
+  favoriteViewStats: vi.fn(),
   libraryMedia: vi.fn(),
   favoriteViews: vi.fn(),
   mediaFavoriteViews: vi.fn(),
@@ -94,7 +96,9 @@ beforeEach(() => {
   mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
     {id:10, path:"/media/family/photos"}
   ]}]);
-  mockApi.libraryStats.mockResolvedValue({folders:3, files:12, images:10, videos:2});
+  mockApi.libraryStats.mockResolvedValue({images:10, videos:2});
+  mockApi.folderStats.mockResolvedValue({images:1, videos:1});
+  mockApi.favoriteViewStats.mockResolvedValue({images:2, videos:1});
   mockApi.map.mockResolvedValue([]);
   mockApi.settings.mockResolvedValue({
     httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:true,
@@ -134,6 +138,7 @@ beforeEach(() => {
   mockApi.updateFavoriteView.mockResolvedValue({id:30, name:"Favorites", count:0});
   mockApi.deleteFavoriteView.mockResolvedValue(undefined);
   mockApi.favoriteViewMedia.mockResolvedValue([]);
+  mockApi.favoriteViewMediaFull.mockResolvedValue([]);
   mockApi.media.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""});
   mockApi.updateMediaDetails.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"renamed.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""});
   mockApi.favoriteMedia.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", favorite:true});
@@ -262,21 +267,45 @@ test("settings navigation opens libraries section", async () => {
   expect(screen.getByText("Family")).toBeInTheDocument();
 });
 
-test("libraries view shows statistics on name click with a calculating state", async () => {
+test("library tile shows statistics inside its menu, not a dialog", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  let resolveStats:(value:{folders:number; files:number; images:number; videos:number}) => void = () => {};
+  let resolveStats:(value:{images:number; videos:number}) => void = () => {};
   mockApi.libraryStats.mockReturnValueOnce(new Promise(resolve => { resolveStats = resolve; }));
   render(<MemoryRouter><App/></MemoryRouter>);
-  expect(await screen.findByRole("button", {name:"Family"})).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"Family"}));
-  const dialog = await screen.findByRole("dialog", {name:"Library statistics Family"});
-  expect(within(dialog).getByText("Calculating…")).toBeInTheDocument();
-  resolveStats({folders:3, files:12, images:10, videos:2});
-  expect(await within(dialog).findByText("Folders")).toBeInTheDocument();
-  expect(within(dialog).getByText("Files")).toBeInTheDocument();
-  expect(within(dialog).getByText("Images")).toBeInTheDocument();
-  expect(within(dialog).getByText("Videos")).toBeInTheDocument();
-  expect(within(dialog).getByText("12")).toBeInTheDocument();
+  expect(await screen.findByRole("link", {name:"Open library Family"})).toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText("Library menu Family"));
+  expect(await screen.findByText("Loading statistics…")).toBeInTheDocument();
+  resolveStats({images:10, videos:2});
+  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toHaveTextContent("Images: 10 · Videos: 2"));
+  expect(screen.queryByRole("dialog", {name:"Library statistics Family"})).not.toBeInTheDocument();
+});
+
+test("item menu closes on outside click", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[{id:10, path:"/media/family"}]}]);
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Library menu Family"));
+  expect(await screen.findByRole("menuitem", {name:"Rename"})).toBeInTheDocument();
+  fireEvent.mouseDown(document.body);
+  await waitFor(() => expect(screen.queryByRole("menuitem", {name:"Rename"})).not.toBeInTheDocument());
+});
+
+test("favorite views page keeps the create editor as a separate panel above the list", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:1}]);
+  mockApi.createFavoriteView.mockResolvedValue({id:99, name:"Holiday 2026", count:0});
+  const {container} = render(<MemoryRouter initialEntries={["/favorites"]}><App/></MemoryRouter>);
+  await screen.findByText("Best");
+  const form = container.querySelector("form.inline-create");
+  expect(form).not.toBeNull();
+  expect(form!.querySelector("input")).not.toBeNull();
+  // editor renders before (and detached from) the list of views
+  const table = container.querySelector(".library-table");
+  expect(table).not.toBeNull();
+  expect(form!.compareDocumentPosition(table!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.change(form!.querySelector("input")!, {target:{value:"Holiday 2026"}});
+  fireEvent.submit(form!);
+  expect(await screen.findByText("Holiday 2026")).toBeInTheDocument();
 });
 
 test("library tile links into the library without a per-library map button", async () => {
@@ -288,15 +317,15 @@ test("library tile links into the library without a per-library map button", asy
   expect(screen.queryByText(/folders ·/)).not.toBeInTheDocument();
 });
 
-test("admin library list hides statistics until the library name is clicked", async () => {
+test("admin library list shows statistics in the row menu", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraryStats.mockResolvedValue({images:10, videos:2});
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
   await screen.findByRole("heading", {name:"Libraries"});
   expect(await screen.findByText("Family")).toBeInTheDocument();
-  expect(screen.queryByText(/folders ·/)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:/photos/}));
-  expect(await screen.findByRole("dialog", {name:"Library statistics Family"})).toBeInTheDocument();
-  expect(await within(screen.getByRole("dialog", {name:"Library statistics Family"})).findByText("Folders")).toBeInTheDocument();
+  expect(document.body.querySelector(".folder-stats-inline")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText("Library menu Family"));
+  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toHaveTextContent("Images: 10 · Videos: 2"));
 });
 
 test("authenticated header renders user menu and clicking logout logs out", async () => {
@@ -673,7 +702,7 @@ test("library tridot menu exposes library actions and thumbnail refresh options"
   fireEvent.click(screen.getByRole("button", {name:"Close"}));
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"Refresh content"}));
-  expect(screen.getByLabelText("Library menu Family").closest("details")).not.toHaveAttribute("open");
+  expect(screen.queryByRole("menuitem", {name:"Rename"})).not.toBeInTheDocument();
   await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(1));
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
   fireEvent.click(screen.getByRole("menuitem", {name:"Refresh thumbnails…"}));
@@ -689,6 +718,24 @@ test("library tridot menu exposes library actions and thumbnail refresh options"
   fireEvent.click(screen.getByRole("menuitem", {name:"Rename"}));
   expect(await screen.findByRole("dialog", {name:"Edit library details"})).toBeInTheDocument();
   expect(screen.getByRole("heading", {name:"Edit details"})).toBeInTheDocument();
+});
+
+test("library editor persists per-root watch flag and sends it on save", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
+    {id:10, path:"/media/family/photos", watch:false}
+  ]}]);
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Library menu Family"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Rename"}));
+  const dialog = await screen.findByRole("dialog", {name:"Edit library details"});
+  const checkbox = within(dialog).getByRole("checkbox", {name:"Watch for changes"}) as HTMLInputElement;
+  expect(checkbox.checked).toBe(false);
+  fireEvent.click(checkbox);
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save details"}));
+  await waitFor(() => expect(mockApi.updateLibrary).toHaveBeenCalledWith(1, expect.objectContaining({
+    roots: [expect.objectContaining({path:"/media/family/photos", watch:true})]
+  })));
 });
 
 test("library tridot menu can delete a library after confirmation", async () => {
@@ -899,11 +946,17 @@ test("library browser renders folder entries", async () => {
   fireEvent.click(screen.getByRole("button", {name:"Missing only"}));
   await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:false}));
   fireEvent.click(screen.getByLabelText("Folder menu Photos"));
+  await waitFor(() => expect(mockApi.folderStats).toHaveBeenCalledWith(1, 20));
   await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toBeInTheDocument());
   expect(document.body.querySelector(".folder-stats-inline")!.textContent).toMatch(/Images:.*1.*Videos:.*1/);
   expect(screen.queryByRole("dialog", {name:"Folder statistics Photos"})).not.toBeInTheDocument();
   fireEvent.click(screen.getByLabelText("Folder menu Photos"));
   await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).not.toBeInTheDocument());
+  // Reopening must show the statistics line again (regression: it used to
+  // disappear because the cached result suppressed the toggle).
+  fireEvent.click(screen.getByLabelText("Folder menu Photos"));
+  expect(await screen.findByText("Images: 1 · Videos: 1", {exact:false})).toBeInTheDocument();
+  expect(document.body.querySelector(".folder-stats-inline")).toBeInTheDocument();
 });
 
 test("favorite view renders media and star removes item from that view", async () => {
@@ -919,6 +972,23 @@ test("favorite view renders media and star removes item from that view", async (
   expect(screen.queryByText("one.jpg")).not.toBeInTheDocument();
 });
 
+test("favorite view folder cards offer top-left selection like media cards", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:2}]);
+  mockApi.favoriteViewMedia.mockResolvedValue([
+    {id:55, name:"Trip", isFolder:true},
+    {id:100, name:"one.jpg", mimeType:"image/jpeg"}
+  ]);
+  render(<MemoryRouter initialEntries={["/favorites/30"]}><App/></MemoryRouter>);
+  const folderBox = await screen.findByRole("checkbox", {name:"Select Trip"});
+  const mediaBox = screen.getByRole("checkbox", {name:"Select one.jpg"});
+  expect(folderBox).toBeInTheDocument();
+  expect(mediaBox).toBeInTheDocument();
+  fireEvent.click(folderBox);
+  expect(folderBox).toBeChecked();
+  expect(screen.getByRole("checkbox", {name:"Select one.jpg"})).not.toBeChecked();
+});
+
 test("favorite view skips expanded media fetch until timeline mode opens", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
   mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:1}]);
@@ -930,6 +1000,15 @@ test("favorite view skips expanded media fetch until timeline mode opens", async
   fireEvent.change(screen.getByLabelText("Display mode"), {target:{value:"timeline"}});
   await waitFor(() => expect(mockApi.favoriteViewMediaFull).toHaveBeenCalledWith(30, true));
   await waitFor(() => expect(document.body.querySelector(".timeline-group-date")).toHaveTextContent("2024"));
+});
+
+test("favorite view menu shows backend-computed media statistics", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:3}]);
+  render(<MemoryRouter initialEntries={["/favorites"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Favorite view menu Best"));
+  await waitFor(() => expect(mockApi.favoriteViewStats).toHaveBeenCalledWith(30));
+  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toHaveTextContent("Images: 2 · Videos: 1"));
 });
 
 test("library media card shows favorite views with checkboxes and toggles membership", async () => {
@@ -971,7 +1050,7 @@ test("selected media items can be downloaded as a zip archive", async () => {
   fireEvent.click(await screen.findByLabelText("Select one.jpg"));
   fireEvent.click(screen.getByLabelText("Select two.jpg"));
   fireEvent.click(screen.getByRole("button", {name:"Download"}));
-  await waitFor(() => expect(mockApi.downloadArchive).toHaveBeenCalledWith([100, 101]));
+  await waitFor(() => expect(mockApi.downloadArchive).toHaveBeenCalledWith([100, 101], []));
 });
 
 test("selected media items can receive the same gps in bulk", async () => {
@@ -1417,6 +1496,7 @@ test("seeking a transcoded video requests a server-side start offset instead of 
   mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   const slider = await screen.findByLabelText("Seek video");
+  expect(screen.getByRole("button", {name:"Full screen"})).toBeInTheDocument();
   fireEvent.change(slider, {target:{value:"1234"}});
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
   expect(mockApi.playbackUrl).toHaveBeenLastCalledWith(100, expect.anything(), 1234);
@@ -1511,6 +1591,31 @@ test("map area selection fetches media inside the rectangle from the server and 
   expect(document.querySelector(".map-timeline-panel .timeline-grid")).not.toBeNull();
   fireEvent.click(screen.getByRole("button", {name:"Clear"}));
   expect(screen.queryByRole("complementary", {name:"Selected area"})).not.toBeInTheDocument();
+});
+
+test("map panel item links carry the exact selection for the viewer range", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const all = [
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10.001,20.001", takenAt:"2020-08-22T12:34:00Z"}
+  ];
+  mockApi.map.mockImplementation(async (_libraryId, _folderId, bounds) => bounds ? all : all);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  const button = await screen.findByRole("button", {name:"Select area"});
+  fireEvent.click(button);
+  const container = document.querySelector(".leaflet-container");
+  fireEvent.mouseDown(container!, {clientX:-200, clientY:-200});
+  fireEvent.mouseMove(container!, {clientX:200, clientY:200});
+  fireEvent.mouseUp(container!, {clientX:200, clientY:200});
+  const links = await screen.findAllByRole("link", {name:/Open .* in folder/});
+  expect(links.length).toBe(2);
+  const href = links[0].getAttribute("href") ?? "";
+  expect(href).toContain("/library/1/view/20?");
+  expect(href).toContain("list=media-library-map-selection");
+  const stored = JSON.parse(sessionStorage.getItem("media-library-map-selection") ?? "[]") as Array<{id:number}>;
+  expect(stored.map(entry => entry.id).sort()).toEqual([100, 101]);
 });
 
 test("map place search geocodes and orders results nearest first", async () => {

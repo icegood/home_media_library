@@ -319,8 +319,46 @@ func TestSQLiteLibraryStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Folders != 1 || stats.Files != 2 || stats.Images != 1 || stats.Videos != 1 {
+	if stats.Images != 1 || stats.Videos != 1 {
 		t.Fatalf("unexpected stats: %#v", stats)
+	}
+}
+
+func TestSQLiteLibraryRootWatch(t *testing.T) {
+	repository, _ := openSQLite(t)
+	rootPath := filepath.Join(t.TempDir(), "photos")
+	library := domain.Library{ID: domain.InvalidID, Name: "Watched", Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: rootPath, Watch: true},
+	}}
+	created, err := repository.CreateLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Library(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Roots) != 1 || !stored.Roots[0].Watch {
+		t.Fatalf("watch flag not persisted on create: %#v", stored.Roots)
+	}
+	watched, err := repository.WatchedRoots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(watched) != 1 || watched[0].LibraryID != created.ID || watched[0].Path == "" {
+		t.Fatalf("unexpected watched roots: %#v", watched)
+	}
+	// Turning the flag off must remove it from the watched set.
+	stored.Roots[0].Watch = false
+	if err := repository.UpdateLibrary(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	watched, err = repository.WatchedRoots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(watched) != 0 {
+		t.Fatalf("watch flag not cleared: %#v", watched)
 	}
 }
 

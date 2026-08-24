@@ -170,8 +170,8 @@ type loggingStmt struct {
 	query string
 }
 
-func (s *loggingStmt) Close() error              { return s.stmt.Close() }
-func (s *loggingStmt) NumInput() int             { return s.stmt.NumInput() }
+func (s *loggingStmt) Close() error  { return s.stmt.Close() }
+func (s *loggingStmt) NumInput() int { return s.stmt.NumInput() }
 func (s *loggingStmt) Exec(args []driver.Value) (driver.Result, error) {
 	return s.stmt.Exec(args)
 }

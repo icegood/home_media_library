@@ -113,18 +113,19 @@ func TestMIMETypeForPathIsResolvedFromDatabaseCaseInsensitively(t *testing.T) {
 	}
 }
 
-func TestCountMediaFilesMatchesSupportedFilesAndDeduplicatesRoots(t *testing.T) {
+func TestScanReportsPerRootTotalsForOverlappingRoots(t *testing.T) {
 	root := t.TempDir()
 	album := filepath.Join(root, "album")
 	if err := os.MkdirAll(filepath.Join(album, "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for path, data := range map[string][]byte{
+	files := map[string][]byte{
 		filepath.Join(album, "one.JPG"):         []byte("image"),
 		filepath.Join(album, "two.MPG"):         []byte("video"),
 		filepath.Join(album, "nested", "x.mov"): []byte("video"),
 		filepath.Join(album, "notes.txt"):       []byte("ignore"),
-	} {
+	}
+	for path, data := range files {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -132,17 +133,30 @@ func TestCountMediaFilesMatchesSupportedFilesAndDeduplicatesRoots(t *testing.T) 
 	if err := os.Mkdir(filepath.Join(album, "fake.JPG"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	subject := scanner.Scanner{Store: openSQLite(t)}
+	repository := openSQLite(t)
+	subject := scanner.Scanner{Store: repository}
+	total := 0
+	walkedRoots := 0
+	subject = subject.WithTotalReady(func(n int) { total += n; walkedRoots++ })
 	library := domain.Library{Roots: []domain.LibraryRoot{
 		{Path: album},
 		{Path: filepath.Join(album, "nested")},
 	}}
-	total, err := subject.CountMediaFiles(context.Background(), library)
-	if err != nil {
+	if err := subject.Scan(context.Background(), library); err != nil {
 		t.Fatal(err)
 	}
-	if total != 3 {
-		t.Fatalf("total = %d, want 3", total)
+	// Totals are reported per root, so the overlapping nested root reports
+	// x.mov twice; imports stay unique because media rows are keyed by path.
+	if total != 4 || walkedRoots != 2 {
+		t.Fatalf("total = %d across %d roots, want 4 across 2", total, walkedRoots)
+	}
+	for path := range files {
+		if path == filepath.Join(album, "notes.txt") {
+			continue
+		}
+		if _, err := repository.MediaByPath(context.Background(), path); err != nil {
+			t.Fatalf("%s not imported: %v", path, err)
+		}
 	}
 }
 

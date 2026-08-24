@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+# Playwright e2e runner for the web UI.
+#
+# PW_VERSION must match the @playwright/test version resolved in
+# web/package-lock.json (deploy/start.sh extracts it automatically) so that the
+# browser binaries bundled in the official image match the driver exactly.
+ARG PW_VERSION=1.62.1
+FROM mcr.microsoft.com/playwright:v${PW_VERSION}-noble
+
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY web/playwright.config.ts ./
+COPY web/e2e ./e2e
+
+ENTRYPOINT ["npx", "playwright", "test"]
+CMD ["--project=chromium"]

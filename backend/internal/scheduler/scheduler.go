@@ -62,6 +62,14 @@ func tick(ctx context.Context, storage Storage, runner Runner) {
 }
 
 func fire(ctx context.Context, storage Storage, runner Runner, task domain.ScheduledTask, now time.Time) error {
+	// Validate the schedule before starting anything: an unparsable cron would
+	// otherwise start the job and then fail before the task is marked as run,
+	// refiring it every minute forever.
+	next, err := Next(task.Cron, now)
+	if err != nil {
+		applog.Printf(applog.Error, "invalid cron %q on scheduled task %d (%s); disabling task", task.Cron, task.ID, task.Name)
+		return storage.DisableScheduledTask(ctx, task.ID)
+	}
 	switch task.TaskType {
 	case "scan", "thumbnail-create":
 		library, err := storage.Library(ctx, task.LibraryID)
@@ -78,18 +86,17 @@ func fire(ctx context.Context, storage Storage, runner Runner, task domain.Sched
 			err = runner.StartThumbnails(library)
 		}
 		if err != nil {
-			return err
+			// Record the attempt anyway: a persistently failing start must not
+			// refire the task every minute; the next attempt happens at the
+			// next cron slot.
+			applog.Printf(applog.Error, "scheduled task %d (%s) failed to start: %v", task.ID, task.Name, err)
 		}
 	case "vacuum":
 		if err := runner.StartVacuum(); err != nil {
-			return err
+			applog.Printf(applog.Error, "scheduled task %d (%s) failed to start: %v", task.ID, task.Name, err)
 		}
 	default:
 		applog.Printf(applog.Warn, "scheduled task %d has unknown type %q", task.ID, task.TaskType)
-	}
-	next, err := Next(task.Cron, now)
-	if err != nil {
-		return err
 	}
 	return storage.MarkScheduledTaskRun(ctx, task.ID, now, next)
 }

@@ -17,3 +17,6 @@ web/android/app/build/
 # Generated / installed dependencies
 web/node_modules/
 web/src/generated-version.ts
+
+# Playwright e2e artifacts (videos, traces, reports)
+web/test-output/

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -34,12 +35,13 @@ func (s *stubStorage) DisableScheduledTask(context.Context, int) error {
 }
 
 type stubRunner struct {
-	scans int
+	scans    int
+	startErr error
 }
 
 func (r *stubRunner) StartScan(domain.Library) error {
 	r.scans++
-	return nil
+	return r.startErr
 }
 
 func (r *stubRunner) StartThumbnails(domain.Library) error { return nil }
@@ -57,6 +59,39 @@ func TestFireDisablesTaskWhenLibraryMissing(t *testing.T) {
 	}
 	if storage.marked {
 		t.Fatal("missing-library task must not be marked as run")
+	}
+}
+
+func TestFireDisablesTaskOnInvalidCron(t *testing.T) {
+	storage := &stubStorage{}
+	runner := &stubRunner{}
+	task := domain.ScheduledTask{ID: 10, Name: "broken", TaskType: "scan", LibraryID: 1, Cron: "not-a-cron"}
+	if err := fire(context.Background(), storage, runner, task, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.scans != 0 {
+		t.Fatalf("job must not start on an invalid cron, started %d", runner.scans)
+	}
+	if !storage.disabled {
+		t.Fatal("task with invalid cron should be disabled")
+	}
+	if storage.marked {
+		t.Fatal("task with invalid cron must not be marked as run")
+	}
+}
+
+func TestFireMarksRunEvenWhenStartFails(t *testing.T) {
+	storage := &stubStorage{}
+	runner := &stubRunner{startErr: errors.New("boom")}
+	task := domain.ScheduledTask{ID: 11, Name: "scan", TaskType: "scan", LibraryID: 1, Cron: "0 3 * * *"}
+	if err := fire(context.Background(), storage, runner, task, time.Now().UTC()); err != nil {
+		t.Fatalf("start failure must not fail the tick: %v", err)
+	}
+	if runner.scans != 1 {
+		t.Fatalf("scan should have been attempted once, got %d", runner.scans)
+	}
+	if !storage.marked {
+		t.Fatal("task must be marked as run even when the start fails")
 	}
 }
 

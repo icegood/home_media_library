@@ -1,4 +1,4 @@
-import { createContext, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
@@ -70,6 +70,21 @@ export function App() {
   useEffect(() => {
     document.documentElement.style.fontSize = `${zoom}%`;
   }, [zoom]);
+  const overlayLocation = useLocation();
+  useEffect(() => {
+    const shell = shellRef.current;
+    const header = shell?.querySelector<HTMLElement>(":scope > header");
+    if (!shell || !header) return;
+    const sync = () => shell.style.setProperty("--top-overlay-h", `${Math.max(64, Math.round(header.getBoundingClientRect().height))}px`);
+    sync();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(sync);
+    ro.observe(header);
+    return () => ro.disconnect();
+  }, [ready, setupRequired, user?.id]);
+  useEffect(() => {
+    shellRef.current?.style.setProperty("--filters-h", "0px");
+  }, [overlayLocation.pathname]);
   useEffect(() => {
     if (!user) return;
     api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); }).catch(() => undefined);
@@ -468,7 +483,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   const [editing, setEditing] = useState<Library|null>(null);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
-  const [roots, setRoots] = useState([{path:""}]);
+  const [roots, setRoots] = useState([{path:"", watch:false}]);
   const [scanNow, setScanNow] = useState(true);
   const [pickingRoot, setPickingRoot] = useState<number|null>(null);
   const [filesystem, setFilesystem] = useState<FilesystemListing|null>(null);
@@ -477,7 +492,6 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [deleting, setDeleting] = useState<Library|null>(null);
-  const [statsLibrary, setStatsLibrary] = useState<Library|null>(null);
   const [refreshingThumbnails, setRefreshingThumbnails] = useState<{id:ID; name:string}|null>(null);
   useEffect(() => { loadLibraries(); }, []);
   async function loadLibraries() {
@@ -485,11 +499,11 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     setLibraries(items);
   }
   function startAdd() {
-    setAdding(true); setEditing(null); setName(""); setRoots([{path:""}]); setError(""); setNotice(""); setScanNow(true);
+    setAdding(true); setEditing(null); setName(""); setRoots([{path:"", watch:false}]); setError(""); setNotice(""); setScanNow(true);
   }
   function startEdit(library:Library) {
     setEditing(library); setAdding(false); setName(library.name);
-    setRoots((library.roots ?? []).map(root => ({path:root.path ?? ""})).concat((library.roots ?? []).length ? [] : [{path:""}]));
+    setRoots((library.roots ?? []).map(root => ({path:root.path ?? "", watch:Boolean(root.watch)})).concat((library.roots ?? []).length ? [] : [{path:"", watch:false}]));
     setError(""); setNotice(""); setScanNow(false);
   }
   function closeModal() {
@@ -502,7 +516,10 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     setRoots(current => current.map((root, i) => i === index ? {...root, path:value} : root));
   }
   function addRoot() {
-    setRoots(current => [...current, {path:""}]);
+    setRoots(current => [...current, {path:"", watch:false}]);
+  }
+  function updateRootWatch(index:number, watch:boolean) {
+    setRoots(current => current.map((root, i) => i === index ? {...root, watch} : root));
   }
   function removeRoot(index:number) {
     setRoots(current => current.filter((_, i) => i !== index));
@@ -554,7 +571,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   async function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true); setError("");
-    const cleanedRoots = roots.map(root => ({path:root.path.trim()})).filter(root => root.path);
+    const cleanedRoots = roots.map(root => ({path:root.path.trim(), watch:root.watch})).filter(root => root.path);
     try {
       const library = editing
         ? await api.updateLibrary(editing.id, {name:name.trim(), roots:cleanedRoots})
@@ -576,19 +593,17 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
       <div className="library-table">{libraries.map(library =>
         <div className="library-row admin-library" key={library.id}>
           <button className="library-glyph" aria-label={`Open library ${library.name}`} onClick={() => navigate(`/library/${library.id}`)}><span className="folder">▰</span></button>
-          <button type="button" className="library-name-button" onClick={() => setStatsLibrary(library)}>
+          <button type="button" className="library-name-button" onClick={() => navigate(`/library/${library.id}`)}>
             <strong>{library.name}</strong>
             <small>{(library.roots ?? []).map(root => rootLabel(root.path)).join(", ") || "No roots"}</small>
           </button>
-          <details className="item-menu">
-            <summary aria-label={`Library menu ${library.name}`}>⋮</summary>
-            <div className="item-submenu" role="menu" onClick={closeParentDetails}>
-              <button type="button" role="menuitem" disabled={busy} onClick={() => startEdit(library)}>Rename</button>
-              <button type="button" role="menuitem" disabled={busy} onClick={() => libraryAction("refresh", library)}>Refresh content</button>
-              <button type="button" role="menuitem" disabled={busy} onClick={() => setRefreshingThumbnails({id:library.id, name:library.name})}>Refresh thumbnails…</button>
-              <button type="button" role="menuitem" className="danger" disabled={busy} onClick={() => startDelete(library)}>Delete</button>
-            </div>
-          </details>
+          <CardMenu ariaLabel={`Library menu ${library.name}`}>
+            <InlineStatsLine load={() => api.libraryStats(library.id)}/>
+            <button type="button" role="menuitem" disabled={busy} onClick={() => startEdit(library)}>Rename</button>
+            <button type="button" role="menuitem" disabled={busy} onClick={() => libraryAction("refresh", library)}>Refresh content</button>
+            <button type="button" role="menuitem" disabled={busy} onClick={() => setRefreshingThumbnails({id:library.id, name:library.name})}>Refresh thumbnails…</button>
+            <button type="button" role="menuitem" className="danger" disabled={busy} onClick={() => startDelete(library)}>Delete</button>
+          </CardMenu>
         </div>)}
         {libraries.length === 0 && <div className="empty-state"><h2>No libraries yet</h2><p>Use the Add button above to create the first library.</p></div>}
       </div>
@@ -596,7 +611,6 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     {activeSection === "users" && <><LoginTimeoutField/><UserManagement/></>}
     {activeSection === "logs" && <><AdminSettings section="logs"/><LogViewer/></>} 
     {refreshingThumbnails && <ThumbnailRefreshModal title={refreshingThumbnails.name} busy={busy} error={error} onClose={() => setRefreshingThumbnails(null)} onRefresh={recreateExisting => libraryAction("thumbs", {id:refreshingThumbnails.id, name:refreshingThumbnails.name, roots:[]}, {recreateExisting})}/>}
-    {statsLibrary && <LibraryStatsModal library={statsLibrary} onClose={() => setStatsLibrary(null)}/>}
     {deleting && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Delete library ${deleting.name}`}>
       <div className="card settings modal">
         <div className="panel-title"><h2>Delete library</h2><button type="button" className="secondary" onClick={() => setDeleting(null)}>Close</button></div>
@@ -616,7 +630,10 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
         <div className="root-list">{roots.map((root, index) =>
           <div className="root-row" key={index}>
             <label>Root path<input value={root.path} onChange={event => updateRoot(index, event.target.value)} placeholder="family/photos" required/></label>
-            <button type="button" className="secondary" onClick={() => openPicker(index)}>Browse</button>
+            <div className="root-row-actions">
+              <button type="button" className="secondary" onClick={() => openPicker(index)}>Browse</button>
+              <label className="check"><input type="checkbox" checked={root.watch} onChange={event => updateRootWatch(index, event.target.checked)}/> Watch for changes</label>
+            </div>
             {roots.length > 1 && <button type="button" className="secondary" onClick={() => removeRoot(index)}>Remove</button>}
           </div>)}</div>
         <button type="button" className="secondary" onClick={addRoot}>Add root folder</button>
@@ -1640,40 +1657,61 @@ function Libraries() {
   )}</div></main>;
 }
 
-function LibraryTile({item}:{item:Library}) {
-  const [showStats, setShowStats] = useState(false);
-  return <div className="card library library-tile">
-    <Link className="folder-thumb-button" aria-label={`Open library ${item.name}`} to={`/library/${item.id}`}><span className="folder">▰</span></Link>
-    <button type="button" className="folder-title-button" onClick={() => setShowStats(true)}><h2>{item.name}</h2></button>
-    {showStats && <LibraryStatsModal library={item} onClose={() => setShowStats(false)}/>}
+// Statistics line inside a popup menu, computed by a backend recursive query.
+// Menus mount their content only while open, so every open recalculates.
+function InlineStatsLine({load}:{load:()=>Promise<{images:number; videos:number}>}) {
+  const [counts, setCounts] = useState<{images:number; videos:number}|null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    load().then(result => { if (!cancelled) setCounts(result); })
+      .catch(cause => { if (!cancelled) setError((cause as Error).message); });
+    return () => { cancelled = true; };
+  }, []);
+  if (error) return <span className="error">{error}</span>;
+  if (!counts) return <span className="muted">Loading statistics…</span>;
+  return <span className="folder-stats-inline">Images: {counts.images} · Videos: {counts.videos}</span>;
+}
+
+// Shared ⋮ dropdown used by library tiles, folder entries, admin library rows
+// and favorite-view rows: one trigger style, one portal popup, all themes.
+function CardMenu({ariaLabel, children}:{ariaLabel:string; children:ReactNode}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState({top:0, right:20});
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const menuPopupRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const btn = menuRef.current;
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      setMenuPos({top: r.bottom + 4, right: window.innerWidth - r.right});
+    }
+    function handle(e:Event) {
+      if (menuPopupRef.current && !menuPopupRef.current.contains(e.target as Node) && menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [menuOpen]);
+  return <div className="item-menu folder-menu">
+    <button type="button" className="menu-summary" aria-label={ariaLabel} ref={menuRef} onClick={() => setMenuOpen(open => !open)}><span className="menu-dots"/></button>
+    {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef} style={{top: menuPos.top, right: menuPos.right}}
+      onClick={event => { if ((event.target as HTMLElement).closest('button[role="menuitem"]')) setMenuOpen(false); }}>
+      {children}
+    </div>, document.body)}
   </div>;
 }
 
-function LibraryStatsModal({library, onClose}:{library:{id:ID; name:string}; onClose:()=>void}) {
-  const [stats, setStats] = useState<Library["stats"]|null>(null);
-  const [statsError, setStatsError] = useState("");
-  const [calculating, setCalculating] = useState(true);
-  useEffect(() => {
-    let cancelled = false;
-    setCalculating(true); setStatsError("");
-    api.libraryStats(library.id)
-      .then(result => { if (!cancelled) setStats(result); })
-      .catch(cause => { if (!cancelled) setStatsError((cause as Error).message); })
-      .finally(() => { if (!cancelled) setCalculating(false); });
-    return () => { cancelled = true; };
-  }, [library.id]);
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Library statistics ${library.name}`} onClick={event => closeOnBackdropClick(event, onClose)}>
-    <div className="card settings modal folder-stats">
-      <div className="panel-title"><h2>{library.name}</h2><button type="button" onClick={onClose}>Close</button></div>
-      {calculating && <p className="muted">Calculating…</p>}
-      {statsError && <p className="error">{statsError}</p>}
-      {stats && <div className="stats-grid">
-        <div><strong>{stats.folders}</strong><span>Folders</span></div>
-        <div><strong>{stats.files}</strong><span>Files</span></div>
-        <div><strong>{stats.images}</strong><span>Images</span></div>
-        <div><strong>{stats.videos}</strong><span>Videos</span></div>
-      </div>}
-    </div>
+function LibraryTile({item}:{item:Library}) {
+  const navigate = useNavigate();
+  return <div className="card library library-tile">
+    <Link className="folder-thumb-button" aria-label={`Open library ${item.name}`} to={`/library/${item.id}`}><span className="folder">▰</span></Link>
+    <button type="button" className="folder-title-button" onClick={() => navigate(`/library/${item.id}`)}><h2>{item.name}</h2></button>
+    <CardMenu ariaLabel={`Library menu ${item.name}`}>
+      <InlineStatsLine load={() => api.libraryStats(item.id)}/>
+    </CardMenu>
   </div>;
 }
 
@@ -1717,6 +1755,7 @@ function Browser() {
   const [view, setView] = useState<"tile"|"list">("tile");
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
   const streamChunkSize = useContext(StreamChunkSizeCtx);
+  useSyncBrowserBarMetrics();
   const {entries, setEntries, done:entriesDone, loading:entriesLoading, loadMore} = useBufferedFolderEntries(libraryId, currentFolderId, kind !== "all", streamChunkSize);
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
@@ -1750,14 +1789,17 @@ function Browser() {
     </select>
     <span className="bar-sep"/>
     <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
-    <VirtualEntries entries={entries} view={view} libraryId={libraryId} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone}/></main>;
+    <VirtualEntries entries={entries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone}/></main>;
 }
 
 function LibraryTimeline() {
   const {id="", folderId} = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const libraryId = Number(id);
   const currentFolderId = folderId == null ? null : Number(folderId);
+  const favParam = new URLSearchParams(location.search).get("fav");
+  useSyncBrowserBarMetrics();
   const [items, setItems] = useState<Media[]>([]);
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
   const [sort, setSort] = useState<"desc"|"asc">("desc");
@@ -1805,7 +1847,7 @@ function LibraryTimeline() {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind}}/>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(favParam ? {fav:favParam} : {})}}/>
           )}</div>
         </div>
       )}</div>}
@@ -1873,19 +1915,17 @@ function FavoriteViewRow({view,onChange}:{view:FavoriteView; onChange:()=>void})
   return <div className="library-row">
     {renaming ? <form className="library-main inline-edit" onSubmit={saveRename}><label>View name<input value={name} onChange={event => setName(event.target.value)} required/></label><button disabled={busy}>Save</button><button type="button" className="secondary" onClick={() => setRenaming(false)}>Cancel</button></form> :
       <Link className="library-main" to={`/favorites/${view.id}`}><span className="folder">★</span><span><strong>{view.name}</strong><small>{view.count} items</small></span></Link>}
-    <details className="item-menu">
-      <summary aria-label={`Favorite view menu ${view.name}`}>⋮</summary>
-      <div className="item-submenu" role="menu" onClick={closeParentDetails}>
-        <button type="button" role="menuitem" disabled={busy} onClick={() => setRenaming(true)}>Rename</button>
-        <button type="button" role="menuitem" className="danger" disabled={busy} onClick={remove}>Delete</button>
-      </div>
-    </details>
+    <CardMenu ariaLabel={`Favorite view menu ${view.name}`}>
+      <InlineStatsLine load={() => api.favoriteViewStats(view.id)}/>
+      <button type="button" role="menuitem" disabled={busy} onClick={() => setRenaming(true)}>Rename</button>
+      <button type="button" role="menuitem" className="danger" disabled={busy} onClick={remove}>Delete</button>
+    </CardMenu>
   </div>;
 }
 
 type FavoriteItem = {id:ID; name:string; mimeType?:string; isFolder?:boolean};
 
-function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove}:{id:ID; name:string; view:"tile"|"list"; favoriteViewId?:ID; onRemove?:(id:ID)=>void}) {
+function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected, onToggleSelected}:{id:ID; name:string; view:"tile"|"list"; favoriteViewId?:ID; onRemove?:(id:ID)=>void; selected?:boolean; onToggleSelected?:(id:ID)=>void}) {
   const [busy, setBusy] = useState(false);
   async function remove(event:MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -1931,7 +1971,9 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove}:{id:ID; n
     }
   }
   return <article className={`card media folder-card ${view}`} onClick={event => { if (event.button === 1 || event.ctrlKey || event.metaKey) void openFolderNewTab(event); else void openFolder(); }} onAuxClick={openFolderNewTab}>
-
+    {onToggleSelected && <label className="select-media" aria-label={`Select ${name}`} onClick={event => event.stopPropagation()}>
+      <input type="checkbox" checked={Boolean(selected)} onChange={() => onToggleSelected(id)}/>
+    </label>}
     {view === "tile" && <div className="thumb-wrap"><FolderCover folderId={id}/></div>}
     <div className="media-text"><strong>{name}</strong></div>
     {favoriteViewId != null && <button type="button" className="favorite-button active" aria-label={`Remove ${name} from this favorite view`} disabled={busy} onClick={remove}>★</button>}
@@ -1945,37 +1987,42 @@ function FavoriteViewPage() {
   const [mediaItems, setMediaItems] = useState<Media[]>([]);
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const mediaLoadingRef = useRef(false);
+  const mediaReqRef = useRef(0);
   const [view, setView] = useState<"tile"|"list">("tile");
   const [displayMode, setDisplayMode] = useState<"folders"|"timeline"|"map">("folders");
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   const [views, setViews] = useState<FavoriteView[]>([]);
   const [selected, setSelected] = useState<ID[]>([]);
+  const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  useSyncBrowserBarMetrics();
   useEffect(() => {
     if (!Number.isFinite(favoriteViewId)) return;
+    const req = ++mediaReqRef.current;
     setLoaded(false);
     setMediaItems([]);
     setMediaLoaded(false);
     mediaLoadingRef.current = false;
     setError("");
     api.favoriteViewMedia(favoriteViewId)
-      .then(itemsData => { setItems(itemsData); setLoaded(true); })
-      .catch(cause => setError((cause as Error).message));
+      .then(itemsData => { if (req === mediaReqRef.current) { setItems(itemsData); setLoaded(true); } })
+      .catch(cause => { if (req === mediaReqRef.current) setError((cause as Error).message); });
   }, [favoriteViewId]);
   useEffect(() => {
     function ensureMedia() {
-      if (!Number.isFinite(favoriteViewId) || mediaLoadingRef.current || !displayMode) return;
-      if (displayMode !== "timeline" || mediaLoaded) return;
+      if (!Number.isFinite(favoriteViewId) || mediaLoadingRef.current) return;
+      if (mediaLoaded || (displayMode !== "timeline" && selected.length === 0 && selectedFolders.length === 0)) return;
+      const req = ++mediaReqRef.current;
       mediaLoadingRef.current = true;
       api.favoriteViewMediaFull(favoriteViewId, true)
-        .then(mediaData => { setMediaItems(mediaData); setMediaLoaded(true); })
-        .catch(cause => setError((cause as Error).message))
-        .finally(() => { mediaLoadingRef.current = false; });
+        .then(mediaData => { if (req === mediaReqRef.current) { setMediaItems(mediaData); setMediaLoaded(true); } })
+        .catch(cause => { if (req === mediaReqRef.current) setError((cause as Error).message); })
+        .finally(() => { if (req === mediaReqRef.current) mediaLoadingRef.current = false; });
     }
     ensureMedia();
-  }, [favoriteViewId, displayMode, mediaLoaded]);
+  }, [favoriteViewId, displayMode, mediaLoaded, selected, selectedFolders]);
   useEffect(() => { api.favoriteViews().then(setViews).catch(() => undefined); }, []);
   const selectedView = views.find(v => v.id === Number(viewId));
   const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (kind === "image" ? i.mimeType?.startsWith("image/") : i.mimeType?.startsWith("video/")));
@@ -1990,6 +2037,7 @@ function FavoriteViewPage() {
       return p ? {...item, ...(p.takenAt != null ? {takenAt:p.takenAt} : {}), ...(p.gps != null ? {gps:p.gps} : {})} : item;
     }));
     setSelected([]);
+    setSelectedFolders([]);
   }
   return <main className="browser-page">
     <div className="browser-bar"><div className="browser-bar-inner">
@@ -2017,7 +2065,7 @@ function FavoriteViewPage() {
         </select>
       </>}
       <span className="bar-sep"/>
-      <BulkGPSBar items={mediaItems} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
+      <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
     </div></div>
     {error && <p className="error">{error}</p>}
     {!loaded && <div className="empty-state"><p>Loading…</p></div>}
@@ -2025,7 +2073,7 @@ function FavoriteViewPage() {
       {orderedItems.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
         <div className={view === "tile" ? "grid" : "list-view"}>{orderedItems.map(item =>
           item.isFolder
-            ? <FavoriteFolderCard key={`f-${item.id}`} id={item.id} name={item.name} view={view} favoriteViewId={favoriteViewId} onRemove={removedId => setItems(current => current.filter(i => i.id !== removedId || !i.isFolder))}/>
+            ? <FavoriteFolderCard key={`f-${item.id}`} id={item.id} name={item.name} view={view} favoriteViewId={favoriteViewId} onRemove={removedId => setItems(current => current.filter(i => i.id !== removedId || !i.isFolder))} selected={selectedFolders.includes(item.id)} onToggleSelected={toggleSelected(setSelectedFolders)}/>
             : <MediaCard key={item.id} item={{id:item.id, name:item.name, mimeType:item.mimeType??"", favorite:true} as Media} view={view} favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} onFavoriteChange={updated => setItems(current => current.filter(i => i.id !== updated.id || i.isFolder))}/>
         )}</div>}
     </>}
@@ -2064,21 +2112,10 @@ function FavoriteMediaViewerPage() {
   useEffect(() => {
     if (!Number.isFinite(favoriteViewId)) return;
     let cancelled = false;
-    api.favoriteViewMedia(favoriteViewId, true)
-      .then(async raw => {
-        if (cancelled) return;
-        // Ensure we have full media metadata for playback — favorite API may return minimal records
-        const mediaOnly = raw.filter((i:any) => !i.isFolder) as {id:ID; name:string; mimeType?:string}[];
-        const full = await Promise.all(mediaOnly.map(async it => {
-          try {
-            return await api.media(it.id);
-          } catch {
-            // Fallback to minimal shape so UI can still render — playback may still fail but we tried
-            return { id: it.id, name: it.name, mimeType: it.mimeType ?? "", favorite: true } as Media;
-          }
-        }));
-        if (!cancelled) setItems(full);
-      })
+    // full=true&expand=true returns complete Media rows (metadata included) for
+    // every direct mention and folder member in one request — no per-item fetches.
+    api.favoriteViewMediaFull(favoriteViewId, true)
+      .then(raw => { if (!cancelled) setItems(raw ?? []); })
       .catch(() => { if (!cancelled) setItems([]); });
     return () => { cancelled = true; };
   }, [favoriteViewId]);
@@ -2164,10 +2201,10 @@ function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdate
     }
   }
   async function download() {
-    if (selectedIds.length === 0) { setError("Select items to download"); return; }
+    if (selectedIds.length === 0 && selectedFolders.length === 0) { setError("Select items to download"); return; }
     setDownloadBusy(true); setError("");
     try {
-      await api.downloadArchive(selectedIds);
+      await api.downloadArchive(selectedIds, selectedFolders);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -2183,7 +2220,7 @@ function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdate
         <input className="shift-input" value={shiftMinutes} onChange={event => setShiftMinutes(event.target.value)} placeholder="m" type="number" step="any" max="59"/>
         <button type="button" className="secondary" disabled={shiftBusy || !hasSelection} onClick={shift}>{shiftBusy ? "Shifting…" : "Apply"}</button>
       </div>
-      <button type="button" className="secondary" disabled={downloadBusy || selectedIds.length === 0} onClick={download}>{downloadBusy ? "Zipping…" : "Download"}</button>
+      <button type="button" className="secondary" disabled={downloadBusy || (selectedIds.length === 0 && selectedFolders.length === 0)} onClick={download}>{downloadBusy ? "Zipping…" : "Download"}</button>
       <span className="bar-sep"/>
       <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>selected: {selectedIds.length}{selectedFolders.length ? ` (${selectedFolders.length} folders)` : ""}</span></div>
     {error && <small className="error">{error}</small>}
@@ -2297,6 +2334,18 @@ export function normalizeStreamChunkSize(value:number) {
   return Number.isFinite(value) && value >= 1 ? Math.min(Math.round(value), 10000) : DEFAULT_STREAM_CHUNK_SIZE;
 }
 
+// Keeps the fixed filters bar and the main-menu handle stacked below the header:
+// publishes the natural bar height as --filters-h on the shell element.
+export function useSyncBrowserBarMetrics() {
+  useEffect(() => {
+    const shell = document.querySelector<HTMLElement>(".shell");
+    const inner = shell?.querySelector<HTMLElement>(".browser-bar-inner");
+    if (!shell) return;
+    if (!inner) { shell.style.setProperty("--filters-h", "0px"); return; }
+    shell.style.setProperty("--filters-h", `${Math.round(inner.getBoundingClientRect().height)}px`);
+  });
+}
+
 export function useBufferedFolderEntries(libraryId:number, folderId:number|null, exhaustive:boolean, chunkSizeRaw:number) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [done, setDone] = useState(false);
@@ -2341,7 +2390,7 @@ export function useBufferedFolderEntries(libraryId:number, folderId:number|null,
   return {entries, setEntries, done, loading, loadMore};
 }
 
-function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onLoadMore,moreLoading,moreDone}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean}) {
+function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onLoadMore,moreLoading,moreDone}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; itemNav?:ItemNav; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean}) {
   const sentinelRef = useRef<HTMLDivElement|null>(null);
   useEffect(() => {
     if (moreDone || !onLoadMore) return;
@@ -2359,7 +2408,7 @@ function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,on
     <div className={view === "tile" ? "grid" : "list-view"}>
       {entries.map(entry => entry.type === "folder" ?
         <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected}/> :
-        <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date"/>
+        <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} nav={itemNav} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date"/>
       )}
     </div>
     {!moreDone && <div ref={sentinelRef} className="load-more">{moreLoading ? <span>Loading…</span> : null}</div>}
@@ -2367,55 +2416,15 @@ function VirtualEntries({entries,view,libraryId,selectedIds,selectedFolderIds,on
 }
 
 function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFolderIds, onToggleFolderSelected}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void; selectedFolderIds?:ID[]; onToggleFolderSelected?:(id:ID)=>void}) {
-  const [stats, setStats] = useState<{folders:number; media:number; images:number; videos:number}|null>(null);
-  const [statsError, setStatsError] = useState("");
-  const [calculating, setCalculating] = useState(false);
+  const location = useLocation();
+  const favParam = new URLSearchParams(location.search).get("fav");
   const [refreshing, setRefreshing] = useState(false);
   const [thumbnailOptionsOpen, setThumbnailOptionsOpen] = useState(false);
   const [thumbnailError, setThumbnailError] = useState("");
-  const [statsOpen, setStatsOpen] = useState(false);
   const [metadataOptionsOpen, setMetadataOptionsOpen] = useState(false);
   const [metadataError, setMetadataError] = useState("");
   const [favoriteChooserOpen, setFavoriteChooserOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({top:0, right:20});
-  const menuRef = useRef<HTMLButtonElement>(null);
-  const menuPopupRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const btn = menuRef.current;
-    if (btn) {
-      const r = btn.getBoundingClientRect();
-      setMenuPos({top: r.bottom + 4, right: window.innerWidth - r.right});
-    }
-    function handle(e: Event) {
-      if (menuPopupRef.current && !menuPopupRef.current.contains(e.target as Node) && menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false); setStatsOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handle);
-    return () => document.removeEventListener("mousedown", handle);
-  }, [menuOpen]);
   const folderSelected = selectedFolderIds?.includes(entry.id) ?? false;
-  async function toggleStats() {
-    setStatsOpen(open => !open);
-    if (statsOpen || stats) return;
-    setStats(null); setStatsError(""); setCalculating(true);
-    try {
-      const data = await api.folderEntries(libraryId, entry.id);
-      const children = data.entries;
-      setStats({
-        folders: children.filter(child => child.type === "folder").length,
-        media: children.filter(child => child.type === "media").length,
-        images: children.filter(child => child.media?.kind === "image").length,
-        videos: children.filter(child => child.media?.kind === "video").length,
-      });
-    } catch (cause) {
-      setStatsError((cause as Error).message);
-    } finally {
-      setCalculating(false);
-    }
-  }
   async function refreshFolder() {
     setRefreshing(true);
     try {
@@ -2446,7 +2455,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
       setRefreshing(false);
     }
   }
-  const folderUrl = `/library/${libraryId}/folder/${entry.id}`;
+  const folderUrl = `/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`;
   function handleOpen(event:React.MouseEvent) {
     if (event.button === 1 || event.ctrlKey || event.metaKey) { window.open(folderUrl, "_blank"); event.preventDefault(); return; }
     onOpenFolder(entry);
@@ -2460,20 +2469,14 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
       {view === "list" && <span className="folder">▰</span>}
     </button>
     <button type="button" className="folder-title-button" onClick={handleOpen} onAuxClick={event => { if (event.button === 1) { window.open(folderUrl, "_blank"); event.preventDefault(); } }}><h2>{entry.name}</h2></button>
-    <div className="item-menu folder-menu">
-      <button type="button" className="menu-summary" aria-label={`Folder menu ${entry.name}`} ref={menuRef} onClick={() => { if (!menuOpen) { setMenuOpen(true); if (!stats && !calculating) toggleStats(); } else { setMenuOpen(false); setStatsOpen(false); } }}><span className="menu-dots"/></button>
-      {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef} style={{top: menuPos.top, right: menuPos.right}}>
-        <button type="button" role="menuitem" disabled={refreshing} onClick={() => { setMenuOpen(false); refreshFolder(); }}>{refreshing ? "Refreshing…" : "Refresh items"}</button>
-        <button type="button" role="menuitem" disabled={refreshing} onClick={() => { setMenuOpen(false); setThumbnailOptionsOpen(true); }}>Refresh thumbnails…</button>
-        <button type="button" role="menuitem" disabled={refreshing} onClick={() => { setMenuOpen(false); setMetadataOptionsOpen(true); }}>Refresh metadata…</button>
-        <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setFavoriteChooserOpen(true); }}>Add to favorites…</button>
-        {statsOpen && <>
-          {calculating && <span className="muted">Loading statistics…</span>}
-          {statsError && <span className="error">{statsError}</span>}
-          {stats && <span className="folder-stats-inline">Images: {stats.images} · Videos: {stats.videos}</span>}
-        </>}
-      </div>, document.body)}
-    </div>
+    <CardMenu ariaLabel={`Folder menu ${entry.name}`}>
+      <button type="button" role="menuitem" disabled={refreshing} onClick={() => refreshFolder()}>{refreshing ? "Refreshing…" : "Refresh items"}</button>
+      <button type="button" role="menuitem" disabled={refreshing} onClick={() => setThumbnailOptionsOpen(true)}>Refresh thumbnails…</button>
+      <button type="button" role="menuitem" disabled={refreshing} onClick={() => setMetadataOptionsOpen(true)}>Refresh metadata…</button>
+      <button type="button" role="menuitem" onClick={() => setFavoriteChooserOpen(true)}>Add to favorites…</button>
+      <button type="button" role="menuitem" onClick={() => { void api.downloadArchive([], [entry.id]).catch(cause => window.alert(`ZIP download failed: ${(cause as Error).message}`)); }}>Download as ZIP</button>
+      <InlineStatsLine load={() => api.folderStats(libraryId, entry.id)}/>
+    </CardMenu>
     {favoriteChooserOpen && createPortal(<FolderFavoriteViewChooser folderId={entry.id} folderName={entry.name} onChange={() => {}} onClose={() => setFavoriteChooserOpen(false)}/>, document.body)}
     {thumbnailOptionsOpen && createPortal(<ThumbnailRefreshModal title={entry.name} busy={refreshing} error={thumbnailError} onClose={() => setThumbnailOptionsOpen(false)} onRefresh={refreshFolderThumbnails}/>, document.body)}
     {metadataOptionsOpen && createPortal(<MetadataRefreshModal title={entry.name} busy={refreshing} error={metadataError} onClose={() => setMetadataOptionsOpen(false)} onRefresh={refreshMetadata}/>, document.body)}
@@ -2783,9 +2786,17 @@ function MediaViewerPage() {
     ? {west:Number(w), south:Number(s), east:Number(e), north:Number(n)}
     : null;
   const [scopedMedia, setScopedMedia] = useState<Media[]|null>(null);
+  const listParam = query.get("list");
   useEffect(() => {
     let cancelled = false;
-    if (bounds && Number.isFinite(bounds.west)) {
+    if (listParam) {
+      try {
+        const stored = sessionStorage.getItem(listParam);
+        setScopedMedia(stored ? JSON.parse(stored) as Media[] : null);
+      } catch {
+        setScopedMedia(null);
+      }
+    } else if (bounds && Number.isFinite(bounds.west)) {
       api.map(libraryId, undefined, bounds).then(items => {
         if (!cancelled) setScopedMedia(items.filter(m => m.libraryId === libraryId));
       }).catch(() => { if (!cancelled) setScopedMedia(null); });
@@ -2799,7 +2810,7 @@ function MediaViewerPage() {
       setScopedMedia(null);
     }
     return () => { cancelled = true; };
-  }, [libraryId, rootParam, kindParam, w, s, e, n]);
+  }, [libraryId, rootParam, kindParam, listParam, w, s, e, n]);
   const folderMedia = useMemo(() => {
     const base = scopedMedia ?? items.filter(media => media.folderId === routeFolderId);
     if (sortParam === "name") return base;
@@ -2813,7 +2824,13 @@ function MediaViewerPage() {
     if (index >= 0 || !Number.isFinite(currentMediaId)) return;
     api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null));
   }, [currentMediaId, index]);
-  const nav:ItemNav = useMemo(() => bounds && Number.isFinite(bounds.west) ? {bounds} : rootParam != null ? {root:rootParam, kind: kindParam === "image" || kindParam === "video" ? kindParam : "all"} : {}, [bounds, rootParam, kindParam]);
+  const nav:ItemNav = useMemo(() => {
+    const fav = query.get("fav") ?? undefined;
+    if (listParam) return {list:listParam, fav};
+    if (bounds && Number.isFinite(bounds.west)) return {bounds, fav};
+    if (rootParam != null) return {root:rootParam, kind: kindParam === "image" || kindParam === "video" ? kindParam : "all", fav};
+    return fav ? {fav} : {};
+  }, [bounds, rootParam, kindParam, listParam, location.search]);
   function go(media:Media|null) {
     if (media) navigate(libraryItemURL(libraryId, media, sortParam, nav));
   }
@@ -2842,6 +2859,8 @@ export interface ItemNav {
   root?:string;
   kind?:"all"|"image"|"video";
   bounds?:{west:number; south:number; east:number; north:number};
+  list?:string;
+  fav?:string;
 }
 
 function libraryItemURL(libraryId:ID, item:Media, sort:string = "name", nav?:ItemNav) {
@@ -2849,6 +2868,8 @@ function libraryItemURL(libraryId:ID, item:Media, sort:string = "name", nav?:Ite
   if (sort !== "name") query.set("sort", sort);
   if (nav?.root != null) query.set("root", nav.root);
   if (nav?.kind != null && nav.kind !== "all") query.set("kind", nav.kind);
+  if (nav?.fav) query.set("fav", String(nav.fav));
+  if (nav?.list) query.set("list", nav.list);
   if (nav?.bounds) {
     query.set("w", String(nav.bounds.west));
     query.set("s", String(nav.bounds.south));
@@ -2867,6 +2888,7 @@ function isEditableTarget(target:EventTarget|null) {
 
 function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{item:Media; favoriteViewId?:ID; infoOpen:boolean; previous:Media|null; next:Media|null; onGo:(media:Media|null)=>void; onToggleInfo:()=>void}) {
   const supported = supportedVideoCodecs();
+  const mediaRef = useRef<HTMLDivElement|null>(null);
   const [imageZoom, setImageZoom] = useState(1);
   const [imagePan, setImagePan] = useState({x:0, y:0});
   const [drag, setDrag] = useState<{pointerId:number; startX:number; startY:number; originX:number; originY:number}|null>(null);
@@ -2901,8 +2923,24 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
     }
     setDrag(null);
   }
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    function syncFullscreen() { setIsFullscreen(Boolean(document.fullscreenElement)); }
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+  async function toggleFullscreen() {
+    const el = mediaRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen?.();
+      else await el.requestFullscreen?.();
+    } catch {
+      // Fullscreen can be denied (permissions/iframe) — ignore.
+    }
+  }
   return <div className={`viewer-stage ${infoOpen ? "info-open" : ""}`} aria-label={item.name}>
-    <div className="viewer-media" onWheel={onImageWheel}>
+    <div className="viewer-media" ref={mediaRef} onWheel={onImageWheel}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
@@ -2914,6 +2952,9 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
         <button type="button" aria-label="Zoom out" disabled={imageZoom <= 0.5} onClick={() => adjustImageZoom(-0.25)}>−</button>
         <button type="button" aria-label="Reset zoom" disabled={imageZoom === 1} onClick={() => setImageZoom(1)}>{Math.round(imageZoom * 100)}%</button>
         <button type="button" aria-label="Zoom in" disabled={imageZoom >= 5} onClick={() => adjustImageZoom(0.25)}>+</button>
+      </div>}
+      {item.kind === "video" && <div className="fullscreen-controls">
+        <button type="button" aria-label={isFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen ? "⤡" : "⛶"}</button>
       </div>}
     </div>
     <button type="button" className="info-handle" aria-label={infoOpen ? "Hide info panel" : "Show info panel"} onClick={onToggleInfo}>{infoOpen ? ">>" : "<<"}</button>
@@ -3304,6 +3345,7 @@ function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] 
 
 function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
   const navigate = useNavigate();
+  useSyncBrowserBarMetrics();
   const [items, setItems] = useState<MapMedia[]>([]);
   const [pickedGPS, setPickedGPS] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
@@ -3328,11 +3370,17 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
       folderParam ? Number(folderParam) : undefined,
       {west:southWest.lng, south:southWest.lat, east:northEast.lng, north:northEast.lat},
       favoriteParam ? Number(favoriteParam) : undefined
-    ).then(selected => setArea({bounds, items: sortMedia(selected, "desc")}));
+    ).then(selected => {
+      const sortedItems = sortMedia(selected, "desc");
+      storeMapSelection(sortedItems);
+      setArea({bounds, items: sortedItems});
+    });
   }
   function selectCluster(cluster:MapMedia[]) {
     const points = cluster.map(item => parseGPS(item.gps)).filter((point): point is [number,number] => point !== null);
-    setArea({bounds: points.length > 0 ? L.latLngBounds(points) : L.latLngBounds([0,0],[0,0]), items: sortMedia(cluster, "desc")});
+    const sortedItems = sortMedia(cluster, "desc");
+    storeMapSelection(sortedItems);
+    setArea({bounds: points.length > 0 ? L.latLngBounds(points) : L.latLngBounds([0,0],[0,0]), items: sortedItems});
   }
   return <main className={`map-page ${area ? "panel-open" : ""}`} aria-label="Media map">
       <div className="browser-bar"><div className="browser-bar-inner">
@@ -3363,9 +3411,22 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
+      {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
     </div>
-    {area && <MapAreaPanel items={area.items} bounds={{west:area.bounds.getWest(), south:area.bounds.getSouth(), east:area.bounds.getEast(), north:area.bounds.getNorth()}} onClear={() => setArea(null)}/>}
   </main>;
+}
+
+// The map selection is handed to the media viewer verbatim through
+// sessionStorage: clicking an item in the results panel must page through
+// exactly the selected range, in the selected order.
+export const MAP_SELECTION_KEY = "media-library-map-selection";
+
+function storeMapSelection(items:MapMedia[]) {
+  try {
+    sessionStorage.setItem(MAP_SELECTION_KEY, JSON.stringify(items));
+  } catch {
+    // Quota errors are non-fatal: the viewer falls back to the bbox query.
+  }
 }
 
 function PlaceSearch() {
@@ -3493,7 +3554,7 @@ function SelectionRectangle({bounds}:{bounds:L.LatLngBounds}) {
   return null;
 }
 
-function MapAreaPanel({items,bounds,onClear}:{items:MapMedia[]; bounds:{west:number; south:number; east:number; north:number}; onClear:()=>void}) {
+function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   const sorted = useMemo(() => sortMedia(items, sort), [items, sort]);
   const visible = useProgressiveReveal(sorted, 100);
@@ -3511,15 +3572,17 @@ function MapAreaPanel({items,bounds,onClear}:{items:MapMedia[]; bounds:{west:num
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MapAreaItem key={item.id} item={item} bounds={bounds} sort={sort}/>
+            <MapAreaItem key={item.id} item={item} sort={sort}/>
           )}</div>
         </div>
       )}</div>}
   </aside>;
 }
 
-function MapAreaItem({item,bounds,sort}:{item:MapMedia; bounds:{west:number; south:number; east:number; north:number}; sort:"desc"|"asc"}) {
-  return <Link className="map-area-item" to={libraryItemURL(item.libraryId, item, sort === "asc" ? "date-asc" : "date", {bounds})} aria-label={`Open ${item.name} in folder`}>
+function MapAreaItem({item,sort}:{item:MapMedia; sort:"desc"|"asc"}) {
+  const query = new URLSearchParams({item:String(item.id), list:MAP_SELECTION_KEY});
+  if (sort === "asc") query.set("sort", "date-asc"); else query.set("sort", "date");
+  return <Link className="map-area-item" to={`/library/${item.libraryId}/view/${item.folderId}?${query.toString()}`} aria-label={`Open ${item.name} in folder`}>
     <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
     <small>{item.name}</small>
   </Link>;
