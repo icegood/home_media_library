@@ -1,20 +1,18 @@
-import { createContext, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Capacitor } from "@capacitor/core";
+import { applyLanguageSetting, installDomTranslation, LANGUAGES, useLanguage } from "./i18n";
+import type { LanguageSetting } from "./api";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { MapContainer, Marker, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import { api, MAX_VIDEO_THUMBNAILS, type UserSettings as UserSettingsPayload } from "./api";
+import { api, MAX_VIDEO_THUMBNAILS, type MapTileSource, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
 import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
 export const StreamChunkSizeCtx = createContext(10000);
 export const DEFAULT_STREAM_CHUNK_SIZE = 10000;
-
-function TopMenuToggle() {
-  const {open, toggle} = useContext(TopMenuCtx);
-  return <button type="button" className="top-menu-handle under-bar" aria-label={open ? "Hide main menu" : "Show main menu"} onClick={toggle}>{open ? "^^" : "vv"}</button>;
-}
 
 // ModalBackdrop: reusable backdrop that installs a capture-phase pointerdown handler
 // when mounted to prevent clicks from reaching elements underneath the modal. It
@@ -48,6 +46,15 @@ export function App() {
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const shellRef = useRef<HTMLDivElement|null>(null);
+  // Subscribes App to language switches: the shell below is keyed by the
+  // resolved language, so switching remounts it and every string is
+  // re-rendered from its canonical English source before the DOM translator
+  // rewrites it (the translator mutates text destructively and cannot map a
+  // translated string back to another language).
+  const lang = useLanguage();
+  // Android/iOS builds start from bundled assets and must first aim the
+  // WebView at the self-hosted server (see useNativeServerGate).
+  const serverGate = useNativeServerGate();
   useEffect(() => {
     api.setupStatus()
       .then(async status => {
@@ -87,7 +94,7 @@ export function App() {
   }, [overlayLocation.pathname]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); }).catch(() => undefined);
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); }).catch(() => undefined);
   }, [user?.id]);
   useEffect(() => {
     function closeTopMenus(event:PointerEvent) {
@@ -106,6 +113,7 @@ export function App() {
   useEffect(() => {
     setTopMenuOpen(false);
   }, [viewerMode, location.pathname]);
+  if (serverGate) return serverGate;
   if (!ready) return <main className="center">Loading…</main>;
   if (setupRequired) return <FirstSetup onComplete={user => { setSetupRequired(false); setUser(user); }}/>;
   if (!user) return location.pathname.startsWith("/reset") ? <ResetPassword/> : <Login onLogin={setUser}/>;
@@ -120,7 +128,7 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><div className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
+  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
@@ -139,6 +147,7 @@ export function App() {
           <button type="button" className="logout-button" role="menuitem" onClick={handleLogout}>Logout</button>
         </div>
       </details></header>
+    <LanguageWatcher/>
     {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} streamChunkSize={streamChunkSize} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onStreamChunkSizeChange={setStreamChunkSize} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
     {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)}/>}
     <Routes>
@@ -158,6 +167,14 @@ export function App() {
       <Route path="*" element={<NotFound/>}/>
     </Routes>
   </div></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
+}
+
+// Applies DOM translations for the active language and re-installs them when
+// the user switches language.
+function LanguageWatcher() {
+  const lang = useLanguage();
+  useEffect(() => { installDomTranslation(); }, [lang]);
+  return null;
 }
 
 function NotFound() {
@@ -302,10 +319,20 @@ function useBreadcrumb(): Crumb[] | null {
       if ((rootParam != null || hasBounds) && Number.isFinite(libraryID) && libraries && viewerItemName) {
         const library = libraries.find(item => item.id === libraryID);
         if (!library) return null;
-        const origin = rootParam != null
-          ? `/library/${libraryID}/timeline${rootParam !== "all" ? `/${rootParam}` : ""}`
+        const fromTimeline = rootParam != null;
+        const favParam = searchParams.get("fav");
+        const favSuffix = favParam ? `?fav=${encodeURIComponent(favParam)}` : "";
+        const origin = fromTimeline
+          ? `/library/${libraryID}/timeline${rootParam !== "all" ? `/${rootParam}` : ""}${favSuffix}`
           : `/map?library=${libraryID}&w=${bw}&s=${bs}&e=${be}&n=${bn}`;
-        return [{label:"Timeline of Libraries", to:"/"}, {label:library.name, to:origin}, {label:viewerItemName, to:null, current:true}];
+        const base: Crumb[] = [{label: fromTimeline ? "Timeline of Libraries" : `Map of ${library.name}`, to: fromTimeline ? "/" : origin}];
+        if (favParam) base.push({label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:`/favorites/${favParam}`});
+        if (fromTimeline) base.push({label:library.name, to:origin});
+        if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
+          base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: fromTimeline ? `/library/${libraryID}/timeline/${folder.id}${favSuffix}` : `/map?library=${libraryID}&folder=${folder.id}`})));
+        }
+        base.push({label:viewerItemName, to:null, current:true});
+        return base;
       }
     }
     if (!Number.isFinite(libraryID) || !libraries) return null;
@@ -336,7 +363,7 @@ function closeOnBackdropClick(event:MouseEvent<HTMLElement>, close:()=>void) {
   if (event.target === event.currentTarget) close();
 }
 
-type SettingsSection = "network" | "mail" | "thumbnails" | "libraries" | "users" | "jobs" | "logs" | "database";
+type SettingsSection = "network" | "mail" | "thumbnails" | "libraries" | "users" | "jobs" | "logs" | "database" | "map";
 
 const settingsSections: Record<SettingsSection, {label:string; description:string}> = {
   libraries: {label:"Libraries", description:"Add, rename, delete, scan, and refresh thumbnails"},
@@ -347,12 +374,13 @@ const settingsSections: Record<SettingsSection, {label:string; description:strin
   jobs: {label:"Jobs", description:"Background jobs, scheduler, and retention"},
   logs: {label:"Logs", description:"Configure and view application logs"},
   database: {label:"Database", description:"Maintenance, shrink, and Emby import"},
+  map: {label:"Map tiles", description:"CARTO API key for the media map"},
 };
 
 const settingsGroups: Array<{label:string; items:Array<{id:SettingsSection; label:string; description:string}>}> = [
   {label:"Media", items:(["libraries", "thumbnails"] as SettingsSection[]).map(settingsItem)},
   {label:"Access", items:(["users"] as SettingsSection[]).map(settingsItem)},
-  {label:"System", items:(["network", "mail", "logs"] as SettingsSection[]).map(settingsItem)},
+  {label:"System", items:(["network", "map", "mail", "logs"] as SettingsSection[]).map(settingsItem)},
   {label:"Jobs", items:(["jobs"] as SettingsSection[]).map(settingsItem)},
   {label:"Database", items:(["database"] as SettingsSection[]).map(settingsItem)},
 ];
@@ -392,7 +420,7 @@ function AdminPanel() {
     <section className="settings-content">
       <StopServerButton/>
       {section === "database" ? <DatabaseMaintenanceSection/>
-        : section === "network" || section === "mail" || section === "thumbnails" || section === "jobs"
+        : section === "network" || section === "map" || section === "mail" || section === "thumbnails" || section === "jobs"
           ? <AdminSettings section={section}/>
           : <LibraryManagement activeSection={section}/>}
     </section>
@@ -454,7 +482,7 @@ function DatabaseVacuumAction() {
 }
 
 function isSettingsSection(value:string|null): value is SettingsSection {
-  return value === "network" || value === "mail" || value === "thumbnails" || value === "libraries" || value === "users" || value === "jobs" || value === "logs" || value === "database";
+  return value === "network" || value === "mail" || value === "thumbnails" || value === "libraries" || value === "users" || value === "jobs" || value === "logs" || value === "database" || value === "map";
 }
 
 function LoginTimeoutField() {
@@ -595,11 +623,11 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
           <button className="library-glyph" aria-label={`Open library ${library.name}`} onClick={() => navigate(`/library/${library.id}`)}><span className="folder">▰</span></button>
           <button type="button" className="library-name-button" onClick={() => navigate(`/library/${library.id}`)}>
             <strong>{library.name}</strong>
-            <small>{(library.roots ?? []).map(root => rootLabel(root.path)).join(", ") || "No roots"}</small>
+            <small>{(library.roots ?? []).map(root => rootLabel(root.path)).join(", ") || "No roots"}{(library.roots ?? []).some(root => root.watch) ? " · Auto-refresh on" : ""}</small>
           </button>
           <CardMenu ariaLabel={`Library menu ${library.name}`}>
             <InlineStatsLine load={() => api.libraryStats(library.id)}/>
-            <button type="button" role="menuitem" disabled={busy} onClick={() => startEdit(library)}>Rename</button>
+            <button type="button" role="menuitem" disabled={busy} onClick={() => startEdit(library)}>Edit</button>
             <button type="button" role="menuitem" disabled={busy} onClick={() => libraryAction("refresh", library)}>Refresh content</button>
             <button type="button" role="menuitem" disabled={busy} onClick={() => setRefreshingThumbnails({id:library.id, name:library.name})}>Refresh thumbnails…</button>
             <button type="button" role="menuitem" className="danger" disabled={busy} onClick={() => startDelete(library)}>Delete</button>
@@ -1147,7 +1175,7 @@ function DatabaseMaintenanceSection() {
   </div>;
 }
 
-function AdminSettings({section}:{section:"network"|"mail"|"thumbnails"|"jobs"|"logs"}) {
+function AdminSettings({section}:{section:"network"|"map"|"mail"|"thumbnails"|"jobs"|"logs"}) {
   const [httpEnabled, setHTTPEnabled] = useState(true);
   const [httpsEnabled, setHTTPSEnabled] = useState(false);
   const [publicDns, setPublicDns] = useState("");
@@ -1170,6 +1198,7 @@ function AdminSettings({section}:{section:"network"|"mail"|"thumbnails"|"jobs"|"
   const [smtpUsername, setSMTPUsername] = useState("");
   const [smtpPassword, setSMTPPassword] = useState("");
   const [smtpFrom, setSMTPFrom] = useState("");
+  const [mapTileProviders, setMapTileProviders] = useState<Record<string, Record<string, string>>>({carto:{apiKey:""}});
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1193,6 +1222,7 @@ function AdminSettings({section}:{section:"network"|"mail"|"thumbnails"|"jobs"|"
     setLogRotateMaxAgeDays(value.logRotateMaxAgeDays);
     setSMTPHost(value.smtpHost); setSMTPPort(value.smtpPort);
     setSMTPUsername(value.smtpUsername); setSMTPFrom(value.smtpFrom);
+    setMapTileProviders({...mapTileProviders, ...value.mapTileProviders});
     setLoaded(true);
   }).catch(cause => setError((cause as Error).message)); }, []);
   useEffect(() => {
@@ -1200,13 +1230,13 @@ function AdminSettings({section}:{section:"network"|"mail"|"thumbnails"|"jobs"|"
     let cancelled = false;
     setSaving(true); setSaved(false); setError("");
     const timeout = window.setTimeout(() => {
-      api.updateSettings({httpEnabled,httpsEnabled,publicDns,acmeEmail,httpsGatewayEnabled,httpsCertificateExpiresAt,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpFrom,smtpPassword:smtpPassword || undefined})
+      api.updateSettings({httpEnabled,httpsEnabled,publicDns,acmeEmail,httpsGatewayEnabled,httpsCertificateExpiresAt,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpFrom,smtpPassword:smtpPassword || undefined,mapTileProviders:mapTileProviders})
         .then(value => { if (!cancelled) { setHTTPSCertificateExpiresAt(value.httpsCertificateExpiresAt); setSaved(true); } })
         .catch(cause => { if (!cancelled) setError((cause as Error).message); })
         .finally(() => { if (!cancelled) setSaving(false); });
     }, 600);
     return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [loaded,httpEnabled,httpsEnabled,publicDns,acmeEmail,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpPassword,smtpFrom]);
+  }, [loaded,httpEnabled,httpsEnabled,publicDns,acmeEmail,thumbnailWidth,thumbnailHeight,videoThumbnailFirstSeconds,videoThumbnailMaxCount,videoThumbnailMinIntervalSeconds,workerPoolSize,sessionMaxAgeHours,finishedJobRetentionMinutes,logLevel,logRotateMaxSizeMB,logRotateMaxBackups,logRotateMaxAgeDays,smtpHost,smtpPort,smtpUsername,smtpPassword,smtpFrom,mapTileProviders]);
   return <div className="card settings">
     <h2>{settingsSectionTitle(section)}</h2>
     {!loaded ? <p className="muted">Loading settings…</p> : <>
@@ -1231,6 +1261,10 @@ function AdminSettings({section}:{section:"network"|"mail"|"thumbnails"|"jobs"|"
         </>}
         <small>At least one protocol must remain enabled. HTTPS changes are applied automatically.</small>
       </> : <small>The optional gateway container is not enabled in this deployment, so the app serves plain HTTP only. To make HTTPS available, set <code>COMPOSE_PROFILES=https</code> in <code>deploy/.env</code> and restart the stack.</small>}
+    </fieldset>}
+    {section === "map" && <fieldset><legend>Map tiles</legend>
+      <label>CARTO Basemaps API key<input value={mapTileProviders["carto"]?.apiKey ?? ""} onChange={event => { setMapTileProviders({...mapTileProviders, carto:{...(mapTileProviders["carto"] ?? {}), apiKey:event.target.value}}); setSaved(false); }} autoComplete="off" spellCheck={false} placeholder="abc123-example-key"/></label>
+      <small>Each user picks a tile source per theme in their own user settings: <strong>OpenStreetMap</strong>, <strong>Esri</strong>, or <strong>CARTO</strong> (Voyager, Light, and Native dark sub-providers in dark mode). Per-provider options are configured here — today only CARTO has one, its free API key, which the browser uses to build tile URLs (so it is public by nature). Users who pick CARTO without a key see the tiles with an "API key required" watermark. Get a key at <a href="https://carto.com/basemaps/apikey" target="_blank" rel="noopener noreferrer">carto.com/basemaps/apikey</a>.</small>
     </fieldset>}
     {section === "mail" && <fieldset><legend>Outbound email</legend>
       <label>SMTP host<input value={smtpHost} onChange={event => setSMTPHost(event.target.value)} placeholder="smtp.example.com"/></label>
@@ -1275,8 +1309,9 @@ function AdminSettings({section}:{section:"network"|"mail"|"thumbnails"|"jobs"|"
   </div>;
 }
 
-function settingsSectionTitle(section:"network"|"mail"|"thumbnails"|"jobs"|"logs") {
+function settingsSectionTitle(section:"network"|"map"|"mail"|"thumbnails"|"jobs"|"logs") {
   if (section === "network") return "Network";
+  if (section === "map") return "Map tiles";
   if (section === "mail") return "Mail";
   if (section === "thumbnails") return "Thumbnails";
   if (section === "jobs") return "Jobs";
@@ -1392,6 +1427,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   onUserChanged:(user:User)=>void; onClose:()=>void;
 }) {
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"forest"|"system">(theme);
+  const [draftLanguage, setDraftLanguage] = useState<LanguageSetting>("auto");
   const [draftZoom, setDraftZoom] = useState(zoom);
   const [draftStreamChunkSize, setDraftStreamChunkSize] = useState(streamChunkSize);
   const [codec, setCodec] = useState<UserSettingsPayload["codec"]>("h264-aac-mp4");
@@ -1401,6 +1437,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   const [defaultThumbImage, setDefaultThumbImage] = useState("mountains");
   const [defaultThumbVideo, setDefaultThumbVideo] = useState("mountains");
   const [defaultThumbFolder, setDefaultThumbFolder] = useState("mountains");
+  const [mapTileProviderLight, setMapTileProviderLight] = useState<MapTileSource>("osm");
+  const [mapTileProviderDark, setMapTileProviderDark] = useState<MapTileSource>("osm");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1417,6 +1455,9 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       setDefaultThumbFolder(settings.defaultThumbFolder || "mountains");
       setDateFormat(normalizeDateFormat(settings.dateFormat));
       setDraftStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize));
+      setDraftLanguage((settings as UserSettingsPayload).language ?? "auto");
+      setMapTileProviderLight(settings.mapTileProviderLight ?? "osm");
+      setMapTileProviderDark(settings.mapTileProviderDark ?? "osm");
       setLoaded(true);
     }).catch(() => undefined);
   }, [user.id]);
@@ -1442,8 +1483,9 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   async function saveSettings() {
     setSaving(true); setError(""); setSaved(false);
     try {
-      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
-      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder});
+      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark});
+      applyUserLanguage(draftLanguage);
+      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark});
       onThemeChange(draftTheme);
       onZoomChange(draftZoom);
       onStreamChunkSizeChange(normalizeStreamChunkSize(draftStreamChunkSize));
@@ -1467,6 +1509,12 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       </div>
       <p className="muted">Preferences for {user.login}. These apply only to your account.</p>
       <fieldset><legend>Appearance</legend>
+        <label>Language
+          <select value={draftLanguage} onChange={event => setDraftLanguage(event.target.value as LanguageSetting)}>
+            <option value="auto">Auto</option>
+            {LANGUAGES.map(entry => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+          </select>
+        </label>
         <label>Theme<select value={draftTheme} onChange={event => { setDraftTheme(event.target.value as "light"|"dark"|"forest"|"system"); setSaved(false); }}>
           <option value="light">Light</option>
           <option value="dark">Dark</option>
@@ -1484,6 +1532,21 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
         </select></label>
         <small>Controls how dates look and are pasted back in the viewer.</small>
         {dateFormat === "auto" && !systemLocaleAvailable() && <small className="muted">Your browser did not report a system locale — choose one of the fixed formats above instead.</small>}
+      </fieldset>
+      <fieldset><legend>Map tiles</legend>
+        <label>Tile source in light mode<select value={mapTileProviderLight} onChange={event => { setMapTileProviderLight(event.target.value as MapTileSource); setSaved(false); }}>
+          <option value="osm">OpenStreetMap</option>
+          <option value="esri">Esri</option>
+          <option value="carto:voyager">CARTO — Voyager</option>
+          <option value="carto:light">CARTO — Light</option>
+        </select></label>
+        <label>Tile source in dark/forest mode<select value={mapTileProviderDark} onChange={event => { setMapTileProviderDark(event.target.value as MapTileSource); setSaved(false); }}>
+          <option value="osm">OpenStreetMap</option>
+          <option value="esri">Esri</option>
+          <option value="carto:voyager">CARTO — Voyager (dark filter)</option>
+          <option value="carto:dark">CARTO — Native dark tiles</option>
+        </select></label>
+        <small>Dark or forest themes apply a dark filter to the light sources (OSM, Esri, CARTO Voyager); CARTO — Native dark needs none. OSM and Esri need no key; every CARTO source needs one, configured by the admin in the Admin panel → Map tiles. Without a configured key, CARTO tiles show an "API key required" watermark.</small>
       </fieldset>
       <fieldset><legend>Zoom</legend>
         <label>Zoom<select value={draftZoom} onChange={event => { setDraftZoom(Number(event.target.value)); setSaved(false); }}>
@@ -1760,7 +1823,6 @@ function Browser() {
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
-  const filteredEntries = kind === "all" ? entries : entries.filter(entry => entry.type === "folder" || entry.media?.kind === kind);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
@@ -1801,15 +1863,18 @@ function LibraryTimeline() {
   const favParam = new URLSearchParams(location.search).get("fav");
   useSyncBrowserBarMetrics();
   const [items, setItems] = useState<Media[]>([]);
+  const [loading, setLoading] = useState(true);
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   useEffect(() => {
     if (!Number.isFinite(libraryId)) return;
-    if (currentFolderId == null) {
-      api.libraryMedia(libraryId).then(setItems);
-    } else {
-      api.folderMedia(libraryId, currentFolderId).then(setItems);
-    }
+    let cancelled = false;
+    setLoading(true);
+    setItems([]);
+    const request = currentFolderId == null ? api.libraryMedia(libraryId) : api.folderMedia(libraryId, currentFolderId);
+    request.then(items => { if (cancelled) return; setItems(items); setLoading(false); })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [libraryId, currentFolderId]);
   const filtered = items.filter(item => kind === "all" || item.kind === kind);
   const sorted = sortMedia(filtered, sort);
@@ -1841,7 +1906,11 @@ function LibraryTimeline() {
       </select>
       <span className="bar-sep"/>
     <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
-    {sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
+    {loading ? <div className="empty-state">
+      <p>Loading this folder’s timeline…</p>
+      <button type="button" className="button-like active" onClick={() => navigate(-1)}>Cancel and go back</button>
+    </div> :
+    sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
       <div className="timeline-grid">{groupByDate(sorted).map(group =>
         <div className="timeline-group" key={group.label}>
           <span className="timeline-group-date">{group.label}</span>
@@ -1992,7 +2061,6 @@ function FavoriteViewPage() {
   const [displayMode, setDisplayMode] = useState<"folders"|"timeline"|"map">("folders");
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
   const [sort, setSort] = useState<"desc"|"asc">("desc");
-  const [views, setViews] = useState<FavoriteView[]>([]);
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   const [error, setError] = useState("");
@@ -2023,8 +2091,6 @@ function FavoriteViewPage() {
     }
     ensureMedia();
   }, [favoriteViewId, displayMode, mediaLoaded, selected, selectedFolders]);
-  useEffect(() => { api.favoriteViews().then(setViews).catch(() => undefined); }, []);
-  const selectedView = views.find(v => v.id === Number(viewId));
   const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (kind === "image" ? i.mimeType?.startsWith("image/") : i.mimeType?.startsWith("video/")));
   const orderedItems = useMemo(() => [...filteredItems].sort((a, b) =>
     Number(Boolean(b.isFolder)) - Number(Boolean(a.isFolder)) || a.name.localeCompare(b.name, undefined, {sensitivity:"base"}) || a.id - b.id
@@ -2104,9 +2170,16 @@ function FavoriteMediaViewerPage() {
   const [items, setItems] = useState<Media[]>([]);
   const [fallbackItem, setFallbackItem] = useState<Media|null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
-  const orderedItems = useMemo(() => sortParam === "name" ? items : sortMedia(items, sortParam === "date-asc" ? "asc" : "desc"), [items, sortParam]);
+  const [mediaOverrides, setMediaOverrides] = useState<Record<number, Media>>({});
+  function onMediaUpdated(updated:Media) {
+    setMediaOverrides(current => ({...current, [updated.id]: updated}));
+  }
+  const orderedItems = useMemo(() => {
+    const resolved = items.map(media => mediaOverrides[media.id] ?? media);
+    return sortParam === "name" ? resolved : sortMedia(resolved, sortParam === "date-asc" ? "asc" : "desc");
+  }, [items, sortParam, mediaOverrides]);
   const index = orderedItems.findIndex(media => media.id === currentMediaId);
-  const item = index >= 0 ? orderedItems[index] : fallbackItem;
+  const item = index >= 0 ? orderedItems[index] : mediaOverrides[currentMediaId] ?? fallbackItem;
   const previous = index > 0 ? orderedItems[index - 1] : null;
   const next = index >= 0 && index < orderedItems.length - 1 ? orderedItems[index + 1] : null;
   useEffect(() => {
@@ -2132,6 +2205,12 @@ function FavoriteMediaViewerPage() {
       } else if (event.key === "ArrowRight" && next) {
         event.preventDefault();
         go(next);
+      } else if (event.key === "ArrowUp" && previous) {
+        event.preventDefault();
+        go(previous);
+      } else if (event.key === "ArrowDown" && next) {
+        event.preventDefault();
+        go(next);
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -2139,7 +2218,7 @@ function FavoriteMediaViewerPage() {
   }, [previous,next,navigate]);
   if (!item) return <main className="viewer-page"><p>Loading media…</p></main>;
   return <main className="viewer-page">
-    <Viewer item={item} favoriteViewId={favoriteViewId} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)}/>
+    <Viewer item={item} favoriteViewId={favoriteViewId} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)} onUpdated={onMediaUpdated}/>
   </main>;
 }
 
@@ -2516,6 +2595,10 @@ function useUserDateFormat(): DateFormat {
   }, []);
   return format;
 }
+function applyUserLanguage(value:unknown) {
+  if (applyLanguageSetting(typeof value === "string" ? value as LanguageSetting : "auto")) installDomTranslation();
+}
+
 function syncUserDefaultThumbs(settings:UserSettingsPayload) {
   userDefaultThumbs.image = settings.defaultThumbImage || "mountains";
   userDefaultThumbs.video = settings.defaultThumbVideo || "mountains";
@@ -2671,33 +2754,6 @@ function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item
   </ModalBackdrop>;
 }
 
-function FolderFavoriteButton({folderId, folderName, viewId, onChange}:{folderId:ID; folderName:string; viewId?:ID; onChange?:(favorited:boolean)=>void}) {
-  const [favorite, setFavorite] = useState(viewId != null);
-  const [busy, setBusy] = useState(false);
-  const [choosing, setChoosing] = useState(false);
-  useEffect(() => setFavorite(viewId != null), [viewId]);
-  async function toggle(event:MouseEvent<HTMLButtonElement>) {
-    event.stopPropagation();
-    if (!(favorite && viewId != null)) {
-      setChoosing(true);
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.unfavoriteFolder(viewId, folderId);
-      setFavorite(false);
-      onChange?.(false);
-    } finally {
-      setBusy(false);
-    }
-  }
-  const label = favorite && viewId != null ? `Remove ${folderName} from this favorite view` : `Manage favorite views for ${folderName}`;
-  return <>
-    <button type="button" className={`favorite-button ${favorite ? "active" : ""}`} aria-label={label} disabled={busy} onClick={toggle}>{favorite ? "★" : "☆"}</button>
-    {choosing && createPortal(<FolderFavoriteViewChooser folderId={folderId} folderName={folderName} onChange={favorited => { setFavorite(favorited); onChange?.(favorited); }} onClose={() => setChoosing(false)}/>, document.body)} 
-  </>;
-}
-
 function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{folderId:ID; folderName:string; onChange:(favorited:boolean)=>void; onClose:()=>void}) {
   const [views, setViews] = useState<FavoriteViewMembership[]>([]);
   const [newName, setNewName] = useState("");
@@ -2777,6 +2833,7 @@ function MediaViewerPage() {
   const folderData = useFolderEntries(libraryId, routeFolderId);
   const items = (folderData?.entries ?? []).map(entry => entry.media).filter((media): media is Media => media != null);
   const [fallbackItem, setFallbackItem] = useState<Media|null>(null);
+  const [fallback, setFallback] = useState<{loading:boolean; failed:boolean}>({loading:false, failed:false});
   const [infoOpen, setInfoOpen] = useState(false);
   const sortParam = query.get("sort") ?? "name";
   const rootParam = query.get("root");
@@ -2787,6 +2844,10 @@ function MediaViewerPage() {
     : null;
   const [scopedMedia, setScopedMedia] = useState<Media[]|null>(null);
   const listParam = query.get("list");
+  const [mediaOverrides, setMediaOverrides] = useState<Record<number, Media>>({});
+  function onMediaUpdated(updated:Media) {
+    setMediaOverrides(current => ({...current, [updated.id]: updated}));
+  }
   useEffect(() => {
     let cancelled = false;
     if (listParam) {
@@ -2812,17 +2873,30 @@ function MediaViewerPage() {
     return () => { cancelled = true; };
   }, [libraryId, rootParam, kindParam, listParam, w, s, e, n]);
   const folderMedia = useMemo(() => {
-    const base = scopedMedia ?? items.filter(media => media.folderId === routeFolderId);
+    const base = (scopedMedia ?? items.filter(media => media.folderId === routeFolderId)).map(media => mediaOverrides[media.id] ?? media);
     if (sortParam === "name") return base;
     return sortMedia(base, sortParam === "date-asc" ? "asc" : "desc");
-  }, [scopedMedia, items, routeFolderId, sortParam]);
+  }, [scopedMedia, items, routeFolderId, sortParam, mediaOverrides]);
   const index = folderMedia.findIndex(media => media.id === currentMediaId);
-  const item = index >= 0 ? folderMedia[index] : fallbackItem;
+  const item = index >= 0 ? folderMedia[index] : mediaOverrides[currentMediaId] ?? fallbackItem;
   const previous = index > 0 ? folderMedia[index - 1] : null;
   const next = index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null;
   useEffect(() => {
-    if (index >= 0 || !Number.isFinite(currentMediaId)) return;
-    api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null));
+    if (index >= 0 || !Number.isFinite(currentMediaId)) {
+      setFallback({loading:false, failed:false});
+      return;
+    }
+    let cancelled = false;
+    setFallbackItem(null);
+    setFallback({loading:true, failed:false});
+    api.media(currentMediaId).then(media => {
+      if (cancelled) return;
+      setFallbackItem(media);
+      setFallback({loading:false, failed:false});
+    }).catch(() => {
+      if (!cancelled) setFallback({loading:false, failed:true});
+    });
+    return () => { cancelled = true; };
   }, [currentMediaId, index]);
   const nav:ItemNav = useMemo(() => {
     const fav = query.get("fav") ?? undefined;
@@ -2843,15 +2917,32 @@ function MediaViewerPage() {
       } else if (event.key === "ArrowRight" && next) {
         event.preventDefault();
         go(next);
+      } else if (event.key === "ArrowUp" && previous) {
+        event.preventDefault();
+        go(previous);
+      } else if (event.key === "ArrowDown" && next) {
+        event.preventDefault();
+        go(next);
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [previous,next,libraryId,navigate]);
   if (!hasItemQuery) return <Navigate to={`/library/${libraryId}`} replace/>;
+  if (!item && fallback.failed) return <main className="center not-found" role="main">
+    <div className="card settings">
+      <p className="eyebrow">404</p>
+      <h1>Media not found</h1>
+      <p className="muted">This media is no longer available in the library. It may have been moved or removed from disk, or this link is stale after a rescan.</p>
+      <div className="action-row">
+        <button type="button" className="button-like active" onClick={() => navigate(Number.isFinite(routeFolderId) && routeFolderId >= 1 ? `/library/${libraryId}/folder/${routeFolderId}` : `/library/${libraryId}`)}>Open folder</button>
+        <Link className="button-like active" to="/">All libraries</Link>
+      </div>
+    </div>
+  </main>;
   if (!item) return <main className="viewer-page"><p>Loading media…</p></main>;
   return <main className="viewer-page">
-    <Viewer item={item} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)}/>
+    <Viewer item={item} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)} onUpdated={onMediaUpdated}/>
   </main>;
 }
 
@@ -2886,7 +2977,48 @@ function isEditableTarget(target:EventTarget|null) {
   return tag === "input" || tag === "textarea" || tag === "select" || element.isContentEditable;
 }
 
-function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{item:Media; favoriteViewId?:ID; infoOpen:boolean; previous:Media|null; next:Media|null; onGo:(media:Media|null)=>void; onToggleInfo:()=>void}) {
+const SWIPE_THRESHOLD = 50;
+
+function mediaDimensions(metadata:Record<string, unknown>): {width:number; height:number}|null {
+  const dimension = (value:unknown) => typeof value === "string" ? Number(value) : value;
+  const streams = (metadata?.ffprobe as {streams?:Array<{codec_type?:string; width?:unknown; height?:unknown}>}|undefined)?.streams ?? [];
+  const videoStream = streams.find(stream => stream?.codec_type === "video");
+  const exif = (metadata?.exif ?? {}) as Record<string, unknown>;
+  const candidates: Array<[unknown, unknown]> = [
+    videoStream ? [videoStream.width, videoStream.height] : [undefined, undefined],
+    [exif.ImageWidth ?? exif.Width, exif.ImageHeight ?? exif.Height]
+  ];
+  for (const [rawWidth, rawHeight] of candidates) {
+    const width = dimension(rawWidth);
+    const height = dimension(rawHeight);
+    if (typeof width === "number" && typeof height === "number" && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      return {width, height};
+    }
+  }
+  return null;
+}
+
+function lockOrientation(item:Media) {
+  try {
+    const orientation = (screen as {orientation?:{lock?:(target:string)=>Promise<void>}}).orientation;
+    if (!orientation?.lock) return;
+    const dims = mediaDimensions(item.metadata);
+    if (!dims) return;
+    void orientation.lock(dims.width >= dims.height ? "landscape" : "portrait").catch(() => void 0);
+  } catch {
+    // Orientation locking needs fullscreen + a sensor on some browsers — ignore.
+  }
+}
+
+function unlockOrientation() {
+  try {
+    (screen as {orientation?:{unlock?:()=>void}}).orientation?.unlock?.();
+  } catch {
+    // Unlocking is only allowed from fullscreen on some browsers — ignore.
+  }
+}
+
+function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,onUpdated}:{item:Media; favoriteViewId?:ID; infoOpen:boolean; previous:Media|null; next:Media|null; onGo:(media:Media|null)=>void; onToggleInfo:()=>void; onUpdated?:(updated:Media)=>void}) {
   const supported = supportedVideoCodecs();
   const mediaRef = useRef<HTMLDivElement|null>(null);
   const [imageZoom, setImageZoom] = useState(1);
@@ -2925,7 +3057,11 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
   }
   const [isFullscreen, setIsFullscreen] = useState(false);
   useEffect(() => {
-    function syncFullscreen() { setIsFullscreen(Boolean(document.fullscreenElement)); }
+    function syncFullscreen() {
+      const active = Boolean(document.fullscreenElement);
+      setIsFullscreen(active);
+      if (!active) unlockOrientation();
+    }
     document.addEventListener("fullscreenchange", syncFullscreen);
     return () => document.removeEventListener("fullscreenchange", syncFullscreen);
   }, []);
@@ -2934,13 +3070,53 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
     if (!el) return;
     try {
       if (document.fullscreenElement) await document.exitFullscreen?.();
-      else await el.requestFullscreen?.();
+      else {
+        await el.requestFullscreen?.();
+        lockOrientation(item);
+      }
     } catch {
       // Fullscreen can be denied (permissions/iframe) — ignore.
     }
   }
+  const swipeStart = useRef<{x:number; y:number}|null>(null);
+  useEffect(() => {
+    function onFullscreenKey(event:KeyboardEvent) {
+      if (isEditableTarget(event.target)) return;
+      if (event.key === "f" || event.key === "F") {
+        event.preventDefault();
+        void toggleFullscreen();
+      }
+    }
+    window.addEventListener("keydown", onFullscreenKey);
+    return () => window.removeEventListener("keydown", onFullscreenKey);
+  }, [item.id]);
+  function onTouchStart(event:React.TouchEvent<HTMLDivElement>) {
+    if (item.kind === "image" && imageZoom > 1) { swipeStart.current = null; return; }
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || isEditableTarget(target) || target.closest("button, a, .video-controls")) {
+      swipeStart.current = null;
+      return;
+    }
+    const touch = event.touches[0];
+    swipeStart.current = touch ? {x:touch.clientX, y:touch.clientY} : null;
+  }
+  function onTouchEnd(event:React.TouchEvent<HTMLDivElement>) {
+    const start = swipeStart.current;
+    swipeStart.current = null;
+    if (!start) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_THRESHOLD) return;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      if (dx < 0) { if (next) onGo(next); } else { if (previous) onGo(previous); }
+    } else {
+      if (dy < 0) { if (next) onGo(next); } else { if (previous) onGo(previous); }
+    }
+  }
   return <div className={`viewer-stage ${infoOpen ? "info-open" : ""}`} aria-label={item.name}>
-    <div className="viewer-media" ref={mediaRef} onWheel={onImageWheel}>
+    <div className="viewer-media" ref={mediaRef} onWheel={onImageWheel} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
@@ -2959,7 +3135,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo}:{
     </div>
     <button type="button" className="info-handle" aria-label={infoOpen ? "Hide info panel" : "Show info panel"} onClick={onToggleInfo}>{infoOpen ? ">>" : "<<"}</button>
     <aside className={`info-drawer ${infoOpen ? "open" : ""}`} aria-hidden={!infoOpen}>
-      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item}/>}
+      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} onUpdated={onUpdated}/>}
     </aside>
   </div>;
 }
@@ -2976,7 +3152,7 @@ function eventPoint(event:ReactPointerEvent<HTMLImageElement>) {
   };
 }
 
-function MediaInfo({item}:{item:Media}) {
+function MediaInfo({item, onUpdated}:{item:Media; onUpdated?:(updated:Media)=>void}) {
   const dateFormat = useUserDateFormat();
   const navigate = useNavigate();
   const [name, setName] = useState(item.name);
@@ -2984,7 +3160,7 @@ function MediaInfo({item}:{item:Media}) {
   const [takenAt, setTakenAt] = useState(() => formatDateTime(item.takenAt, dateFormat));
   const [current, setCurrent] = useState(item);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [_saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -3013,8 +3189,14 @@ function MediaInfo({item}:{item:Media}) {
     try {
       const updated = await api.updateMediaDetails(item.id, {name:trimmedName, gps:trimmedGPS, takenAt:dateValue});
       setCurrent(updated); setName(updated.name); setGPSValue(updated.gps ?? ""); setTakenAt(formatDateTime(updated.takenAt, dateFormat)); setSaved(true);
+      // Propagate the saved row into the parent list so previous/next items
+      // and future navigation show the new values instead of the stale row.
+      onUpdated?.(updated);
     } catch (cause) {
-      setError((cause as Error).message);
+      const message = (cause as Error).message;
+      setError(message === "media not found"
+        ? "Media not found — the item may have been removed or rescanned since this view was opened. Close this item and reopen it."
+        : message);
     } finally {
       setSaving(false);
     }
@@ -3138,7 +3320,6 @@ function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"
 }
 
 function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
-  const videoRef = useRef<HTMLVideoElement|null>(null);
   const metadataDuration = videoMetadataDuration(item.metadata);
   const [thumbs, setThumbs] = useState<VideoThumbnail[]>([]);
   const [hover, setHover] = useState<VideoThumbnail|null>(null);
@@ -3157,10 +3338,33 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
   const playback = videoPlaybackReport(item, supported);
   const transcoded = playback.mode === "transcoded";
   const [reportOpen, setReportOpen] = useState(false);
+  const [seekNotice, setSeekNotice] = useState<string|null>(null);
+  const seekNoticeTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
   const targetSlot = active === 0 ? 1 : 0;
   useEffect(() => { api.videoThumbnails(item.id).then(setThumbs).catch(() => setThumbs([])); }, [item.id]);
-  useEffect(() => () => { if (seekTimer.current !== null) clearTimeout(seekTimer.current); }, []);
+  useEffect(() => () => {
+    if (seekTimer.current !== null) clearTimeout(seekTimer.current);
+    if (seekNoticeTimer.current !== null) clearTimeout(seekNoticeTimer.current);
+  }, []);
   useEffect(() => { activeRef.current = active; }, [active]);
+  const spaceToggle = useRef(toggle);
+  spaceToggle.current = toggle;
+  useEffect(() => {
+    function onSpace(event:KeyboardEvent) {
+      if (isEditableTarget(event.target)) return;
+      if (event.code === "Space" || event.key === " ") {
+        event.preventDefault();
+        spaceToggle.current();
+      }
+    }
+    window.addEventListener("keydown", onSpace);
+    return () => window.removeEventListener("keydown", onSpace);
+  }, []);
+  function showSeekNotice(delta:number) {
+    setSeekNotice(`${delta > 0 ? "+" : "−"}${Math.abs(delta)} seconds`);
+    if (seekNoticeTimer.current !== null) clearTimeout(seekNoticeTimer.current);
+    seekNoticeTimer.current = setTimeout(() => setSeekNotice(null), 700);
+  }
   function activeVideo() {
     return videoRefs[activeRef.current].current;
   }
@@ -3190,6 +3394,11 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
   }
   function jump(delta:number) {
     seek(current + delta);
+    showSeekNotice(delta);
+  }
+  function onVideoDoubleClick(event:React.MouseEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    jump(event.clientX < rect.left + rect.width / 2 ? -10 : 10);
   }
   function stop() {
     if (seekTimer.current !== null) clearTimeout(seekTimer.current);
@@ -3258,8 +3467,8 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
     </video>;
   }
   return <div className="video-box">
-    {stopped ? <div className="video-stack video-stopped" aria-label="Video stopped"/> :
-    <div className="video-stack">
+    {stopped ? <div className="video-stack video-stopped" aria-label="Video stopped" onDoubleClick={onVideoDoubleClick}/> :
+    <div className="video-stack" onDoubleClick={onVideoDoubleClick}>
       {renderVideo(active)}
       {transcoded && pending !== null && renderVideo(targetSlot)}
     </div>}
@@ -3275,7 +3484,6 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
       <button type="button" onClick={toggle}>{playing ? "Pause" : "Play"}</button>
       <button type="button" onClick={stop}>Stop</button>
       <button type="button" onClick={replay}>Replay</button>
-      <button type="button" onClick={() => jump(-10)}>−10s</button>
       <span>{formatTime(current)}</span>
       <div className="timeline" onMouseMove={hoverTimeline} onMouseLeave={() => setHover(null)}>
         <input aria-label="Seek video" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(current, duration || current)}
@@ -3285,8 +3493,8 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
         </div>}
       </div>
       <span>{duration ? formatTime(duration) : "0:00"}</span>
-      <button type="button" onClick={() => jump(10)}>+10s</button>
     </div>
+    {seekNotice && <div className="seek-notice" role="status">{seekNotice}</div>}
   </div>;
 }
 
@@ -3347,6 +3555,7 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
   const navigate = useNavigate();
   useSyncBrowserBarMetrics();
   const [items, setItems] = useState<MapMedia[]>([]);
+  const [tileSettings, setTileSettings] = useState<{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>}>({providerLight:"osm", providerDark:"osm", mapProviders:{carto:{apiKey:""}}});
   const [pickedGPS, setPickedGPS] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   const [selectMode, setSelectMode] = useState(false);
@@ -3359,6 +3568,18 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
   useEffect(() => {
     api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems);
   }, [libraryParam, folderParam, favoriteParam]);
+  useEffect(() => {
+    let alive = true;
+    api.userSettings().then(settings => {
+      if (!alive) return;
+      setTileSettings({
+        providerLight: settings.mapTileProviderLight ?? "osm",
+        providerDark: settings.mapTileProviderDark ?? "osm",
+        mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}},
+      });
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
   const focused = items.find(item => item.id === Number(query.get("item")));
   const focusedGPS = focused ? parseGPS(focused.gps) : null;
   function selectArea(start:L.LatLng, end:L.LatLng) {
@@ -3382,6 +3603,23 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
     storeMapSelection(sortedItems);
     setArea({bounds: points.length > 0 ? L.latLngBounds(points) : L.latLngBounds([0,0],[0,0]), items: sortedItems});
   }
+  const darkMode = theme !== "light";
+  const source = darkMode ? tileSettings.providerDark : tileSettings.providerLight;
+  const provider = source.split(":")[0];
+  const subStyle = source.split(":")[1] ?? "";
+  const cartoKey = tileSettings.mapProviders["carto"]?.apiKey ?? "";
+  const cartoTiles = provider === "carto";
+  const esriTiles = provider === "esri";
+  const cartoPath = subStyle === "dark" ? "dark_all" : subStyle === "light" ? "light_all" : "rastertiles/voyager";
+  const tileUrl = cartoTiles
+    ? `https://basemaps.cartocdn.com/${cartoPath}/{z}/{x}/{y}.png${cartoKey !== "" ? `?key=${encodeURIComponent(cartoKey)}` : ""}`
+    : esriTiles
+      ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+      : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const tileAttribution = cartoTiles ? "&copy; OpenStreetMap contributors &copy; CARTO"
+    : esriTiles ? "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics"
+    : "&copy; OpenStreetMap contributors";
+  const filterDark = darkMode && !(cartoTiles && subStyle === "dark");
   return <main className={`map-page ${area ? "panel-open" : ""}`} aria-label="Media map">
       <div className="browser-bar"><div className="browser-bar-inner">
         {(() => {
@@ -3403,8 +3641,8 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
       {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
     </div></div>
     <div className="map-stage">
-      <MapContainer center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className="map">
-        <TileLayer key={theme} attribution='&copy; OpenStreetMap contributors' url={theme === "light" ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"}/>
+      <MapContainer center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className={`map${filterDark ? " dark-tile-filter" : ""}`}>
+        <TileLayer key={`${theme}-${cartoTiles ? subStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}/>
         <ScaleControl position="bottomleft" imperial={false}/>
         <PlaceSearch/>
         <MapItems items={items} focused={focused} pickedGPS={pickedGPS} copyStatus={copyStatus} selectMode={selectMode} onCopyStatus={setCopyStatus} onPick={value => { setPickedGPS(value); setCopyStatus(""); }} onSelectCluster={selectCluster} onRenderProgress={setRendering}/>
@@ -3715,4 +3953,94 @@ async function copyText(value:string) {
   const copied = document.execCommand("copy");
   input.remove();
   if (!copied) throw new Error("copy failed");
+}
+
+// ---------------------------------------------------------------------------
+// Native server gate (Capacitor builds)
+//
+// The Android/iOS app boots from bundled assets on a virtual origin, so the
+// self-hosted server address cannot be assumed. Before anything else renders,
+// ask for (or recall) the server base URL, verify it answers, and navigate the
+// WebView there. From that point the app is same-origin with the API and the
+// existing Strict/Secure cookie auth works unchanged.
+// ---------------------------------------------------------------------------
+const SERVER_URL_KEY = "ml.server.url";
+
+function normalizeServerUrl(raw:string):string|null {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (!parsed.host) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+// Overridden only by unit tests to exercise the picker without a device.
+let nativeOverrideForTests:boolean|null = null;
+export function setNativePlatformForTests(value:boolean|null) { nativeOverrideForTests = value; }
+
+function useNativeServerGate():ReactNode|null {
+  const native = nativeOverrideForTests ?? Capacitor.isNativePlatform();
+  const [mode, setMode] = useState<"idle"|"form"|"connecting">("idle");
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!native) return;
+    const saved = localStorage.getItem(SERVER_URL_KEY) ?? "";
+    if (!saved) {
+      setMode("form");
+      return;
+    }
+    setUrl(saved);
+    setMode("connecting");
+    void connect(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [native]);
+  async function connect(raw:string) {
+    const base = normalizeServerUrl(raw);
+    if (!base) {
+      setError("Enter a valid server address");
+      setMode("form");
+      return;
+    }
+    setMode("connecting");
+    setError("");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(`${base}/api/v1/setup`, {signal:controller.signal});
+      if (!response.ok) throw new Error(`server responded ${response.status}`);
+      localStorage.setItem(SERVER_URL_KEY, base);
+      window.location.replace(base);
+    } catch (cause) {
+      setError(cause instanceof DOMException && cause.name === "AbortError"
+        ? "No answer from the server (timeout)"
+        : `Cannot reach server: ${(cause as Error).message}`);
+      setMode("form");
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+  if (!native || mode === "idle") return null;
+  if (mode === "connecting") {
+    let host = url;
+    try { host = new URL(url).host; } catch { /* keep raw */ }
+    return <main className="center"><div className="card login" role="status">
+      <h1>Media Library</h1>
+      <p className="muted">Connecting to <strong>{host}</strong>…</p>
+      <button type="button" className="secondary" onClick={() => { localStorage.removeItem(SERVER_URL_KEY); setMode("form"); }}>Change server</button>
+    </div></main>;
+  }
+  return <main className="center"><form className="card login" onSubmit={event => { event.preventDefault(); void connect(url); }}>
+    <h1>Media Library</h1>
+    <p className="muted">Where is your library hosted?</p>
+    <label>Server address<input value={url} onChange={event => setUrl(event.target.value)} type="url" inputMode="url" autoComplete="url"
+      placeholder="https://media.example.com" required/></label>
+    {error && <p className="error">{error}</p>}
+    <button type="submit">Connect</button>
+  </form></main>;
 }

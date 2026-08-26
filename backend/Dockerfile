@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     go mod tidy \
     && gofmt -w . \
+    && go vet ./... \
     && go test ./... \
     && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
        -ldflags "-X main.version=${VERSION} -X main.revision=${VCS_REF} -X main.buildDate=${BUILD_DATE}" \

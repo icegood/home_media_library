@@ -4,10 +4,11 @@ set -eu
 cd "$(dirname "$0")"
 
 if [ "$#" -ne 1 ]; then
-  echo "Usage: sh deploy/start.sh [prod|local-build|e2e]" >&2
+  echo "Usage: sh deploy/start.sh [prod|local-build|e2e|android]" >&2
   echo "  prod        Pull and run versioned production images from deploy/compose.yaml." >&2
   echo "  local-build Build local backend/web sources, then run the same stack." >&2
   echo "  e2e         Run Playwright end-to-end tests against the running stack." >&2
+  echo "  android     Build a signed release APK for Android." >&2
   exit 2
 fi
 
@@ -120,8 +121,32 @@ case "$mode" in
       media-library-playwright:local
     ;;
 
+  android)
+    keystore_props="../web/android/keystore.properties"
+    if [ ! -f "$keystore_props" ]; then
+      echo "⚠ $keystore_props not found — APK will be signed with the debug key." >&2
+      echo "  Copy keystore.properties.example to keystore.properties and fill in your credentials." >&2
+    fi
+    media_uid="${MEDIA_UID:-$(id -u)}"
+    media_gid="${MEDIA_GID:-$(id -g)}"
+    apk_out="$(pwd)/../build/android"
+    mkdir -p "$apk_out"
+    echo "Building Android release APK (uid=${media_uid} gid=${media_gid})..."
+    docker build \
+      --build-arg MEDIA_UID="$media_uid" \
+      --build-arg MEDIA_GID="$media_gid" \
+      -f Dockerfile.android -t media-library-android:local ..
+    docker run --rm \
+      -v "${HOME}/keystrokes:/keystrokes:ro" \
+      -v "$apk_out:/output" \
+      media-library-android:local
+    echo ""
+    echo "APKs:"
+    ls -lh "$apk_out"/*.apk 2>/dev/null || echo "  (none found)"
+    ;;
+
   *)
-    echo "Usage: sh deploy/start.sh [prod|local-build|e2e]" >&2
+    echo "Usage: sh deploy/start.sh [prod|local-build|e2e|android]" >&2
     echo "  prod        Pull and run versioned production images from deploy/compose.yaml." >&2
     echo "  local-build Build local backend/web sources, then run the same stack." >&2
     echo "  e2e         Run Playwright end-to-end tests against the running stack." >&2

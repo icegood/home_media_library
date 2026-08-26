@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"media-library/backend/internal/domain"
 )
 
@@ -105,5 +107,35 @@ func TestWatcherStopsWhenFlagCleared(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if got := starter.count(); got != 0 {
 		t.Fatalf("scan triggered after unwatching: %d calls", got)
+	}
+}
+
+func TestWatcherKeepsSubtreeAcrossResync(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := &stubStore{roots: []domain.WatchedRoot{{LibraryID: 7, Path: root}}}
+	w := New(store, &stubStarter{})
+	fsw, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fsw.Close()
+
+	if err := w.sync(context.Background(), fsw); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.ownerOf(sub); got != 7 {
+		t.Fatalf("subtree not watched after initial sync: ownerOf=%d, want 7", got)
+	}
+
+	// resync must keep subtree watches; desired only lists the root path.
+	if err := w.sync(context.Background(), fsw); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.ownerOf(sub); got != 7 {
+		t.Fatalf("subtree watch dropped after resync: ownerOf=%d, want 7", got)
 	}
 }

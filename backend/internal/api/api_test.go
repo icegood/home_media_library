@@ -363,6 +363,46 @@ func TestEntriesRangeParams(t *testing.T) {
 	}
 }
 
+func TestUserSettingsLanguage(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	settingsURL := "/api/v1/settings"
+
+	for _, lang := range []string{"en", "ua", "de", "nl", "fi", "sv", "pl", "che", "slo", "hu", "es", "it", "sl", "no", "pt"} {
+		body, _ := json.Marshal(map[string]any{"theme": "light", "codec": "h264-aac-mp4", "zoom": 100,
+			"dateFormat": "auto", "streamChunkSize": 10000, "defaultThumbImage": "mountains",
+			"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains", "language": lang})
+		if got := request(f.handler, http.MethodPut, settingsURL, alice, body).Code; got != http.StatusOK {
+			t.Fatalf("put settings with %s status = %d", lang, got)
+		}
+		refetched := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+		var updated domain.UserSettings
+		if err := json.Unmarshal(refetched.Body.Bytes(), &updated); err != nil {
+			t.Fatal(err)
+		}
+		if updated.Language != lang {
+			t.Fatalf("saved language = %q, want %s", updated.Language, lang)
+		}
+	}
+
+	for _, removed := range []string{"ru", "klingon"} {
+		body, _ := json.Marshal(map[string]any{"theme": "light", "codec": "h264-aac-mp4", "zoom": 100,
+			"dateFormat": "auto", "streamChunkSize": 10000, "defaultThumbImage": "mountains",
+			"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains", "language": removed})
+		if got := request(f.handler, http.MethodPut, settingsURL, alice, body).Code; got != http.StatusOK {
+			t.Fatalf("put settings with unknown language status = %d", got)
+		}
+		refetched := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+		var updated domain.UserSettings
+		if err := json.Unmarshal(refetched.Body.Bytes(), &updated); err != nil {
+			t.Fatal(err)
+		}
+		if updated.Language != "auto" {
+			t.Fatalf("unsupported language %q should normalize to auto, got %q", removed, updated.Language)
+		}
+	}
+}
+
 func TestUserSettingsStreamChunkSize(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")
@@ -1476,6 +1516,136 @@ func TestSettingsRejectCodecOutsideAllowList(t *testing.T) {
 	response := request(f.handler, http.MethodPut, "/api/v1/settings", alice, []byte(`{"theme":"dark","codec":"av1"}`))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid codec status = %d", response.Code)
+	}
+}
+
+func TestMapTileProviderIsPerUserSetting(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	settingsURL := "/api/v1/settings"
+
+	response := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("get settings status = %d: %s", response.Code, response.Body)
+	}
+	var fetched domain.UserSettings
+	if err := json.Unmarshal(response.Body.Bytes(), &fetched); err != nil {
+		t.Fatal(err)
+	}
+	if fetched.MapTileProviderLight != "osm" || fetched.MapTileProviderDark != "osm" {
+		t.Fatalf("default map tile providers = %q/%q, want osm/osm", fetched.MapTileProviderLight, fetched.MapTileProviderDark)
+	}
+
+	body, _ := json.Marshal(map[string]any{"theme": "dark", "codec": "h264-aac-mp4", "zoom": 100,
+		"dateFormat": "auto", "streamChunkSize": 10000, "defaultThumbImage": "mountains",
+		"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains",
+		"mapTileProviderLight": "esri", "mapTileProviderDark": "carto:dark"})
+	saved := request(f.handler, http.MethodPut, settingsURL, alice, body)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("put settings status = %d: %s", saved.Code, saved.Body)
+	}
+	refetched := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+	if refetched.Code != http.StatusOK {
+		t.Fatalf("refetch status = %d: %s", refetched.Code, refetched.Body)
+	}
+	var updated domain.UserSettings
+	if err := json.Unmarshal(refetched.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.MapTileProviderLight != "esri" || updated.MapTileProviderDark != "carto:dark" {
+		t.Fatalf("saved map tile providers = %q/%q, want esri/carto:dark", updated.MapTileProviderLight, updated.MapTileProviderDark)
+	}
+
+	// A bare "carto" normalizes to the voyager sub-provider in both modes.
+	legacy, _ := json.Marshal(map[string]any{"theme": "light", "codec": "h264-aac-mp4", "zoom": 100,
+		"mapTileProviderLight": "carto", "mapTileProviderDark": "carto"})
+	if got := request(f.handler, http.MethodPut, settingsURL, alice, legacy).Code; got != http.StatusOK {
+		t.Fatalf("legacy carto status = %d, want 200", got)
+	}
+	legacyFetch := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+	var legacySettings domain.UserSettings
+	if err := json.Unmarshal(legacyFetch.Body.Bytes(), &legacySettings); err != nil {
+		t.Fatal(err)
+	}
+	if legacySettings.MapTileProviderLight != "carto:voyager" || legacySettings.MapTileProviderDark != "carto:voyager" {
+		t.Fatalf("legacy carto = %q/%q, want carto:voyager/carto:voyager", legacySettings.MapTileProviderLight, legacySettings.MapTileProviderDark)
+	}
+
+	admin, _ := f.store.UserSettings(context.Background(), 1)
+	if admin.MapTileProviderLight != "osm" || admin.MapTileProviderDark != "osm" {
+		t.Fatalf("map tile providers must not leak between users, admin = %q/%q", admin.MapTileProviderLight, admin.MapTileProviderDark)
+	}
+
+	for _, body := range [][]byte{
+		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderLight":"google"}`),
+		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderDark":"carto:dusk"}`),
+		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderLight":"carto:dark"}`),
+		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderDark":"carto:light"}`),
+	} {
+		if got := request(f.handler, http.MethodPut, settingsURL, alice, body).Code; got != http.StatusBadRequest {
+			t.Fatalf("invalid provider status = %d, want 400 for %s", got, body)
+		}
+	}
+}
+
+func TestUserSettingsExposeMapTileProviders(t *testing.T) {
+	f := setup(t)
+	settings, err := f.store.ServerSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.MapTileProviders = map[string]map[string]string{"carto": {"apiKey": "carto-key-123"}}
+	if err := f.store.SaveServerSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	admin := login(t, f.handler, "admin")
+	adminGet := request(f.handler, http.MethodGet, "/api/v1/admin/settings", admin, nil)
+	if adminGet.Code != http.StatusOK {
+		t.Fatalf("admin get settings status = %d: %s", adminGet.Code, adminGet.Body)
+	}
+	var adminPayload map[string]any
+	if err := json.Unmarshal(adminGet.Body.Bytes(), &adminPayload); err != nil {
+		t.Fatal(err)
+	}
+	adminProviders := adminPayload["mapTileProviders"].(map[string]any)["carto"].(map[string]any)
+	if adminProviders["apiKey"] != "carto-key-123" {
+		t.Fatalf("admin settings carto apiKey = %#v", adminProviders["apiKey"])
+	}
+
+	alice := login(t, f.handler, "alice")
+	aliceGet := request(f.handler, http.MethodGet, "/api/v1/settings", alice, nil)
+	if aliceGet.Code != http.StatusOK {
+		t.Fatalf("user get settings status = %d: %s", aliceGet.Code, aliceGet.Body)
+	}
+	var userPayload map[string]any
+	if err := json.Unmarshal(aliceGet.Body.Bytes(), &userPayload); err != nil {
+		t.Fatal(err)
+	}
+	userProviders := userPayload["mapTileProviders"].(map[string]any)["carto"].(map[string]any)
+	if userProviders["apiKey"] != "carto-key-123" {
+		t.Fatalf("user settings carto apiKey = %#v, want carto-key-123", userProviders["apiKey"])
+	}
+
+	// Unknown providers and blank options are stripped on save.
+	body := `{"httpEnabled":true,"httpsEnabled":false,"mapTileProviders":{"google":{"token":"x"},"carto":{"apiKey":"new-key","  ":"y"},"osm":{"custom":"  "}}}`
+	if got := request(f.handler, http.MethodPut, "/api/v1/admin/settings", admin, []byte(body)).Code; got != http.StatusOK {
+		t.Fatalf("put provider options status = %d", got)
+	}
+	refetched := request(f.handler, http.MethodGet, "/api/v1/admin/settings", admin, nil)
+	var cleaned map[string]any
+	if err := json.Unmarshal(refetched.Body.Bytes(), &cleaned); err != nil {
+		t.Fatal(err)
+	}
+	providers := cleaned["mapTileProviders"].(map[string]any)
+	if _, exists := providers["google"]; exists {
+		t.Fatalf("unknown provider must be dropped, got %#v", providers)
+	}
+	carto := providers["carto"].(map[string]any)
+	if carto["apiKey"] != "new-key" {
+		t.Fatalf("carto apiKey = %#v, want new-key", carto["apiKey"])
+	}
+	if _, hasBlank := carto[""]; hasBlank {
+		t.Fatalf("blank option key must be dropped, got %#v", carto)
 	}
 }
 

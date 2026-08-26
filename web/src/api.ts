@@ -219,6 +219,7 @@ export interface AdminSettings {
   smtpUsername:string;
   smtpPassword?:string;
   smtpFrom:string;
+  mapTileProviders?:Record<string, Record<string, string>>;
 }
 
 export type TranscodeSchemaId =
@@ -232,8 +233,10 @@ export type TranscodeSchemaId =
   | "vp8-vorbis-webm"
   | "vp8-opus-webm";
 
+export type LanguageSetting = "auto" | "en" | "ua" | "de" | "nl" | "fi" | "sv" | "pl" | "che" | "slo" | "hu" | "es" | "it" | "sl" | "no" | "pt";
 export interface UserSettings {
   theme:"light"|"dark"|"forest"|"system";
+  language:LanguageSetting;
   codec:TranscodeSchemaId;
   zoom:number;
   dateFormat:"auto"|"iso"|"dmy"|"dmy-ss"|"mdy"|"mdy-ss";
@@ -241,4 +244,9 @@ export interface UserSettings {
   defaultThumbImage:string;
   defaultThumbVideo:string;
   defaultThumbFolder:string;
+  mapTileProviderLight:MapTileSource;
+  mapTileProviderDark:MapTileSource;
+  mapTileProviders?:Record<string, Record<string, string>>;
 }
+
+export type MapTileSource = "osm" | "esri" | "carto" | "carto:voyager" | "carto:light" | "carto:dark";

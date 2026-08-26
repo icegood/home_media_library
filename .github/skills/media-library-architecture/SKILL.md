@@ -63,6 +63,9 @@ The web app also packages as an Android app via Capacitor.
 - **Scanner pipeline**: admin creates library -> background job walks folder
   (progress + pause/cancel via in-memory `JobStatus` map), upserts folders +
   media, extracts metadata/GPS, then a thumbnail-create job runs.
+- **Folder watcher**: per-root `watch` flag (off by default) on `library_roots`.
+  `backend/internal/watcher` fsnotify-watches opted-in roots recursively,
+  debounces change bursts into one incremental library rescan via the scanner.
 - **Playback**: `/play` probes source; if browser-advertised codecs match and
   container/audio are direct-play safe, serves original bytes; otherwise FFmpeg
   transcodes to the requesting user's configured fallback codec (set per account

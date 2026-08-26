@@ -20,7 +20,12 @@ the Caddy gateway runs only when the `https` compose profile is active.
 - `backend/` — Go 1.23 REST API (`cmd/server/main.go`). Backed by a full SQLite
   store (`store.NewSQLite`, `DB_DRIVER=sqlite` default) or a Postgres store
   (`store.NewPostgres`, `DB_DRIVER=postgres`, `DB_DSN` as a postgres:// URL).
-  Migrations live at
+  The server opens two dedicated store handles on the same database: the
+  interactive handle serves HTTP requests, and a separate job handle feeds all
+  background work (scans, metadata renew, thumbnail creation, watcher,
+  scheduler, job-state persistence) so a long-running job can never starve or
+  wedge the connection a user is waiting on. SQLite handles use
+  `SetMaxOpenConns(1)` each. Migrations live at
   `backend/internal/store/migrations/{sqlite,postgres}/` and run automatically on
   startup via the embedded `schema_migrations` table. Relative paths are never
   stored; both DB stores compute them on the fly from the library-root prefix.
@@ -46,6 +51,9 @@ Key facts:
   account in user settings).
 - Scanner: background job walks folder (progress, pause/cancel), upserts folders +
   media, extracts ExifTool/FFprobe metadata, then a thumbnail-create job runs.
+- Folder watcher: per-root `watch` flag (off by default) — fsnotify watches each
+  opted-in library root recursively and debounces filesystem changes into an
+  incremental rescan of that library (see `backend/internal/watcher`).
 - Settings → Network access toggles HTTP/HTTPS; gateway config regenerates and
   Caddy hot-reloads.
 

@@ -104,7 +104,24 @@ func (c *loggingConn) Close() error { return c.conn.Close() }
 
 func (c *loggingConn) Begin() (driver.Tx, error) { return c.conn.Begin() }
 
+// dbCtx shields a SQLite connection from caller cancellation. modernc.org/sqlite
+// implements a cancelled context by interrupting the whole connection
+// (sqlite3_interrupt) rather than just the statement, and database/sql does not
+// retire the wedged connection. With SetMaxOpenConns(1) a single aborted call
+// site — e.g. an HTTP client that navigated away and cancelled the request, or
+// any store caller whose context was cancelled — poisons the shared pool
+// connection and every later query fails with "interrupted (9)" until the
+// connection lifetime recycles it. A client abort must therefore never reach the
+// SQLite driver; Postgres cancels per-statement and is left unchanged.
+func (c *loggingConn) dbCtx(ctx context.Context) context.Context {
+	if c.label != "sqlite" {
+		return ctx
+	}
+	return context.WithoutCancel(ctx)
+}
+
 func (c *loggingConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	ctx = c.dbCtx(ctx)
 	if conn, ok := c.conn.(driver.ConnPrepareContext); ok {
 		stmt, err := conn.PrepareContext(ctx, query)
 		if err != nil {
@@ -116,6 +133,7 @@ func (c *loggingConn) PrepareContext(ctx context.Context, query string) (driver.
 }
 
 func (c *loggingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	ctx = c.dbCtx(ctx)
 	if conn, ok := c.conn.(driver.ConnBeginTx); ok {
 		return conn.BeginTx(ctx, opts)
 	}
@@ -123,6 +141,7 @@ func (c *loggingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (drive
 }
 
 func (c *loggingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	ctx = c.dbCtx(ctx)
 	id := atomic.AddUint64(&querySeq, 1)
 	applog.Printf(applog.Debug, "db %s [%d]: %s", c.label, id, query)
 	start := time.Now()
@@ -144,6 +163,7 @@ func (c *loggingConn) ExecContext(ctx context.Context, query string, args []driv
 }
 
 func (c *loggingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	ctx = c.dbCtx(ctx)
 	id := atomic.AddUint64(&querySeq, 1)
 	applog.Printf(applog.Debug, "db %s [%d]: %s", c.label, id, query)
 	start := time.Now()
@@ -170,6 +190,16 @@ type loggingStmt struct {
 	query string
 }
 
+// dbCtx is the statement-level counterpart of loggingConn.dbCtx: prepared
+// statement execution must also be shielded from caller cancellation so a
+// cancelled context cannot interrupt the shared SQLite connection.
+func (s *loggingStmt) dbCtx(ctx context.Context) context.Context {
+	if s.label != "sqlite" {
+		return ctx
+	}
+	return context.WithoutCancel(ctx)
+}
+
 func (s *loggingStmt) Close() error  { return s.stmt.Close() }
 func (s *loggingStmt) NumInput() int { return s.stmt.NumInput() }
 func (s *loggingStmt) Exec(args []driver.Value) (driver.Result, error) {
@@ -180,6 +210,7 @@ func (s *loggingStmt) Query(args []driver.Value) (driver.Rows, error) {
 }
 
 func (s *loggingStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	ctx = s.dbCtx(ctx)
 	id := atomic.AddUint64(&querySeq, 1)
 	applog.Printf(applog.Debug, "db %s [%d]: %s", s.label, id, s.query)
 	start := time.Now()
@@ -192,6 +223,7 @@ func (s *loggingStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 }
 
 func (s *loggingStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	ctx = s.dbCtx(ctx)
 	id := atomic.AddUint64(&querySeq, 1)
 	applog.Printf(applog.Debug, "db %s [%d]: %s", s.label, id, s.query)
 	start := time.Now()

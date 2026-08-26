@@ -41,8 +41,12 @@ func main() {
 	}
 
 	// Repository: DB_DRIVER selects the backing store. sqlite is the primary
-	// implementation, postgres is an alternative.
+	// implementation, postgres is an alternative. Two dedicated handles are
+	// opened so background jobs (scans, metadata renew, thumbnail creation,
+	// watcher/scheduler) never share a connection with interactive requests: a
+	// wedged or long-running job query cannot starve the UI, and vice versa.
 	var repository store.Store
+	var jobRepository store.Store
 	switch driver := env("DB_DRIVER", "sqlite"); driver {
 	case "sqlite":
 		sqliteStore, err := store.NewSQLite(env("DB_DSN", "/runtime/app-data/media-library.db"))
@@ -51,6 +55,12 @@ func main() {
 		}
 		defer sqliteStore.Close()
 		repository = sqliteStore
+		jobSQLiteStore, err := store.NewSQLite(env("DB_DSN", "/runtime/app-data/media-library.db"))
+		if err != nil {
+			log.Fatalf("open sqlite job store: %v", err)
+		}
+		defer jobSQLiteStore.Close()
+		jobRepository = jobSQLiteStore
 	case "postgres":
 		postgresStore, err := store.NewPostgres(env("DB_DSN", "postgres://media:media@localhost:5432/media?sslmode=disable"))
 		if err != nil {
@@ -58,6 +68,12 @@ func main() {
 		}
 		defer postgresStore.Close()
 		repository = postgresStore
+		jobPostgresStore, err := store.NewPostgres(env("DB_DSN", "postgres://media:media@localhost:5432/media?sslmode=disable"))
+		if err != nil {
+			log.Fatalf("open postgres job store: %v", err)
+		}
+		defer jobPostgresStore.Close()
+		jobRepository = jobPostgresStore
 	default:
 		log.Fatalf("unknown DB_DRIVER %q (want sqlite or postgres)", driver)
 	}
@@ -84,7 +100,8 @@ func main() {
 	defer stop()
 	apiInstance := &api.API{
 		Store:             repository,
-		Scanner:           scanner.Scanner{Store: repository},
+		JobStore:          jobRepository,
+		Scanner:           scanner.Scanner{Store: jobRepository},
 		Transcoder:        transcode.Service{},
 		JWTSecret:         []byte(secret),
 		GatewayConfigPath: gatewayPath,
@@ -101,11 +118,11 @@ func main() {
 	}
 	handler := apiInstance.Handler()
 
-	watcherInstance := watcher.New(repository, apiInstance)
+	watcherInstance := watcher.New(jobRepository, apiInstance)
 	apiInstance.OnLibrariesChanged = watcherInstance.Refresh
 	go watcherInstance.Run(stopCtx)
 
-	go scheduler.Loop(stopCtx, repository, apiInstance)
+	go scheduler.Loop(stopCtx, jobRepository, apiInstance)
 
 	server := &http.Server{
 		Addr:              addr,

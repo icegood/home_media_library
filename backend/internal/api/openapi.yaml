@@ -2221,6 +2221,13 @@ components:
           type: string
         smtpFrom:
           type: string
+        mapTileProviders:
+          type: object
+          description: Per-provider configuration options for the media map tile sources, keyed by fixed provider id (osm, esri, carto). Today only carto uses an option: `apiKey`, the CARTO Basemaps API key used to build tile URLs. It is a public client-side key (the browser sends it to the tile server), so it is returned to every authenticated user in their own settings.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
     UserSettings:
       type: object
       required: [theme, codec, zoom]
@@ -2242,6 +2249,10 @@ components:
           type: string
           enum: [auto, iso, dmy, dmy-ss, mdy, mdy-ss]
           description: How dates are formatted in the viewer. `auto` uses the browser locale; the fixed formats are YYYY-MM-DD HH:mm, DD.MM.YYYY HH:mm, DD.MM.YYYY HH:mm:ss, MM/DD/YYYY hh:mm AM/PM, and MM/DD/YYYY hh:mm:ss AM/PM. Unknown values normalize to `auto`.
+        language:
+          type: string
+          enum: [auto, en, ua, de, nl, fi, sv, pl, che, slo, hu, es, it, sl, no, pt]
+          description: UI translation language. `auto` follows the browser locale; the other values force English, Ukrainian, German, Dutch, Finnish, Swedish, Polish, Czech, Slovak, Hungarian, Spanish, Italian, Slovenian, Norwegian, or Portuguese. Unknown values (including the removed `ru`) normalize to `auto`.
         defaultThumbImage:
           type: string
           description: Id of the placeholder picture shown for images whose thumbnail has not been generated yet.
@@ -2251,3 +2262,19 @@ components:
         defaultThumbFolder:
           type: string
           description: Id of the placeholder picture shown for folder covers that have not been generated yet.
+        mapTileProviderLight:
+          type: string
+          enum: [osm, esri, carto, carto:voyager, carto:light]
+          description: Map tile source for light and system themes. `osm` and `esri` need no key; CARTO sources (bare `carto` normalizes to `carto:voyager`) need the admin-configured API key, otherwise the tiles show an "API key required" watermark.
+        mapTileProviderDark:
+          type: string
+          enum: [osm, esri, carto, carto:voyager, carto:dark]
+          description: Map tile source for the dark and forest themes. `osm`, `esri`, and `carto:voyager` are rendered through a CSS dark filter; `carto:dark` serves CARTO's native dark tiles. CARTO sources need the admin-configured API key; without it the tiles show an "API key required" watermark.
+        mapTileProviders:
+          type: object
+          readOnly: true
+          description: Read-only echo of the admin-configured per-provider options (e.g. the CARTO API key), so browsers can build CARTO tile URLs.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string

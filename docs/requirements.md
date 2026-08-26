@@ -81,7 +81,16 @@ via `sh deploy/start.sh e2e`.
 - Active/selected controls use `--primary-text` background with `--primary-contrast` text; primary buttons glow uses `--btn-shadow-color`.
 - Global unified focus ring (`:focus-visible` outline in `--primary`).
 - User settings: UI zoom, stream chunk size, date format, video fallback codec, default thumbnails.
+- Languages: UI is authored in English; a per-user setting (`auto` or a fixed language: `en`, `ua`, `de`, `nl`, `fi`, `sv`, `pl`, `che` (Czech), `slo` (Slovak), `hu`, `es`, `it`, `sl` (Slovenian), `no`, `pt`; `auto` follows the browser) applies live translations to all rendered text and common attributes without page reload. New UI strings must keep English as the canonical source and add an entry to every table in `web/src/i18n.ts`.
 - Network settings toggle HTTP/HTTPS; gateway Caddyfile regenerates and hot-reloads.
+
+## Android application
+
+- Native Android app built with Capacitor (v7) and bundled as an APK via `deploy/Dockerfile.android`.
+- On first launch the app shows a **server picker** that asks for the self-hosted server URL (stored in `localStorage` as `ml.server.url`); once validated, the WebView navigates to that origin and the existing cookie-based auth takes over.
+- Cleartext HTTP is allowed so the app can reach LAN servers that do not have TLS.
+- Release signing reads from a gitignored `web/android/keystore.properties`; when absent the APK is signed with the debug key.
+- Build: `sh deploy/start.sh android` (runs inside a container; host needs only Docker, Java 25 optional, and `~/keystrokes/fmiw-release.jks` for release signing).
 
 ## Runtime layout
 

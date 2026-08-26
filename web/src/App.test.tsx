@@ -1,168 +1,40 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { App, resetFolderEntriesCache, useBufferedFolderEntries } from "./App";
+import { App, resetFolderEntriesCache, setNativePlatformForTests, useBufferedFolderEntries } from "./App";
+import { mockApi, resetMockApi } from "./test-support/api-mock";
 
-const mockApi = vi.hoisted(() => ({
-  setupStatus: vi.fn(),
-  me: vi.fn(),
-  userSettings: vi.fn(),
-  updateUserSettings: vi.fn(),
-  updateEmail: vi.fn(),
-  changePassword: vi.fn(),
-  forgotPassword: vi.fn(),
-  resetPassword: vi.fn(),
-  libraries: vi.fn(),
-  libraryStats: vi.fn(),
-  map: vi.fn(),
-  geocode: vi.fn(),
-  settings: vi.fn(),
-  updateSettings: vi.fn(),
-  createLibrary: vi.fn(),
-  updateLibrary: vi.fn(),
-  deleteLibrary: vi.fn(),
-  logout: vi.fn(),
-  scanLibrary: vi.fn(),
-  createThumbnails: vi.fn(),
-  users: vi.fn(),
-  createUser: vi.fn(),
-  updateUser: vi.fn(),
-  libraryAccess: vi.fn(),
-  setLibraryAccess: vi.fn(),
-  entries: vi.fn(),
-  folder: vi.fn(),
-  folderEntries: vi.fn(),
-  folderMedia: vi.fn(),
-  folderStats: vi.fn(),
-  favoriteViewStats: vi.fn(),
-  libraryMedia: vi.fn(),
-  favoriteViews: vi.fn(),
-  mediaFavoriteViews: vi.fn(),
-  createFavoriteView: vi.fn(),
-  updateFavoriteView: vi.fn(),
-  deleteFavoriteView: vi.fn(),
-  favoriteViewMedia: vi.fn(),
-  favoriteViewMediaFull: vi.fn(),
-  media: vi.fn(),
-  updateMediaDetails: vi.fn(),
-  bulkUpdateMedia: vi.fn(),
-  metadataRenew: vi.fn(),
-  favoriteMedia: vi.fn(),
-  unfavoriteMedia: vi.fn(),
-  thumbnailUrl: vi.fn(),
-  contentUrl: vi.fn(),
-  downloadArchive: vi.fn(),
-  folderThumbnailUrl: vi.fn(),
-  jobs: vi.fn(),
-  scheduledTasks: vi.fn(),
-  createScheduledTask: vi.fn(),
-  updateScheduledTask: vi.fn(),
-  deleteScheduledTask: vi.fn(),
-  logs: vi.fn(),
-  clearLogs: vi.fn(),
-  logsDownloadUrl: vi.fn(() => "/api/v1/admin/logs/download"),
-  pauseJob: vi.fn(),
-  resumeJob: vi.fn(),
-  cancelJob: vi.fn(),
-  cleanupOrphanThumbnails: vi.fn(),
-  vacuumDatabase: vi.fn(),
-  shutdown: vi.fn(),
-  importEmby: vi.fn(),
-  filesystem: vi.fn(),
-  videoThumbnails: vi.fn(),
-  playbackUrl: vi.fn(),
-  about: vi.fn()
-}));
-
-vi.mock("./api", () => ({ api: mockApi, MAX_VIDEO_THUMBNAILS: 100 }));
+// The API client is mocked at the module boundary only, but the replacement is
+// a fully functional in-memory backend (see ./test-support/api-mock): stateful
+// CRUD, derived stats and realistic URL builders instead of per-test stubs.
+vi.mock("./api", async () => {
+  const {mockApi} = await import("./test-support/api-mock");
+  return {api:mockApi, MAX_VIDEO_THUMBNAILS:100};
+});
 
 beforeAll(() => {
   HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined) as any;
   window.scrollTo = vi.fn() as any;
+  // jsdom throws "not implemented" on the real one; default to confirming.
+  window.confirm = vi.fn(() => true);
 });
 
 beforeEach(() => {
-  vi.resetAllMocks();
+  // Restores both the in-memory backend state and every method's default
+  // implementation, so per-test overrides cannot leak between tests.
+  resetMockApi();
   resetFolderEntriesCache();
   (window as any).matchMedia = undefined;
   localStorage.clear();
   sessionStorage.clear();
   delete document.documentElement.dataset.theme;
   document.documentElement.style.fontSize = "";
-  mockApi.setupStatus.mockResolvedValue({required:false});
-  mockApi.me.mockRejectedValue(new Error("unauthorized"));
-  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto"});
-  mockApi.updateUserSettings.mockResolvedValue({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto"});
-  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
-    {id:10, path:"/media/family/photos"}
-  ]}]);
-  mockApi.libraryStats.mockResolvedValue({images:10, videos:2});
-  mockApi.folderStats.mockResolvedValue({images:1, videos:1});
-  mockApi.favoriteViewStats.mockResolvedValue({images:2, videos:1});
-  mockApi.map.mockResolvedValue([]);
-  mockApi.settings.mockResolvedValue({
-    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:true,
-    thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
-    sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
-    smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
-  });
-  mockApi.updateSettings.mockResolvedValue({
-    httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:true,
-    thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
-    sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
-    smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
-  });
-  mockApi.updateEmail.mockResolvedValue({email:""});
-  mockApi.changePassword.mockResolvedValue({ok:true});
-  mockApi.forgotPassword.mockResolvedValue({sent:true});
-  mockApi.resetPassword.mockResolvedValue({ok:true});
-  mockApi.createLibrary.mockResolvedValue({id:1, name:"Family"});
-  mockApi.updateLibrary.mockResolvedValue({id:1, name:"Family"});
-  mockApi.deleteLibrary.mockResolvedValue(undefined);
-  mockApi.logout.mockResolvedValue(undefined);
-  mockApi.scanLibrary.mockResolvedValue({id:"job-1", category:"scan", status:"running"});
-  mockApi.createThumbnails.mockResolvedValue({id:"job-3", category:"thumbnail-create", status:"running"});
-  mockApi.cleanupOrphanThumbnails.mockResolvedValue({id:"job-4", category:"orphan-thumbnail-cleanup", status:"running"});
-  mockApi.vacuumDatabase.mockResolvedValue({id:"vacuum-1", category:"vacuum", status:"running"});
-  mockApi.users.mockResolvedValue([{id:0, login:"admin", role:"admin"}, {id:2, login:"alice", role:"regular"}]);
-  mockApi.createUser.mockResolvedValue({id:3, login:"bob", role:"regular"});
-  mockApi.updateUser.mockResolvedValue({id:2, login:"alice", role:"regular"});
-  mockApi.libraryAccess.mockResolvedValue([{user:{id:0, login:"admin", role:"admin"}, allowed:true}, {user:{id:2, login:"alice", role:"regular"}, allowed:false}]);
-  mockApi.setLibraryAccess.mockResolvedValue(undefined);
-  mockApi.entries.mockResolvedValue([]);
-  mockApi.folder.mockResolvedValue({id:20, parentId:-1, relativePath:"Photos", name:"Photos"});
-  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
-  mockApi.libraryMedia.mockResolvedValue([]);
-  mockApi.favoriteViews.mockResolvedValue([]);
-  mockApi.createFavoriteView.mockResolvedValue({id:30, name:"Favorites", count:0});
-  mockApi.updateFavoriteView.mockResolvedValue({id:30, name:"Favorites", count:0});
-  mockApi.deleteFavoriteView.mockResolvedValue(undefined);
-  mockApi.favoriteViewMedia.mockResolvedValue([]);
-  mockApi.favoriteViewMediaFull.mockResolvedValue([]);
-  mockApi.media.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""});
-  mockApi.updateMediaDetails.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"renamed.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""});
-  mockApi.favoriteMedia.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", favorite:true});
-  mockApi.unfavoriteMedia.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", favorite:false});
-  mockApi.thumbnailUrl.mockReturnValue("/thumb.jpg");
-  mockApi.contentUrl.mockReturnValue("/content.jpg");
-  mockApi.folderThumbnailUrl.mockReturnValue("/folder-thumb.jpg");
-  mockApi.jobs.mockResolvedValue([]);
-  mockApi.scheduledTasks.mockResolvedValue([]);
-  mockApi.logs.mockResolvedValue({path:"/runtime/app-config/logs/app.log", lines:["2026/07/31 08:00:00 I media API listening on :8080", "2026/07/31 08:01:00 E thumbnail failed"]});
-  mockApi.pauseJob.mockResolvedValue({id:"job-1", category:"scan", status:"paused", paused:true, cancelable:true});
-  mockApi.resumeJob.mockResolvedValue({id:"job-1", category:"scan", status:"running", paused:false, cancelable:true});
-  mockApi.cancelJob.mockResolvedValue({id:"job-1", category:"scan", status:"cancelling", paused:false, cancelable:true});
-  mockApi.shutdown.mockResolvedValue({status:"stopping"});
-  mockApi.importEmby.mockResolvedValue({libraries:[], users:[], access:[]});
-  mockApi.filesystem.mockResolvedValue({root:"/media", path:"/media", parent:"", directories:[
-    {name:"photos", path:"/media/photos"}
-  ]});
-  mockApi.videoThumbnails.mockResolvedValue([]);
-  mockApi.playbackUrl.mockReturnValue("/play.mp4");
 });
 
 afterEach(() => {
   cleanup();
+  // Restores prototype spies (getBoundingClientRect, media stubs, confirms).
+  vi.restoreAllMocks();
 });
 
 test("shows login for an unauthenticated visitor", async () => {
@@ -249,7 +121,7 @@ test("HTTPS controls are hidden when the gateway is not enabled", async () => {
     httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:false,
     thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
     sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
-    smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:""
+    smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:"", mapTileProviders:{carto:{apiKey:""}}
   });
   render(<MemoryRouter initialEntries={["/admin?section=network"]}><App/></MemoryRouter>);
   expect(await screen.findByLabelText("Enable HTTP")).toBeInTheDocument();
@@ -285,9 +157,9 @@ test("item menu closes on outside click", async () => {
   mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[{id:10, path:"/media/family"}]}]);
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  expect(await screen.findByRole("menuitem", {name:"Rename"})).toBeInTheDocument();
+  expect(await screen.findByRole("menuitem", {name:"Edit"})).toBeInTheDocument();
   fireEvent.mouseDown(document.body);
-  await waitFor(() => expect(screen.queryByRole("menuitem", {name:"Rename"})).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole("menuitem", {name:"Edit"})).not.toBeInTheDocument());
 });
 
 test("favorite views page keeps the create editor as a separate panel above the list", async () => {
@@ -349,7 +221,7 @@ test("user menu opens About dialog with version information", async () => {
   render(<MemoryRouter><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("User menu"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
-  const dialog = await screen.findByRole("dialog", {name:"About"});
+  const dialog = await screen.findByRole("dialog", {name:"About"}, {timeout:3000});
   expect(dialog).toBeInTheDocument();
   expect(screen.getByText("Media Library — self-hosted, multi-user photo and video library.")).toBeInTheDocument();
   expect(screen.getByText("0.1.0")).toBeInTheDocument();
@@ -364,7 +236,7 @@ test("About dialog omits the gateway entry in an HTTP-only deployment", async ()
   render(<MemoryRouter><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("User menu"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
-  const dialog = await screen.findByRole("dialog", {name:"About"});
+  const dialog = await screen.findByRole("dialog", {name:"About"}, {timeout:3000});
   expect(within(dialog).queryByText("Gateway")).not.toBeInTheDocument();
 });
 
@@ -413,6 +285,7 @@ test("admin settings menu duplicates settings sections and opens selected sectio
     "Thumbnails",
     "Users",
     "Network",
+    "Map tiles",
     "Mail",
     "Logs",
     "Jobs",
@@ -448,7 +321,7 @@ test("regular user has no settings menu and picks theme in user settings", async
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
@@ -470,13 +343,40 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"system"}});
   expect(document.documentElement.dataset.theme).toBe("light");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
   dark = false;
   listeners.forEach(listener => listener({matches:false}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+});
+
+test("user settings lets each user pick CARTO map tiles per theme", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  const light = within(dialog).getByRole("combobox", {name:"Tile source in light mode"});
+  const dark = within(dialog).getByRole("combobox", {name:"Tile source in dark/forest mode"});
+  expect(light).toHaveValue("osm");
+  expect(within(dialog).getByRole("option", {name:"CARTO — Voyager"})).toBeInTheDocument();
+  expect(within(dialog).getByRole("option", {name:"CARTO — Native dark tiles"})).toBeInTheDocument();
+  fireEvent.change(light, {target:{value:"carto:voyager"}});
+  fireEvent.change(dark, {target:{value:"carto:dark"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({mapTileProviderLight:"carto:voyager", mapTileProviderDark:"carto:dark"})));
+});
+
+test("admin map tiles section saves the CARTO API key", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=map"]}><App/></MemoryRouter>);
+  expect(await screen.findByRole("heading", {name:"Map tiles"})).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByLabelText("CARTO Basemaps API key")).toBeEnabled());
+  fireEvent.change(screen.getByLabelText("CARTO Basemaps API key"), {target:{value:"carto-test-key"}});
+  await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({mapTileProviders:{carto:{apiKey:"carto-test-key"}}})));
 });
 
 test("user settings lists the full direct-play formats the browser supports", async () => {
@@ -507,7 +407,7 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await within(dialog).findByRole("option", {name:/VP9 \+ Opus → WebM/}));
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
 
   fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
   fireEvent.blur(within(dialog).getByLabelText("Email address"));
@@ -536,11 +436,11 @@ test("user settings modal changes zoom grade numerically", async () => {
   expect(document.documentElement.style.fontSize).toBe("120%");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Zoom"}), {target:{value:"80"}});
   expect(document.documentElement.style.fontSize).toBe("80%");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
 });
 
 test("user settings saves a configured date format", async () => {
@@ -552,7 +452,7 @@ test("user settings saves a configured date format", async () => {
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"dmy"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
 });
 
 test("user settings saves the date format with seconds", async () => {
@@ -565,7 +465,7 @@ test("user settings saves the date format with seconds", async () => {
   expect(within(dialog).getByRole("option", {name:"16.08.2026 14:30:15"})).toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"dmy-ss"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
 });
 
 test("user settings saves the american date format with seconds", async () => {
@@ -578,7 +478,7 @@ test("user settings saves the american date format with seconds", async () => {
   expect(within(dialog).getByRole("option", {name:"08/16/2026 2:30:15 PM"})).toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"mdy-ss"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
 });
 
 function pagedEntries(many:ReturnType<typeof makeMany>) {
@@ -654,7 +554,7 @@ test("user settings saves the media loading batch size", async () => {
   fireEvent.change(batchInput, {target:{value:"25"}});
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
 });
 
 test("login forgot password flow requests a reset link", async () => {
@@ -702,7 +602,7 @@ test("library tridot menu exposes library actions and thumbnail refresh options"
   fireEvent.click(screen.getByRole("button", {name:"Close"}));
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"Refresh content"}));
-  expect(screen.queryByRole("menuitem", {name:"Rename"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", {name:"Edit"})).not.toBeInTheDocument();
   await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(1));
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
   fireEvent.click(screen.getByRole("menuitem", {name:"Refresh thumbnails…"}));
@@ -715,9 +615,31 @@ test("library tridot menu exposes library actions and thumbnail refresh options"
   await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:true}));
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
   expect(screen.queryByRole("menuitem", {name:"Renew metadata"})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("menuitem", {name:"Rename"}));
+  fireEvent.click(screen.getByRole("menuitem", {name:"Edit"}));
   expect(await screen.findByRole("dialog", {name:"Edit library details"})).toBeInTheDocument();
   expect(screen.getByRole("heading", {name:"Edit details"})).toBeInTheDocument();
+});
+
+test("user language setting switches rendered UI to Polish", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", language:"pl"});
+  render(<MemoryRouter initialEntries={["/"]}><App/></MemoryRouter>);
+  await screen.findByText("Family");
+  await waitFor(() => expect(document.body.textContent).toContain("Ustawienia użytkownika"), {timeout: 3000});
+  expect(document.body.textContent).toContain("Medioteka");
+  expect(document.body.textContent).not.toContain("Media Library");
+});
+
+test("user language setting switches rendered UI to German", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", language:"de"});
+  render(<MemoryRouter initialEntries={["/"]}><App/></MemoryRouter>);
+  await screen.findByText("Family");
+  await waitFor(() => expect(document.body.textContent).toContain("Benutzereinstellungen"), {timeout: 3000});
+  expect(document.body.textContent).toContain("Mediathek");
+  expect(document.body.textContent).not.toContain("Media Library");
 });
 
 test("library editor persists per-root watch flag and sends it on save", async () => {
@@ -727,7 +649,7 @@ test("library editor persists per-root watch flag and sends it on save", async (
   ]}]);
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(await screen.findByRole("menuitem", {name:"Rename"}));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Edit"}));
   const dialog = await screen.findByRole("dialog", {name:"Edit library details"});
   const checkbox = within(dialog).getByRole("checkbox", {name:"Watch for changes"}) as HTMLInputElement;
   expect(checkbox.checked).toBe(false);
@@ -736,6 +658,17 @@ test("library editor persists per-root watch flag and sends it on save", async (
   await waitFor(() => expect(mockApi.updateLibrary).toHaveBeenCalledWith(1, expect.objectContaining({
     roots: [expect.objectContaining({path:"/media/family/photos", watch:true})]
   })));
+});
+
+test("library row shows auto-refresh indicator when a root is watched", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
+    {id:10, path:"/media/family/photos", watch:true}
+  ]}]);
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  const row = await screen.findByText("Family");
+  expect(row.parentElement).toBeInTheDocument();
+  expect(screen.getByText(/Auto-refresh on/)).toBeInTheDocument();
 });
 
 test("library tridot menu can delete a library after confirmation", async () => {
@@ -804,7 +737,7 @@ test("library edit modal can grant regular user read access", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(screen.getByRole("menuitem", {name:"Rename"}));
+  fireEvent.click(screen.getByRole("menuitem", {name:"Edit"}));
   expect(await screen.findByRole("group", {name:"Read access"})).toBeInTheDocument();
   fireEvent.click(screen.getByLabelText(/alice/));
   await waitFor(() => expect(mockApi.setLibraryAccess).toHaveBeenCalledWith(1, 2, true));
@@ -932,7 +865,7 @@ test("library browser renders folder entries", async () => {
     {id:101, name:"one.jpg", relativePath:"Photos/one.jpg", type:"media", media:{id:101, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
     {id:103, name:"two.mp4", relativePath:"Photos/two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:""}}
   ], chain: []});
-  const {container} = render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
   await screen.findByRole("button", {name:"Open folder Photos"});
   expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Libraries / Family");
   expect(screen.getByLabelText("Breadcrumb")).not.toHaveTextContent("Root");
@@ -1004,7 +937,7 @@ test("favorite view skips expanded media fetch until timeline mode opens", async
 
 test("favorite view menu shows backend-computed media statistics", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
-  mockApi.favoriteViews.mockResolvedValue([{id:30, name:"Best", count:3}]);
+  mockApi.seed(state => { state.favoriteViews = [{id:30, name:"Best", count:3}]; });
   render(<MemoryRouter initialEntries={["/favorites"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Favorite view menu Best"));
   await waitFor(() => expect(mockApi.favoriteViewStats).toHaveBeenCalledWith(30));
@@ -1081,14 +1014,23 @@ test("folder timeline loads media for that folder and links back to it", async (
   ]);
   render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
   await waitFor(() => expect(mockApi.folderMedia).toHaveBeenCalledWith(1, 20));
-  expect(screen.getByText("two.jpg")).toBeInTheDocument();
-  expect(screen.getByText("one.jpg")).toBeInTheDocument();
+  expect(await screen.findByText("two.jpg")).toBeInTheDocument();
+  expect(await screen.findByText("one.jpg")).toBeInTheDocument();
   const viewSelect = screen.getAllByRole("combobox")[0];
   const foldersOption = viewSelect.querySelector<HTMLOptionElement>("option[value='/library/1/folder/20']");
   expect(foldersOption).not.toBeNull();
   expect(foldersOption!.textContent).toBe("Folders");
   expect(screen.getByRole("link", {name:"Timeline of Libraries"})).toHaveAttribute("href", "/");
   expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1/timeline");
+});
+
+test("timeline load can be cancelled while a big folder is still loading", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderMedia.mockReturnValue(new Promise(() => {}));
+  render(<MemoryRouter initialEntries={["/library/1", "/library/1/timeline/20"]} initialIndex={1}><App/></MemoryRouter>);
+  expect(await screen.findByRole("button", {name:"Cancel and go back"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Cancel and go back"}));
+  await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Libraries / Family"));
 });
 
 test("library timeline groups media by date along a vertical ruler", async () => {
@@ -1152,9 +1094,33 @@ test("media name and gps are saved only after explicit save", async () => {
   expect(screen.getByRole("button", {name:"Show info panel"})).toHaveTextContent("<<");
 });
 
+test("saved gps and name stick when navigating to an adjacent item and back", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  mockApi.updateMediaDetails.mockImplementation(async (id:number|string, input:{name:string; gps:string|null; takenAt:string|null}) => ({
+    id:Number(id), folderId:20, relativePath:"one.jpg", name:input.name,
+    kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:input.gps ?? "", takenAt:input.takenAt ?? ""
+  }));
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  fireEvent.change(await screen.findByLabelText("Name"), {target:{value:"edited.jpg"}});
+  fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"50.45,30.52"}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"edited.jpg", gps:"50.45,30.52", takenAt:""}));
+  fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+  expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Previous media"}));
+  expect(await screen.findByRole("img", {name:"edited.jpg"})).toBeInTheDocument();
+  expect(screen.getByLabelText("GPS")).toHaveValue("50.45,30.52");
+  expect(screen.getByLabelText("Name")).toHaveValue("edited.jpg");
+});
+
 test("media info shows the date in the configured format, copyable, and pasting saves it", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"});
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto"});
   mockApi.folderEntries.mockResolvedValue({entries:[
     {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:00Z"}}
   ], chain: []});
@@ -1179,7 +1145,7 @@ test("media info shows the date in the configured format, copyable, and pasting 
 
 test("media info shows and parses the date format with seconds", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains"});
+  mockApi.userSettings.mockResolvedValue({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto"});
   mockApi.folderEntries.mockResolvedValue({entries:[
     {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:56Z"}}
   ], chain: []});
@@ -1257,9 +1223,9 @@ test("media viewer uses side arrows and keyboard shortcuts for previous and next
   fireEvent.click(screen.getByRole("button", {name:"Next media"}));
   expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("100%");
-  fireEvent.keyDown(window, {key:"ArrowLeft"});
+  fireEvent.keyDown(document.body, {key:"ArrowLeft"});
   expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
-  fireEvent.keyDown(window, {key:"ArrowRight"});
+  fireEvent.keyDown(document.body, {key:"ArrowRight"});
   expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
 });
 
@@ -1277,6 +1243,16 @@ test("media viewer does not refetch items already present in folder entries", as
   expect(mockApi.media).not.toHaveBeenCalled();
 });
 
+test("media viewer shows a recovery screen instead of an eternal spinner when the requested media no longer exists", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderMedia.mockResolvedValue([]);
+  mockApi.media.mockRejectedValue(new Error("media not found"));
+  render(<MemoryRouter initialEntries={["/library/7/view/38?item=999999&sort=date-asc&root=37"]}><App/></MemoryRouter>);
+  expect(await screen.findByRole("heading", {name:"Media not found"})).toBeInTheDocument();
+  expect(screen.queryByText("Loading media…")).not.toBeInTheDocument();
+  expect(screen.getByRole("link", {name:"All libraries"})).toHaveAttribute("href", "/");
+});
+
 test("media viewer previous/next follows the requested date sort instead of the name order", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[
@@ -1292,7 +1268,7 @@ test("media viewer previous/next follows the requested date sort instead of the 
   expect(await screen.findByRole("img", {name:"c.jpg"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Previous media"}));
   expect(await screen.findByRole("img", {name:"b.jpg"})).toBeInTheDocument();
-  fireEvent.keyDown(window, {key:"ArrowRight"});
+  fireEvent.keyDown(document.body, {key:"ArrowRight"});
   expect(await screen.findByRole("img", {name:"c.jpg"})).toBeInTheDocument();
 });
 
@@ -1389,6 +1365,41 @@ test("map breadcrumb shows Map of the library and folder when scoped", async () 
   expect(screen.getByRole("link", {name:"Map of Family"})).toHaveAttribute("href", "/map?library=1");
   expect(screen.getByRole("link", {name:"Photos"})).toHaveAttribute("href", "/map?library=1&folder=20");
   expect(screen.getByText("Nested")).toBeInTheDocument();
+});
+
+test("scoped timeline viewer breadcrumb walks the subfolder chain to the item", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"},
+    {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}
+  ]});
+  mockApi.folderMedia.mockResolvedValue([]);
+  mockApi.media.mockResolvedValue({id:100, folderId:21, relativePath:"Nested/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-10-30T13:44:47Z"});
+  render(<MemoryRouter initialEntries={["/library/1/view/21?item=100&sort=date-asc&root=20"]}><App/></MemoryRouter>);
+  const breadcrumb = await screen.findByLabelText("Breadcrumb");
+  expect(breadcrumb).toHaveTextContent("Timeline of Libraries / Family / Photos / Nested / one.jpg");
+  expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1/timeline/20");
+  expect(screen.getByRole("link", {name:"Nested"})).toHaveAttribute("href", "/library/1/timeline/21");
+  expect(screen.getByText("one.jpg")).toBeInTheDocument();
+});
+
+test("scoped map viewer breadcrumb walks the subfolder chain to the item", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"},
+    {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}
+  ]});
+  mockApi.map.mockResolvedValue([]);
+  mockApi.media.mockResolvedValue({id:100, folderId:21, relativePath:"Nested/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-10-30T13:44:47Z"});
+  render(<MemoryRouter initialEntries={["/library/1/view/21?item=100&w=1&s=2&e=3&n=4"]}><App/></MemoryRouter>);
+  const breadcrumb = await screen.findByLabelText("Breadcrumb");
+  expect(breadcrumb).toHaveTextContent("Map of Family / Photos / Nested / one.jpg");
+  expect(screen.getByRole("link", {name:"Map of Family"})).toHaveAttribute("href", "/map?library=1&w=1&s=2&e=3&n=4");
+  expect(screen.getByRole("link", {name:"Photos"})).toHaveAttribute("href", "/map?library=1&folder=20");
+  expect(screen.getByRole("link", {name:"Nested"})).toHaveAttribute("href", "/map?library=1&folder=21");
+  expect(screen.getByText("one.jpg")).toBeInTheDocument();
 });
 
 test("breadcrumb keeps favorite origin in subfolders opened from a favorite view", async () => {
@@ -1569,7 +1580,7 @@ test("map area selection fetches media inside the rectangle from the server and 
     {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""},
     {id:102, libraryId:1, folderId:20, relativePath:"c.jpg", name:"c.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}
   ];
-  mockApi.map.mockImplementation(async (_libraryId, _folderId, bounds) => {
+  mockApi.map.mockImplementation(async (_libraryId:number, _folderId:number|undefined, bounds?:{west:number;south:number;east:number;north:number}) => {
     if (bounds) return [all[0]];
     return all;
   });
@@ -1601,7 +1612,7 @@ test("map panel item links carry the exact selection for the viewer range", asyn
     {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"},
     {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10.001,20.001", takenAt:"2020-08-22T12:34:00Z"}
   ];
-  mockApi.map.mockImplementation(async (_libraryId, _folderId, bounds) => bounds ? all : all);
+  mockApi.map.mockImplementation(async (_libraryId:number, _folderId:number|undefined, bounds?:{west:number;south:number;east:number;north:number}) => bounds ? all : all);
   render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
   const button = await screen.findByRole("button", {name:"Select area"});
   fireEvent.click(button);
@@ -1718,4 +1729,907 @@ test("opening a media from a map cluster crosses only the clustered items", asyn
   expect(await screen.findByRole("img", {name:"b.jpg"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"Next media"})).toBeEnabled();
   expect(screen.queryByRole("img", {name:"d.jpg"})).not.toBeInTheDocument();
+});
+
+test("first startup offers admin creation and rejects mismatched passwords", async () => {
+  mockApi.setupStatus.mockResolvedValue({required:true});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  expect(await screen.findByRole("heading", {name:"Create administrator"})).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("Login"), {target:{value:"root"}});
+  fireEvent.change(screen.getByLabelText("Password", {selector:"input"}), {target:{value:"verylongpass1"}});
+  fireEvent.change(screen.getByLabelText("Confirm password"), {target:{value:"different123"}});
+  fireEvent.click(screen.getByRole("button", {name:"Create administrator"}));
+  expect(await screen.findByText("Passwords do not match")).toBeInTheDocument();
+  expect(mockApi.setup).not.toHaveBeenCalled();
+
+  fireEvent.change(screen.getByLabelText("Confirm password"), {target:{value:"verylongpass1"}});
+  fireEvent.click(screen.getByRole("button", {name:"Create administrator"}));
+  await waitFor(() => expect(mockApi.setup).toHaveBeenCalledWith("root", "verylongpass1"));
+  await screen.findByText("Your libraries");
+});
+
+test("admins manage per-user library access from the users section", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=users"]}><App/></MemoryRouter>);
+  const accessButtons = await screen.findAllByRole("button", {name:/Manage access/});
+  fireEvent.click(accessButtons[accessButtons.length - 1]);
+  const dialog = await screen.findByRole("dialog", {name:"Manage access for alice"});
+  fireEvent.click(within(dialog).getByRole("checkbox"));
+  await waitFor(() => expect(mockApi.setLibraryAccess).toHaveBeenCalledWith(1, 2, true));
+});
+
+test("scheduled tasks can be created toggled and deleted", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.seed(state => {
+    state.tasks = [{id:5, name:"Nightly scan", taskType:"scan", libraryId:1, cron:"0 3 * * *", enabled:true}];
+  });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<MemoryRouter initialEntries={["/admin?section=jobs"]}><App/></MemoryRouter>);
+
+  // Libraries must be loaded first so the task form can default to one.
+  await screen.findByText("Nightly scan");
+  fireEvent.click(await screen.findByRole("button", {name:"Add"}));
+  const dialog = await screen.findByRole("dialog", {name:"Add scheduled task"});
+  fireEvent.change(within(dialog).getByLabelText("Name"), {target:{value:"Weekly thumbs"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Create task"}));
+  await waitFor(() => expect(mockApi.createScheduledTask).toHaveBeenCalledWith(
+    expect.objectContaining({name:"Weekly thumbs", taskType:"scan", libraryId:1})));
+
+  const nightlyRow = screen.getByText("Nightly scan").closest(".library-row") as HTMLElement;
+  fireEvent.click(within(nightlyRow).getByLabelText("Enabled"));
+  await waitFor(() => expect(mockApi.updateScheduledTask).toHaveBeenCalledWith(5,
+    expect.objectContaining({enabled:false})));
+
+  fireEvent.click(within(nightlyRow).getByRole("button", {name:"Delete"}));
+  await waitFor(() => expect(mockApi.deleteScheduledTask).toHaveBeenCalledWith(5));
+  expect(confirm).toHaveBeenCalled();
+});
+
+test("folder card menu opens metadata renewal with option checkboxes", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.seed(state => {
+    state.entries.set(1, [{id:20, name:"Photos", relativePath:"Photos", type:"folder"}]);
+  });
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Folder menu Photos"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Refresh metadata…"}));
+  const dialog = await screen.findByRole("dialog", {name:"Refresh metadata Photos"});
+  fireEvent.click(within(dialog).getByLabelText("Update GPS coordinates"));
+  fireEvent.click(within(dialog).getByRole("button", {name:"Refresh"}));
+  await waitFor(() => expect(mockApi.metadataRenew).toHaveBeenCalledWith(1, {recreateExisting:false, updateGps:true, updateTakenAt:false}));
+});
+
+test("bulk time shift validates input and applies the offset to selected items", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => {
+    state.entries.set(1, [
+      {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+      {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:20, metadata:{}, gps:"", takenAt:""}}
+    ]);
+  });
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Select one.jpg"));
+
+  // Zero offset is rejected before hitting the API.
+  fireEvent.change(screen.getByPlaceholderText("h"), {target:{value:"0"}});
+  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[1]);
+  expect(await screen.findByText("Enter hours or minutes")).toBeInTheDocument();
+  expect(mockApi.bulkUpdateMedia).not.toHaveBeenCalledWith(expect.objectContaining({shiftMinutes:expect.any(Number)}));
+
+  fireEvent.change(screen.getByPlaceholderText("h"), {target:{value:"1"}});
+  fireEvent.change(screen.getByPlaceholderText("m"), {target:{value:"30"}});
+  fireEvent.click(await screen.findByLabelText("Select two.jpg"));
+  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[1]);
+  await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith({selectedIds:[100, 101], shiftMinutes:90}));
+});
+
+test("favorite views can be created renamed and deleted from the index", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => { state.favoriteViews = [{id:30, name:"Best", count:2}]; });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<MemoryRouter initialEntries={["/favorites"]}><App/></MemoryRouter>);
+
+  fireEvent.change(await screen.findByLabelText("New view"), {target:{value:"Travel"}});
+  fireEvent.click(screen.getByRole("button", {name:"Create"}));
+  await waitFor(() => expect(mockApi.createFavoriteView).toHaveBeenCalledWith("Travel"));
+  expect(await screen.findByText("Travel")).toBeInTheDocument();
+
+  fireEvent.click(await screen.findByLabelText("Favorite view menu Best"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Rename"}));
+  const input = screen.getByDisplayValue("Best");
+  fireEvent.change(input, {target:{value:"Top shots"}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(mockApi.updateFavoriteView).toHaveBeenCalledWith(30, "Top shots"));
+
+  fireEvent.click(await screen.findByLabelText("Favorite view menu Top shots"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Delete"}));
+  await waitFor(() => expect(mockApi.deleteFavoriteView).toHaveBeenCalledWith(30));
+});
+
+test("favorite folder cards unshare from the view and open via library probe", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.favoriteViewMedia.mockResolvedValue([{id:20, name:"Photos", isFolder:true}]);
+  render(<MemoryRouter initialEntries={["/favorites/30"]}><App/></MemoryRouter>);
+  const card = await screen.findByText("Photos");
+  fireEvent.click(card.closest("article") as HTMLElement);
+  await waitFor(() => expect(document.querySelector(".crumb-current")?.textContent).toBe("Photos"));
+});
+
+test("video viewer exposes pause stop and replay transport controls", async () => {
+  // jsdom never plays media nor fires its events, so the stubs track a paused
+  // flag and emit exactly the events React listens to.
+  Object.defineProperty(HTMLMediaElement.prototype, "paused", {
+    get(this:HTMLMediaElement) { return (this as unknown as {_paused?:boolean})._paused !== false; },
+    set(this:HTMLMediaElement, value:boolean) { (this as unknown as {_paused?:boolean})._paused = value; },
+    configurable:true
+  });
+  HTMLMediaElement.prototype.play = vi.fn(async function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = false;
+    this.dispatchEvent(new Event("play"));
+  }) as any;
+  HTMLMediaElement.prototype.pause = vi.fn(function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = true;
+    this.dispatchEvent(new Event("pause"));
+  }) as any;
+  HTMLMediaElement.prototype.load = vi.fn() as any;
+  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {value:0, writable:true, configurable:true});
+  Object.defineProperty(HTMLMediaElement.prototype, "duration", {value:120, writable:true, configurable:true});
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}}
+  ], chain: []});
+  mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Seek video");
+  // Autoplayed video reports paused=false; jsdom needs that primed by hand.
+  document.querySelectorAll("video").forEach(video => { (video as unknown as {_paused?:boolean})._paused = false; });
+  expect(await screen.findByRole("button", {name:"Pause"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Pause"}));
+  expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Stop"}));
+  expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Replay"}));
+  expect(screen.getByRole("button", {name:"Pause"})).toBeInTheDocument();
+});
+
+test("space toggles play pause on the video player instead of skipping to next media", async () => {
+  Object.defineProperty(HTMLMediaElement.prototype, "paused", {
+    get(this:HTMLMediaElement) { return (this as unknown as {_paused?:boolean})._paused !== false; },
+    set(this:HTMLMediaElement, value:boolean) { (this as unknown as {_paused?:boolean})._paused = value; },
+    configurable:true
+  });
+  HTMLMediaElement.prototype.play = vi.fn(async function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = false;
+    this.dispatchEvent(new Event("play"));
+  }) as any;
+  HTMLMediaElement.prototype.pause = vi.fn(function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = true;
+    this.dispatchEvent(new Event("pause"));
+  }) as any;
+  HTMLMediaElement.prototype.load = vi.fn() as any;
+  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {value:0, writable:true, configurable:true});
+  Object.defineProperty(HTMLMediaElement.prototype, "duration", {value:120, writable:true, configurable:true});
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}},
+    {id:104, name:"three.mp4", relativePath:"three.mp4", type:"media", media:{id:104, folderId:20, relativePath:"three.mp4", name:"three.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"30.0"}}}, gps:"", takenAt:""}}
+  ], chain: []});
+  mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Seek video");
+  document.querySelectorAll("video").forEach(video => { (video as unknown as {_paused?:boolean})._paused = false; });
+  expect(await screen.findByRole("button", {name:"Pause"})).toBeInTheDocument();
+  fireEvent.keyDown(window, {key:" ", code:"Space"});
+  expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
+  expect(document.querySelector(".viewer-stage")).toHaveAttribute("aria-label", "two.mp4");
+  fireEvent.keyDown(window, {key:" ", code:"Space"});
+  expect(screen.getByRole("button", {name:"Pause"})).toBeInTheDocument();
+  expect(document.querySelector(".viewer-stage")).toHaveAttribute("aria-label", "two.mp4");
+});
+
+test("up and down arrow keys navigate previous and next media in the viewer", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("one.jpg");
+  fireEvent.keyDown(window, {key:"ArrowDown"});
+  await waitFor(() => expect(screen.getByLabelText("two.jpg")).toBeInTheDocument());
+  fireEvent.keyDown(window, {key:"ArrowUp"});
+  await waitFor(() => expect(screen.getByLabelText("one.jpg")).toBeInTheDocument());
+});
+
+test("swipes navigate the viewer in both axes", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("one.jpg");
+  const stage = document.querySelector(".viewer-media") as HTMLElement;
+  // Left swipe → next.
+  fireEvent.touchStart(stage, {touches:[{clientX:200, clientY:150}]});
+  fireEvent.touchEnd(stage, {changedTouches:[{clientX:100, clientY:150}]});
+  await waitFor(() => expect(screen.getByLabelText("two.jpg")).toBeInTheDocument());
+  // Right swipe → previous.
+  fireEvent.touchStart(stage, {touches:[{clientX:100, clientY:150}]});
+  fireEvent.touchEnd(stage, {changedTouches:[{clientX:200, clientY:150}]});
+  await waitFor(() => expect(screen.getByLabelText("one.jpg")).toBeInTheDocument());
+  // Up swipe → next.
+  fireEvent.touchStart(stage, {touches:[{clientX:150, clientY:200}]});
+  fireEvent.touchEnd(stage, {changedTouches:[{clientX:150, clientY:100}]});
+  await waitFor(() => expect(screen.getByLabelText("two.jpg")).toBeInTheDocument());
+  // Down swipe → previous.
+  fireEvent.touchStart(stage, {touches:[{clientX:150, clientY:100}]});
+  fireEvent.touchEnd(stage, {changedTouches:[{clientX:150, clientY:200}]});
+  await waitFor(() => expect(screen.getByLabelText("one.jpg")).toBeInTheDocument());
+  // Short taps/swipes below threshold do not navigate.
+  fireEvent.touchStart(stage, {touches:[{clientX:150, clientY:150}]});
+  fireEvent.touchEnd(stage, {changedTouches:[{clientX:170, clientY:150}]});
+  expect(screen.getByLabelText("one.jpg")).toBeInTheDocument();
+});
+
+test("double clicking the right half of the video seeks forward and the left half back ten seconds", async () => {
+  Object.defineProperty(HTMLMediaElement.prototype, "paused", {
+    get(this:HTMLMediaElement) { return (this as unknown as {_paused?:boolean})._paused !== false; },
+    set(this:HTMLMediaElement, value:boolean) { (this as unknown as {_paused?:boolean})._paused = value; },
+    configurable:true
+  });
+  HTMLMediaElement.prototype.play = vi.fn(async function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = false;
+    this.dispatchEvent(new Event("play"));
+  }) as any;
+  HTMLMediaElement.prototype.pause = vi.fn(function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = true;
+    this.dispatchEvent(new Event("pause"));
+  }) as any;
+  HTMLMediaElement.prototype.load = vi.fn() as any;
+  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {value:0, writable:true, configurable:true});
+  Object.defineProperty(HTMLMediaElement.prototype, "duration", {value:120, writable:true, configurable:true});
+  const originalRect = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = (() => ({left:0, top:0, width:600, height:400, right:600, bottom:400, x:0, y:0})) as any;
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    mockApi.folderEntries.mockResolvedValue({entries:[
+      {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}}
+    ], chain: []});
+    mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+    render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+    await screen.findByLabelText("Seek video");
+    const stack = document.querySelector(".video-stack") as HTMLElement;
+    fireEvent.dblClick(stack, {clientX:500});
+    await waitFor(() => expect(screen.getByText("0:10")).toBeInTheDocument());
+    expect(screen.getByText("+10 seconds")).toBeInTheDocument();
+    fireEvent.dblClick(stack, {clientX:100});
+    await waitFor(() => expect(screen.getByText("0:00")).toBeInTheDocument());
+    expect(screen.getByText("−10 seconds")).toBeInTheDocument();
+    fireEvent.dblClick(stack, {clientX:500});
+    expect(screen.getByText("+10 seconds")).toBeInTheDocument();
+  } finally {
+    Element.prototype.getBoundingClientRect = originalRect;
+  }
+});
+
+test("fullscreen targets the video box and locks orientation to the media aspect", async () => {
+  const lock = vi.fn().mockResolvedValue(undefined);
+  const unlock = vi.fn();
+  const originalScreenOrientation = Object.getOwnPropertyDescriptor(window.screen, "orientation");
+  Object.defineProperty(window.screen, "orientation", {value:{lock, unlock}, configurable:true});
+  const originalRequestFullscreen = Element.prototype.requestFullscreen;
+  const originalExitFullscreen = document.exitFullscreen;
+  const originalFullscreenElement = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+  Object.defineProperty(document, "fullscreenElement", {
+    get() { return null; },
+    configurable:true
+  });
+  Element.prototype.requestFullscreen = vi.fn(async function(this:Element) {
+    Object.defineProperty(document, "fullscreenElement", {get:() => this, configurable:true});
+    document.dispatchEvent(new Event("fullscreenchange"));
+    return undefined;
+  }) as any;
+  document.exitFullscreen = vi.fn(async () => {
+    Object.defineProperty(document, "fullscreenElement", {get:() => null, configurable:true});
+    document.dispatchEvent(new Event("fullscreenchange"));
+  }) as any;
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    mockApi.folderEntries.mockResolvedValue({entries:[
+      {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}, streams:[{codec_type:"video", codec_name:"h264", width:1920, height:1080}]}}, gps:"", takenAt:""}}
+    ], chain: []});
+    mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+    render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+    await screen.findByLabelText("Seek video");
+    fireEvent.click(screen.getByRole("button", {name:"Full screen"}));
+    await waitFor(() => expect(lock).toHaveBeenCalledWith("landscape"));
+    expect(Element.prototype.requestFullscreen).toHaveBeenCalledTimes(1);
+    expect((Element.prototype.requestFullscreen as ReturnType<typeof vi.fn>).mock.instances[0]).toHaveClass("viewer-media");
+    fireEvent.click(screen.getByRole("button", {name:"Exit full screen"}));
+    await waitFor(() => expect(unlock).toHaveBeenCalled());
+    fireEvent.keyDown(window, {key:"f"});
+    await waitFor(() => expect(Element.prototype.requestFullscreen).toHaveBeenCalledTimes(2));
+    expect(lock).toHaveBeenCalledTimes(2);
+    expect(unlock).toHaveBeenCalledTimes(1);
+  } finally {
+    if (originalScreenOrientation) Object.defineProperty(window.screen, "orientation", originalScreenOrientation);
+    else Object.defineProperty(window.screen, "orientation", {value:undefined, configurable:true});
+    Element.prototype.requestFullscreen = originalRequestFullscreen;
+    document.exitFullscreen = originalExitFullscreen;
+    if (originalFullscreenElement) Object.defineProperty(document, "fullscreenElement", originalFullscreenElement);
+    else Object.defineProperty(document, "fullscreenElement", {value:undefined, configurable:true});
+  }
+});
+
+test("navigating between media while fullscreen does not re-lock orientation", async () => {
+  const lock = vi.fn().mockResolvedValue(undefined);
+  const unlock = vi.fn();
+  const originalScreenOrientation = Object.getOwnPropertyDescriptor(window.screen, "orientation");
+  Object.defineProperty(window.screen, "orientation", {value:{lock, unlock}, configurable:true});
+  const originalRequestFullscreen = Element.prototype.requestFullscreen;
+  const originalExitFullscreen = document.exitFullscreen;
+  const originalFullscreenElement = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+  Object.defineProperty(document, "fullscreenElement", {
+    get() { return null; },
+    configurable:true
+  });
+  Element.prototype.requestFullscreen = vi.fn(async function(this:Element) {
+    Object.defineProperty(document, "fullscreenElement", {get:() => this, configurable:true});
+    document.dispatchEvent(new Event("fullscreenchange"));
+    return undefined;
+  }) as any;
+  document.exitFullscreen = vi.fn(async () => {
+    Object.defineProperty(document, "fullscreenElement", {get:() => null, configurable:true});
+    document.dispatchEvent(new Event("fullscreenchange"));
+  }) as any;
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    mockApi.folderEntries.mockResolvedValue({entries:[
+      {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}, streams:[{codec_type:"video", codec_name:"h264", width:1920, height:1080}]}}, gps:"", takenAt:""}},
+      {id:104, name:"three.jpg", relativePath:"three.jpg", type:"media", media:{id:104, folderId:20, relativePath:"three.jpg", name:"three.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{exif:{ImageWidth:600, ImageHeight:900}}, gps:"", takenAt:""}}
+    ], chain: []});
+    mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+    render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+    await screen.findByLabelText("Seek video");
+    fireEvent.click(screen.getByRole("button", {name:"Full screen"}));
+    await waitFor(() => expect(lock).toHaveBeenCalledTimes(1));
+    expect(lock).toHaveBeenCalledWith("landscape");
+    fireEvent.keyDown(window, {key:"ArrowRight"});
+    await waitFor(() => expect(screen.getByLabelText("three.jpg")).toBeInTheDocument());
+    await waitFor(() => expect(lock).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(window, {key:"f"});
+    await waitFor(() => expect(unlock).toHaveBeenCalledTimes(1));
+  } finally {
+    if (originalScreenOrientation) Object.defineProperty(window.screen, "orientation", originalScreenOrientation);
+    else Object.defineProperty(window.screen, "orientation", {value:undefined, configurable:true});
+    Element.prototype.requestFullscreen = originalRequestFullscreen;
+    document.exitFullscreen = originalExitFullscreen;
+    if (originalFullscreenElement) Object.defineProperty(document, "fullscreenElement", originalFullscreenElement);
+    else Object.defineProperty(document, "fullscreenElement", {value:undefined, configurable:true});
+  }
+});
+
+test("library editor supports adding and browsing root folders", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Add"}));
+  const dialog = await screen.findByRole("dialog", {name:"Add library"});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Add root folder"}));
+  fireEvent.click(within(dialog).getAllByRole("button", {name:"Browse"})[1]);
+  fireEvent.click(await within(dialog).findByRole("button", {name:"Select"}));
+  expect(within(dialog).getAllByLabelText("Root path")[1]).toHaveValue("/media/photos");
+});
+
+test("timeline route renders the folder timeline with breadcrumb trail", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(document.querySelector(".crumb-current")?.textContent).toBeTruthy());
+  expect(screen.getAllByLabelText("Breadcrumb")[0]).toHaveTextContent("Family");
+});
+
+test("admins can edit an existing user from the users section", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=users"]}><App/></MemoryRouter>);
+  const aliceRow = (await screen.findByText("alice")).closest(".library-row") as HTMLElement;
+  fireEvent.click(within(aliceRow).getByRole("button", {name:"Edit"}));
+  const dialog = await screen.findByRole("dialog", {name:/Edit user/});
+  fireEvent.change(within(dialog).getByLabelText("Login"), {target:{value:"alicia"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save user"}));
+  await waitFor(() => expect(mockApi.updateUser).toHaveBeenCalledWith(2, {login:"alicia", role:"regular", password:undefined}));
+});
+
+test("jobs section lists categories and supports pause resume and cancel", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.seed(state => {
+    state.jobs = [
+      {id:"j1", category:"scan", status:"running", cancelable:true},
+      {id:"j2", category:"vacuum", status:"running"},
+      {id:"j3", category:"thumbnail-create", status:"paused", paused:true, cancelable:true}
+    ];
+  });
+  render(<MemoryRouter initialEntries={["/admin?section=jobs"]}><App/></MemoryRouter>);
+  expect(await screen.findByText("Scan")).toBeInTheDocument();
+  expect(screen.getByText("Vacuum")).toBeInTheDocument();
+  expect(screen.getByText("Thumbnail create")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", {name:"Pause"}));
+  await waitFor(() => expect(mockApi.pauseJob).toHaveBeenCalledWith("j1"));
+  await waitFor(() => expect(mockApi.pauseJob).toHaveBeenCalledWith("j1"));
+  // Every paused job offers Resume; clicking them all must reach j3.
+  for (const resume of await screen.findAllByRole("button", {name:"Resume"})) {
+    fireEvent.click(resume);
+  }
+  await waitFor(() => expect(mockApi.resumeJob).toHaveBeenCalledWith("j3"));
+  for (const cancel of screen.getAllByRole("button", {name:"Cancel"})) {
+    if ((cancel as HTMLButtonElement).disabled) continue;
+    fireEvent.click(cancel);
+  }
+  await waitFor(() => expect(mockApi.cancelJob).toHaveBeenCalledWith("j1"));
+});
+
+test("login shows errors for bad credentials and can request a reset link", async () => {
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.change(await screen.findByLabelText("Login"), {target:{value:"alice"}});
+  fireEvent.change(screen.getByLabelText("Password"), {target:{value:"wrong"}});
+  fireEvent.click(screen.getByRole("button", {name:"Sign in"}));
+  await waitFor(() => expect(document.querySelector(".login .error")).not.toBeNull());
+
+  fireEvent.click(screen.getByRole("button", {name:"Forgot password?"}));
+  fireEvent.change(await screen.findByLabelText("Email"), {target:{value:"a@b.c"}});
+  fireEvent.click(screen.getByRole("button", {name:"Send reset link"}));
+  expect(await screen.findByText(/reset link has been sent/)).toBeInTheDocument();
+});
+
+test("library editor can remove extra root rows and close the picker", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Add"}));
+  const dialog = await screen.findByRole("dialog", {name:"Add library"});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Add root folder"}));
+  expect(within(dialog).getAllByLabelText("Root path")).toHaveLength(2);
+  fireEvent.click(within(dialog).getAllByRole("button", {name:"Remove"})[0]);
+  expect(within(dialog).getAllByLabelText("Root path")).toHaveLength(1);
+
+  fireEvent.click(within(dialog).getByRole("button", {name:"Browse"}));
+  const picker = await within(dialog).findByRole("dialog", {name:"Choose root folder"});
+  fireEvent.click(within(picker).getByRole("button", {name:"Close"}));
+  await waitFor(() => expect(within(dialog).queryByText("Folders visible to the api process user")).toBeNull());
+});
+
+test("image viewer offers zoom fullscreen and info controls", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText("Zoom out"));
+  const zoomIn = screen.getByLabelText("Zoom in");
+  fireEvent.click(zoomIn);
+  fireEvent.click(zoomIn);
+  expect(zoomIn).not.toBeDisabled();
+  fireEvent.click(screen.getByLabelText("Reset zoom"));
+  fireEvent.click(screen.getByRole("button", {name:"Show info panel"}));
+  expect(await screen.findByText("image · 10 B")).toBeInTheDocument();
+});
+
+test("user settings modal persists the selected language on save", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  render(<MemoryRouter initialEntries={["/"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  fireEvent.change(await within(dialog).findByLabelText("Language"), {target:{value:"pt"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({language:"pt"})));
+});
+
+test("transcoded viewer stop replay and jump controls drive the transport state", async () => {
+  HTMLMediaElement.prototype.play = vi.fn(async function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = false;
+    this.dispatchEvent(new Event("play"));
+  }) as any;
+  HTMLMediaElement.prototype.pause = vi.fn(function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = true;
+    this.dispatchEvent(new Event("pause"));
+  }) as any;
+  Object.defineProperty(HTMLMediaElement.prototype, "paused", {
+    get(this:HTMLMediaElement) { return (this as unknown as {_paused?:boolean})._paused !== false; },
+    set(this:HTMLMediaElement, value:boolean) { (this as unknown as {_paused?:boolean})._paused = value; },
+    configurable:true
+  });
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:104, name:"clip.avi", relativePath:"clip.avi", type:"media", media:{id:104, folderId:20, relativePath:"clip.avi", name:"clip.avi", kind:"video", mimeType:"video/x-msvideo", size:713616156, metadata:{ffprobe:{format:{duration:"120"}}}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=104"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Seek video");
+  document.querySelectorAll("video").forEach(video => { (video as unknown as {_paused?:boolean})._paused = false; });
+
+  fireEvent.dblClick(document.querySelector(".video-stack") as HTMLElement, {clientX:200});
+  fireEvent.click(screen.getByLabelText("Full screen"));
+  fireEvent.click(screen.getByRole("button", {name:"Stop"}));
+  expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Replay"}));
+  expect(await screen.findByRole("button", {name:"Pause"})).toBeInTheDocument();
+});
+
+test("map place search sorts geocode results and flies to the pick", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.geocode.mockResolvedValue([
+    {place_id:2, display_name:"Far Street", lat:"55.0", lon:"30.0"},
+    {place_id:1, display_name:"Near Street", lat:"50.4", lon:"30.5"}
+  ] as Awaited<ReturnType<typeof mockApi.geocode>>);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  fireEvent.change(await screen.findByLabelText("Place search query"), {target:{value:"Street"}});
+  fireEvent.click(screen.getAllByRole("button", {name:"Search"})[0]);
+  const listbox = await screen.findByRole("listbox", {name:"Search results"});
+  expect(listbox.textContent).toContain("Nearest: Near Street");
+  fireEvent.click(within(listbox).getAllByRole("option")[0]);
+  await waitFor(() => expect(listbox).not.toBeInTheDocument());
+});
+
+test("clicking the map picks a point whose popup copies coordinates", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {value:{writeText}, configurable:true});
+  // jsdom reports zero-sized rects; give leaflet a real viewport so clicks
+  // resolve to finite geographic coordinates.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    left:0, top:0, right:800, bottom:600, width:800, height:600, x:0, y:0,
+    toJSON:() => ({})
+  } as DOMRect);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  await screen.findByRole("button", {name:"Select area"});
+  const container = document.querySelector(".leaflet-container")!;
+  fireEvent.mouseDown(container, {clientX:400, clientY:300});
+  fireEvent.mouseUp(container, {clientX:400, clientY:300});
+  fireEvent.click(container, {clientX:400, clientY:300});
+  const icons = await screen.findAllByRole("button", {hidden:true}).catch(() => []);
+  void icons;
+  await waitFor(() => expect(document.querySelectorAll(".leaflet-marker-icon").length).toBeGreaterThan(0), {timeout:3000});
+  const markers = [...document.querySelectorAll(".leaflet-marker-icon")] as HTMLElement[];
+  fireEvent.click(markers[markers.length - 1]);
+  await waitFor(() => expect(document.querySelector(".picked-point-popup")).not.toBeNull(), {timeout:3000});
+  fireEvent.click(await screen.findByRole("button", {name:"Copy coordinates"}));
+  await waitFor(() => expect(writeText).toHaveBeenCalled());
+});
+
+test("viewer keyboard navigation and info-panel editing persist details", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => {
+    state.userSettings.dateFormat = "dmy";
+    state.entries.set(1, [
+      {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:00Z"}},
+      {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:20, metadata:{}, gps:"", takenAt:""}}
+    ]);
+  });
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:00Z"},
+    {id:101, libraryId:1, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:20, metadata:{}, gps:"", takenAt:""}
+  ]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100&w=1&s=2&e=3&n=4"]}><App/></MemoryRouter>);
+  expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
+  // Bounds in the URL scope the viewer playlist through the map endpoint.
+  await waitFor(() => expect(mockApi.map).toHaveBeenCalledWith(1, undefined,
+    expect.objectContaining({west:1, south:2, east:3, north:4})));
+
+  fireEvent.click(screen.getByRole("button", {name:"Show info panel"}));
+  expect(await screen.findByLabelText("Date")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Hide info panel"}));
+
+  fireEvent.keyDown(document.body, {key:"ArrowRight"});
+  expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
+  fireEvent.keyDown(document.body, {key:"ArrowLeft"});
+  expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", {name:"Show info panel"}));
+  const nameInput = await screen.findByLabelText("Name");
+  fireEvent.change(nameInput, {target:{value:"  "}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  expect(await screen.findByText("name is required")).toBeInTheDocument();
+
+  fireEvent.change(nameInput, {target:{value:"renamed.jpg"}});
+  fireEvent.change(screen.getByPlaceholderText("50.45,30.52"), {target:{value:"50.45,30.52"}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100,
+    expect.objectContaining({name:"renamed.jpg", gps:"50.45,30.52"})));
+});
+
+test("bulk GPS apply validates selection and supports whole folders", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => {
+    state.entries.set(1, [
+      {id:20, name:"Photos", relativePath:"Photos", type:"folder"},
+      {id:100, name:"one.jpg", relativePath:"Photos/one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+    ]);
+  });
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+
+  // Empty GPS is rejected.
+  fireEvent.click(await screen.findByLabelText("Select one.jpg"));
+  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[0]);
+  expect(await screen.findByText("GPS is required")).toBeInTheDocument();
+  expect(mockApi.bulkUpdateMedia).not.toHaveBeenCalled();
+
+  // Selecting the folder targets it instead of individual items.
+  fireEvent.click(await screen.findByLabelText("Select Photos"));
+  fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"10,20"}});
+  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[0]);
+  await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith(expect.objectContaining({gps:"10,20"})));
+  const lastCall = mockApi.bulkUpdateMedia.mock.calls.at(-1)![0];
+  expect(lastCall.selectedFolders ?? lastCall.selectedIds).toBeTruthy();
+});
+
+
+test("folder card favorite chooser toggles membership and creates views inline", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => {
+    state.entries.set(1, [{id:20, name:"Photos", relativePath:"Photos", type:"folder"}]);
+    state.favoriteViews = [{id:30, name:"Best", count:0}];
+  });
+  mockApi.folderFavoriteViews.mockResolvedValue([{id:30, name:"Best", contains:false}] as Awaited<ReturnType<typeof mockApi.folderFavoriteViews>>);
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Folder menu Photos"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Add to favorites…"}));
+  const dialog = await screen.findByRole("dialog", {name:"Favorite views for Photos"});
+
+  fireEvent.click(within(dialog).getByRole("checkbox"));
+  await waitFor(() => expect(mockApi.favoriteFolder).toHaveBeenCalledWith(30, 20));
+
+  fireEvent.change(within(dialog).getByLabelText("New favorite view"), {target:{value:"Trips"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Create and add"}));
+  await waitFor(() => expect(mockApi.createFavoriteView).toHaveBeenCalledWith("Trips"));
+  await waitFor(() => expect(mockApi.favoriteFolder).toHaveBeenCalledWith(expect.any(Number), 20));
+});
+
+test("map area selection then item link carries bounds in the viewer URL", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  const all = [
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:""}
+  ];
+  mockApi.map.mockImplementation(async () => all);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Select area"}));
+  const container = document.querySelector(".leaflet-container")!;
+  fireEvent.mouseDown(container, {clientX:-200, clientY:-200});
+  fireEvent.mouseMove(container, {clientX:200, clientY:200});
+  fireEvent.mouseUp(container, {clientX:200, clientY:200});
+  const link = await screen.findByRole("link", {name:/a\.jpg/});
+  expect(link.getAttribute("href")).toContain("list=");
+  expect(link.getAttribute("href")).toContain("item=100");
+});
+
+test("admin settings sections accept edits across network mail thumbnails and logs", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=network"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Enable HTTPS with Let’s Encrypt"));
+  fireEvent.change(await screen.findByLabelText("Public DNS name"), {target:{value:"media.example.com"}});
+  fireEvent.change(screen.getByLabelText(/Let.s Encrypt email/), {target:{value:"acme@example.com"}});
+
+  fireEvent.click(await screen.findByRole("button", {name:"Mail"}));
+  fireEvent.change(await screen.findByLabelText("SMTP host"), {target:{value:"smtp.example.com"}});
+  fireEvent.change(screen.getByLabelText("SMTP port"), {target:{value:"465"}});
+  fireEvent.change(screen.getByLabelText("SMTP username"), {target:{value:"user"}});
+  fireEvent.change(screen.getByLabelText("SMTP password"), {target:{value:"verylongpass1"}});
+  fireEvent.change(screen.getByLabelText("From address"), {target:{value:"from@example.com"}});
+
+  fireEvent.click(screen.getByRole("button", {name:"Thumbnails"}));
+  fireEvent.change(await screen.findByLabelText("Width"), {target:{value:"512"}});
+  fireEvent.change(screen.getByLabelText("Height"), {target:{value:"384"}});
+  fireEvent.change(screen.getByLabelText("First thumbnail, seconds"), {target:{value:"3"}});
+  fireEvent.change(screen.getByLabelText("Max thumbnails"), {target:{value:"20"}});
+  fireEvent.change(screen.getByLabelText("Minimum interval, seconds"), {target:{value:"60"}});
+
+  fireEvent.click(screen.getByRole("button", {name:"Logs"}));
+  fireEvent.change(await screen.findByLabelText("Logging level"), {target:{value:"D"}});
+  fireEvent.change(await screen.findByLabelText("Rotate after, MB"), {target:{value:"5"}});
+  fireEvent.change(await screen.findByLabelText("Keep rotated files"), {target:{value:"7"}});
+  fireEvent.change(await screen.findByLabelText("Keep logs, days"), {target:{value:"14"}});
+
+  fireEvent.click(screen.getByRole("button", {name:"Jobs"}));
+  fireEvent.change(await screen.findByLabelText("Remove inactive jobs after, minutes"), {target:{value:"30"}});
+  fireEvent.change(await screen.findByLabelText("Worker pool size"), {target:{value:"2"}});
+  await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalled());
+});
+
+test("scheduled task dialog exposes every field for editing an existing task", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.seed(state => {
+    state.tasks = [{id:5, name:"Nightly scan", taskType:"scan", libraryId:1, cron:"0 3 * * *", enabled:true}];
+  });
+  render(<MemoryRouter initialEntries={["/admin?section=jobs"]}><App/></MemoryRouter>);
+  const row = (await screen.findByText("Nightly scan")).closest(".library-row") as HTMLElement;
+  fireEvent.click(within(row).getByRole("button", {name:"Edit"}));
+  const dialog = await screen.findByRole("dialog", {name:"Edit scheduled task"});
+  fireEvent.change(within(dialog).getByLabelText("Name"), {target:{value:"Renamed task"}});
+  fireEvent.change(within(dialog).getByLabelText("Task type"), {target:{value:"vacuum"}});
+  fireEvent.change(within(dialog).getByLabelText("Cron expression"), {target:{value:"30 4 * * 1"}});
+  fireEvent.click(within(dialog).getByLabelText("Enabled"));
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save task"}));
+  await waitFor(() => expect(mockApi.updateScheduledTask).toHaveBeenCalledWith(5,
+    expect.objectContaining({name:"Renamed task", taskType:"vacuum", cron:"30 4 * * 1", enabled:false})));
+});
+
+test("image viewer supports wheel zoom pointer panning and copy date", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {value:{writeText}, configurable:true});
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.media.mockResolvedValue({id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:00Z"});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const img = await screen.findByRole("img", {name:"one.jpg"}) as HTMLImageElement & {setPointerCapture?:unknown};
+  img.setPointerCapture = vi.fn();
+  img.releasePointerCapture = vi.fn();
+
+  fireEvent.wheel(img, {deltaY:-120});
+  expect(screen.getByLabelText("Reset zoom").textContent).not.toBe("100%");
+  fireEvent.wheel(img, {deltaY:120});
+
+  fireEvent.pointerDown(img, {pointerId:1, clientX:10, clientY:10, button:0});
+  fireEvent.pointerMove(img, {pointerId:1, clientX:40, clientY:30});
+  fireEvent.pointerUp(img, {pointerId:1, clientY:30, clientX:40});
+
+  fireEvent.click(screen.getByRole("button", {name:"Show info panel"}));
+  fireEvent.click(await screen.findByLabelText("Copy date"));
+  await waitFor(() => expect(writeText).toHaveBeenCalled());
+});
+
+test("folder card supports middle-click opening and zip download", async () => {
+  const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => {
+    state.entries.set(1, [{id:20, name:"Photos", relativePath:"Photos", type:"folder"}]);
+  });
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  await screen.findByText("Photos");
+
+  // ZIP download from the folder menu.
+  fireEvent.click(await screen.findByLabelText("Folder menu Photos"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Download as ZIP"}));
+  await waitFor(() => expect(mockApi.downloadArchive).toHaveBeenCalledWith([], [20]));
+
+  // Middle click on the folder title opens it in a new tab via window.open.
+  const titleButton = screen.getByText("Photos").closest("button") as HTMLElement;
+  fireEvent.mouseDown(titleButton, {button:1});
+  fireEvent(titleButton, new MouseEvent("auxclick", {button:1, bubbles:true}));
+  await waitFor(() => expect(openSpy).toHaveBeenCalledWith("/library/1/folder/20", "_blank"));
+});
+
+test("map cluster popup and picked point interactions work together", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    left:0, top:0, right:800, bottom:600, width:800, height:600, x:0, y:0, toJSON:() => ({})
+  } as DOMRect);
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.0001,30.0001", takenAt:""},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"50.0002,30.0002", takenAt:""}
+  ]);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  await screen.findByRole("button", {name:"Select area"});
+
+  // Clicking a cluster marker opens the selection panel listing its media.
+  await waitFor(() => expect(document.querySelectorAll(".leaflet-marker-icon").length).toBeGreaterThan(0), {timeout:4000});
+  const icons = [...document.querySelectorAll(".leaflet-marker-icon")] as HTMLElement[];
+  fireEvent.click(icons[0]);
+  expect(await screen.findByText("a.jpg")).toBeInTheDocument();
+});
+
+test("user settings modal covers codec listbox thumbnail pickers and password change", async () => {
+  const writeText = vi.fn().mockRejectedValue(new Error("no clipboard"));
+  Object.defineProperty(navigator, "clipboard", {value:{writeText}, configurable:true});
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  render(<MemoryRouter initialEntries={["/"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+
+  // Codec dropdown listbox selection.
+  fireEvent.click(within(dialog).getByLabelText("Transcode schema"));
+  const codecList = await within(dialog).findByRole("listbox", {name:"Transcode schema"});
+  const vp9Option = within(codecList).getAllByRole("option").find(option => /VP9/.test(option.textContent ?? ""));
+  expect(vp9Option).toBeDefined();
+  fireEvent.click(vp9Option!);
+
+  // Default thumbnail picture pickers (images, videos, folders): each is a
+  // custom select whose trigger sits next to its visible group label.
+  for (const groupLabel of ["Images", "Videos", "Folders"]) {
+    const labelSpan = within(dialog).getByText(groupLabel, {selector:".thumb-picker-label"});
+    const pickerButton = labelSpan.parentElement!.querySelector("button")!;
+    fireEvent.click(pickerButton);
+    const list = await within(dialog).findByRole("listbox");
+    fireEvent.click(within(list).getAllByRole("option")[1]);
+    fireEvent.click(pickerButton); // close
+  }
+
+  // Theme and zoom selects.
+  fireEvent.change(within(dialog).getByLabelText("Theme"), {target:{value:"system"}});
+  fireEvent.change(within(dialog).getByLabelText("Zoom"), {target:{value:"120"}});
+
+  // Change-password sub-dialog: failure then success.
+  fireEvent.click(within(dialog).getByRole("button", {name:"Change password…"}));
+  const pw = await screen.findByRole("dialog", {name:"Change password"});
+  fireEvent.change(within(pw).getByLabelText("Current password"), {target:{value:"bad"}});
+  fireEvent.change(within(pw).getByLabelText("New password"), {target:{value:"verylongpass9"}});
+  fireEvent.change(within(pw).getByLabelText("Confirm new password"), {target:{value:"verylongpass9"}});
+  fireEvent.click(within(pw).getByRole("button", {name:"Update password"}));
+  expect(await within(pw).findByText("wrong password")).toBeInTheDocument();
+  fireEvent.change(within(pw).getByLabelText("Current password"), {target:{value:"good"}});
+  fireEvent.click(within(pw).getByRole("button", {name:"Update password"}));
+  await waitFor(() => expect(mockApi.changePassword).toHaveBeenCalledWith("good", "verylongpass9"));
+  fireEvent.click(within(pw).getByRole("button", {name:"Close"}));
+
+  fireEvent.click(within(dialog).getByText("Save settings"));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({theme:"system", zoom:120})));
+});
+
+test("logs panel refreshes clears and links the download endpoint", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=logs"]}><App/></MemoryRouter>);
+  expect(await screen.findByText(/media API listening/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Refresh"}));
+  await waitFor(() => expect(mockApi.logs).toHaveBeenCalledTimes(2));
+  const clearButton = await screen.findByRole("button", {name:"Clear logs"});
+  await waitFor(() => expect(clearButton).toBeEnabled());
+  fireEvent.click(clearButton);
+  await waitFor(() => expect(mockApi.clearLogs).toHaveBeenCalled());
+  expect(screen.getByRole("button", {name:"Download logs"})).toBeEnabled();
+});
+
+test("library editor scan-now checkbox drives the post-save notice variants", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Add"}));
+  const dialog = await screen.findByRole("dialog", {name:"Add library"});
+  fireEvent.change(within(dialog).getByLabelText("Library name"), {target:{value:"Trips"}});
+  fireEvent.change(within(dialog).getAllByLabelText("Root path")[0], {target:{value:"/media/trips"}});
+  // scanNow defaults to true, so saving must kick off a background scan.
+  expect(within(dialog).getByLabelText("Scan after saving")).toBeChecked();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Create library"}));
+  await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(expect.any(Number)));
+  expect(await screen.findByText(/Scan started in background/)).toBeInTheDocument();
+
+  // Root watch toggle round-trips through the edit form.
+  fireEvent.click(await screen.findByLabelText("Library menu Trips"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"Edit"}));
+  const editDialog = await screen.findByRole("dialog", {name:"Edit library details"});
+  fireEvent.click(within(editDialog).getByLabelText("Watch for changes"));
+  fireEvent.click(within(editDialog).getByRole("button", {name:"Save details"}));
+  await waitFor(() => expect(mockApi.updateLibrary).toHaveBeenCalledWith(expect.any(Number),
+    expect.objectContaining({roots:[expect.objectContaining({watch:true})]})));
+});
+
+test("native server gate asks for the address when none is saved", async () => {
+  setNativePlatformForTests(true);
+  render(<MemoryRouter><App/></MemoryRouter>);
+  expect(await screen.findByRole("heading", {name:"Media Library"})).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Server address"), {target:{value:"localhost:18080"}});
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+  fireEvent.click(screen.getByRole("button", {name:"Connect"}));
+  expect(await screen.findByText(/Cannot reach server/)).toBeInTheDocument();
+  setNativePlatformForTests(null);
+});
+
+test("native server gate reconnects to the remembered server", async () => {
+  localStorage.setItem("ml.server.url", "https://media.example.com");
+  const replace = vi.fn();
+  const originalLocation = window.location;
+  Object.defineProperty(window, "location", {value:{...originalLocation, replace}, configurable:true});
+  // Hold the reachability probe open so the connecting screen stays visible.
+  vi.stubGlobal("fetch", vi.fn(() => new Promise<void>(() => {})));
+  setNativePlatformForTests(true);
+  render(<MemoryRouter><App/></MemoryRouter>);
+  expect(await screen.findByText(/Connecting to/)).toBeInTheDocument();
+  vi.unstubAllGlobals();
+  expect(screen.getByText("media.example.com")).toBeInTheDocument();
+  // While the probe is pending the user may bail out to the picker.
+  fireEvent.click(screen.getByRole("button", {name:"Change server"}));
+  expect(await screen.findByLabelText("Server address")).toHaveValue("https://media.example.com");
+  void replace;
+  setNativePlatformForTests(null);
+  Object.defineProperty(window, "location", {value:originalLocation, configurable:true});
 });

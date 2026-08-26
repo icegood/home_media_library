@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Media Library</string>
+    <string name="title_activity_main">Media Library</string>
+    <string name="package_name">com.icegood.medialibrary</string>
+    <string name="custom_url_scheme">com.icegood.medialibrary</string>
+</resources>

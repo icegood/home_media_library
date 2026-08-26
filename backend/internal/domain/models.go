@@ -54,6 +54,13 @@ type ServerSettings struct {
 	SMTPUsername                     string `json:"smtpUsername"`
 	SMTPPassword                     string `json:"smtpPassword"`
 	SMTPFrom                         string `json:"smtpFrom"`
+	// MapTileProviders carries per-provider configuration options for the
+	// media map's tile sources. The provider list is fixed for now (osm, esri,
+	// carto), but each provider holds free-form options; today only carto uses
+	// one: {"apiKey": "..."} — the CARTO Basemaps API key used to build tile
+	// URLs. The key is a public client-side key by nature (the browser sends
+	// it to the tile server), so it ships in the settings payloads.
+	MapTileProviders map[string]map[string]string `json:"mapTileProviders,omitempty"`
 }
 
 // SMTP returns the configured outbound mail settings.
@@ -100,18 +107,31 @@ type UserSettings struct {
 	// and reveals per step while scrolling; smaller batches show first items
 	// sooner, larger batches load big folders with fewer requests.
 	StreamChunkSize int `json:"streamChunkSize"`
+	// Language selects the UI translation: "auto" follows the browser, else a
+	// supported language id ("en", "ua", "de", "nl", "fi", "sv", "pl", "che",
+	// "slo", "hu", "es", "it", "sl", "no", "pt").
+	Language string `json:"language"`
 	// DefaultThumbImage/Video/Folder pick the placeholder picture shown for
 	// media whose thumbnail has not been generated yet. Values are ids in the
 	// web UI's built-in picture catalog.
 	DefaultThumbImage  string `json:"defaultThumbImage"`
 	DefaultThumbVideo  string `json:"defaultThumbVideo"`
 	DefaultThumbFolder string `json:"defaultThumbFolder"`
+	// MapTileProviderLight/Dark pick the tile source shown on the media map,
+	// independently for light and dark themes. A source is either a bare
+	// provider ("osm", "esri") or a provider with a sub-provider style
+	// ("carto:voyager", "carto:light", "carto:dark"). "carto" is accepted and
+	// normalized to "carto:voyager". The provider list is fixed; per-provider
+	// options (like the carto API key) live in ServerSettings.MapTileProviders.
+	MapTileProviderLight string `json:"mapTileProviderLight"`
+	MapTileProviderDark  string `json:"mapTileProviderDark"`
 }
 
 func DefaultUserSettings() UserSettings {
 	return UserSettings{
-		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100, DateFormat: "auto", StreamChunkSize: 10000,
+		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100, DateFormat: "auto", StreamChunkSize: 10000, Language: "auto",
 		DefaultThumbImage: "mountains", DefaultThumbVideo: "mountains", DefaultThumbFolder: "mountains",
+		MapTileProviderLight: "osm", MapTileProviderDark: "osm",
 	}
 }
 

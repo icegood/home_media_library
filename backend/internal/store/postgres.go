@@ -53,6 +53,9 @@ func NewPostgres(dsn string) (*Postgres, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(10)
+	// Cap connection lifetime too (same rationale as the SQLite handle): the
+	// pool rotates instead of serving every query from the same connection.
+	db.SetConnMaxLifetime(defaultConnMaxLifetime)
 	store := &Postgres{db: db}
 	if err := store.migrate(); err != nil {
 		db.Close()

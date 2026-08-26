@@ -113,8 +113,16 @@ func (w *Watcher) sync(ctx context.Context, fsw *fsnotify.Watcher) error {
 		desired[filepath.Clean(root.Path)] = root.LibraryID
 	}
 	w.mu.Lock()
+	sep := string(filepath.Separator)
 	for path := range w.watched {
-		if _, keep := desired[path]; !keep {
+		keep := false
+		for rootPath := range desired {
+			if path == rootPath || strings.HasPrefix(path, rootPath+sep) {
+				keep = true
+				break
+			}
+		}
+		if !keep {
 			_ = fsw.Remove(path)
 			delete(w.watched, path)
 		}

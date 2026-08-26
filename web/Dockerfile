@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm ci
 
 COPY . .
-RUN npm test && npm run build
+RUN npm run lint && npm test && npm run build
 
 # Dev toolchain stage: same base image as `build`, so the Dev Containers
 # configuration (which builds this target) always matches the build version.

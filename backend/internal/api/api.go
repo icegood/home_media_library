@@ -42,30 +42,37 @@ import (
 )
 
 type API struct {
-	Store             store.Store
-	Scanner           scanner.Scanner
-	Transcoder        transcode.Service
-	JWTSecret         []byte
-	GatewayConfigPath string
-	CaddyDataDir      string
-	GatewayEnabled    bool
-	ThumbnailDir      string
-	LogFile           string
-	Shutdown          func()
-	ContainerStop     func(context.Context) error
-	WorkerPool        *jobpool.Pool
+	// Store is the interactive connection used by HTTP handlers: UI reads and
+	// writes always run here so a busy background job can never starve the
+	// requests a user is waiting on.
+	Store              store.Store
+	// JobStore is a dedicated connection for background jobs (scans, metadata
+	// renew, thumbnails, imports, job-state persistence). It keeps long job
+	// work off the interactive connection. Falls back to Store for handlers.
+	JobStore           store.Store
+	Scanner            scanner.Scanner
+	Transcoder         transcode.Service
+	JWTSecret          []byte
+	GatewayConfigPath  string
+	CaddyDataDir       string
+	GatewayEnabled     bool
+	ThumbnailDir       string
+	LogFile            string
+	Shutdown           func()
+	ContainerStop      func(context.Context) error
+	WorkerPool         *jobpool.Pool
 	OnLibrariesChanged func()
-	Version           string
-	Revision          string
-	BuildDate         string
-	jobMu             sync.Mutex
-	jobCond           *sync.Cond
-	jobs              map[string]*JobStatus
-	jobCancels        map[string]context.CancelFunc
-	jobContexts       map[string]context.Context
-	jobSaves          map[string]time.Time
-	folderRefsMu      sync.Mutex
-	folderRefs        map[int]folderRefsEntry
+	Version            string
+	Revision           string
+	BuildDate          string
+	jobMu              sync.Mutex
+	jobCond            *sync.Cond
+	jobs               map[string]*JobStatus
+	jobCancels         map[string]context.CancelFunc
+	jobContexts        map[string]context.Context
+	jobSaves           map[string]time.Time
+	folderRefsMu       sync.Mutex
+	folderRefs         map[int]folderRefsEntry
 }
 
 type folderRefsEntry struct {
@@ -455,7 +462,43 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, "could not read user settings")
 		return
 	}
-	writeJSON(w, http.StatusOK, settings)
+	if light, ok := normalizeMapTileSource(settings.MapTileProviderLight, false); ok {
+		settings.MapTileProviderLight = light
+	}
+	if dark, ok := normalizeMapTileSource(settings.MapTileProviderDark, true); ok {
+		settings.MapTileProviderDark = dark
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"theme":                 settings.Theme,
+		"codec":                 settings.Codec,
+		"zoom":                  settings.Zoom,
+		"dateFormat":            settings.DateFormat,
+		"streamChunkSize":       settings.StreamChunkSize,
+		"language":              settings.Language,
+		"defaultThumbImage":     settings.DefaultThumbImage,
+		"defaultThumbVideo":     settings.DefaultThumbVideo,
+		"defaultThumbFolder":    settings.DefaultThumbFolder,
+		"mapTileProviderLight":  settings.MapTileProviderLight,
+		"mapTileProviderDark":   settings.MapTileProviderDark,
+		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
+	})
+}
+
+// mapTileProvidersJSON returns the provider options as a shallow copy that is
+// always a non-nil map, so the JSON payload is stable for all clients.
+func (a *API) mapTileProvidersJSON(ctx context.Context) map[string]map[string]string {
+	providers := a.serverSettings(ctx).MapTileProviders
+	if providers == nil {
+		return map[string]map[string]string{}
+	}
+	copy := make(map[string]map[string]string, len(providers))
+	for id, options := range providers {
+		if options == nil {
+			options = map[string]string{}
+		}
+		copy[id] = options
+	}
+	return copy
 }
 
 func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
@@ -465,10 +508,13 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		Codec              string `json:"codec"`
 		Zoom               int    `json:"zoom"`
 		DateFormat         string `json:"dateFormat"`
+		Language           string `json:"language"`
 		StreamChunkSize    int    `json:"streamChunkSize"`
 		DefaultThumbImage  string `json:"defaultThumbImage"`
 		DefaultThumbVideo  string `json:"defaultThumbVideo"`
 		DefaultThumbFolder string `json:"defaultThumbFolder"`
+		MapTileProviderLight string `json:"mapTileProviderLight"`
+		MapTileProviderDark  string `json:"mapTileProviderDark"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		problem(w, http.StatusBadRequest, "invalid JSON")
@@ -516,14 +562,44 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	lightSource, ok := normalizeMapTileSource(input.MapTileProviderLight, false)
+	if !ok {
+		problem(w, http.StatusBadRequest, "light map tile source must be osm, esri, carto, carto:voyager, or carto:light")
+		return
+	}
+	darkSource, ok := normalizeMapTileSource(input.MapTileProviderDark, true)
+	if !ok {
+		problem(w, http.StatusBadRequest, "dark map tile source must be osm, esri, carto, carto:voyager, or carto:dark")
+		return
+	}
 	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat, StreamChunkSize: chunk,
-		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder}
+		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder, Language: input.Language,
+		MapTileProviderLight: lightSource, MapTileProviderDark: darkSource}
 	settings.DateFormat = normalizeDateFormat(settings.DateFormat)
+	settings.Language = normalizeLanguage(settings.Language)
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {
 		problem(w, http.StatusInternalServerError, "could not save user settings")
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// normalizeMapTileSource validates and normalizes a user-chosen map tile
+// source (provider or provider:sub-provider) for a mode. Empty values fall
+// back to the keyless OSM provider; a bare "carto" becomes "carto:voyager".
+func normalizeMapTileSource(value string, dark bool) (string, bool) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "osm", "esri", "carto", "carto:voyager":
+		if value == "carto" {
+			value = "carto:voyager"
+		}
+		return value, true
+	}
+	if dark && value == "carto:dark" || !dark && value == "carto:light" {
+		return value, true
+	}
+	return "", false
 }
 
 // normalizeDefaultThumb validates a default-thumbnail picture id. The catalog
@@ -1131,6 +1207,46 @@ func (a *API) bulkMediaUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, results)
 }
 
+// normalizeLanguage validates the UI language setting; unknown values fall
+// back to following the browser ("auto"). Stored "ru" values from before
+// Russian was removed also normalize to "auto".
+func normalizeLanguage(value string) string {
+	switch strings.TrimSpace(value) {
+	case "en":
+		return "en"
+	case "ua":
+		return "ua"
+	case "de":
+		return "de"
+	case "nl":
+		return "nl"
+	case "fi":
+		return "fi"
+	case "sv":
+		return "sv"
+	case "pl":
+		return "pl"
+	case "che":
+		return "che"
+	case "slo":
+		return "slo"
+	case "hu":
+		return "hu"
+	case "es":
+		return "es"
+	case "it":
+		return "it"
+	case "sl":
+		return "sl"
+	case "no":
+		return "no"
+	case "pt":
+		return "pt"
+	default:
+		return "auto"
+	}
+}
+
 func normalizeMediaDate(value string) (string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1449,7 +1565,7 @@ func (a *API) cleanupThumbnailRefs(ctx context.Context, refs domain.ThumbnailCle
 			applog.Printf(applog.Warn, "could not delete thumbnail folder %s: %s", dir, err)
 		}
 	}
-	existingFolders, err := a.Store.FoldersByIDs(ctx, refs.Folders)
+	existingFolders, err := a.jobStore().FoldersByIDs(ctx, refs.Folders)
 	if err != nil {
 		applog.Printf(applog.Warn, "could not verify folder thumbnail owners, keeping thumbnails: %s", err)
 		return
@@ -1524,12 +1640,12 @@ func (a *API) generateThumbnail(ctx context.Context, source, target string, inpu
 }
 
 func (a *API) thumbnailDimensions(ctx context.Context) (int, int) {
-	settings := a.serverSettings(ctx)
+	settings := a.serverSettingsFor(ctx)
 	return settings.ThumbnailWidth, settings.ThumbnailHeight
 }
 
 func (a *API) videoThumbnailTiming(ctx context.Context) (int, int, int) {
-	settings := a.serverSettings(ctx)
+	settings := a.serverSettingsFor(ctx)
 	first := settings.VideoThumbnailFirstSeconds
 	maxCount := settings.VideoThumbnailMaxCount
 	minInterval := settings.VideoThumbnailMinIntervalSeconds
@@ -1743,7 +1859,7 @@ func (a *API) generateFolderThumbnail(ctx context.Context, folderID int, refs []
 		return err
 	}
 	_ = os.Chmod(target, 0o660)
-	if err := a.Store.UpsertFolderThumbnail(ctx, domain.FolderThumbnail{FolderID: folderID, MIMEType: "image/jpeg", Sources: refs}); err != nil {
+	if err := a.storeFor(ctx).UpsertFolderThumbnail(ctx, domain.FolderThumbnail{FolderID: folderID, MIMEType: "image/jpeg", Sources: refs}); err != nil {
 		return err
 	}
 	return nil
@@ -1762,7 +1878,7 @@ func (a *API) mediaForRefs(ctx context.Context, refs []domain.ThumbnailRef) (map
 		seen[ref.MediaID] = true
 		ids = append(ids, ref.MediaID)
 	}
-	items, err := a.Store.MediaBatch(ctx, ids)
+	items, err := a.jobStore().MediaBatch(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -1776,7 +1892,7 @@ func (a *API) mediaForRefs(ctx context.Context, refs []domain.ThumbnailRef) (map
 func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, index int) (string, error) {
 	target := a.thumbnailPath(item.ID, index)
 	if usableThumbnail(target) {
-		_ = a.Store.UpsertThumbnail(ctx, domain.Thumbnail{
+		_ = a.storeFor(ctx).UpsertThumbnail(ctx, domain.Thumbnail{
 			MediaID: item.ID, Index: index, Path: target, MIMEType: "image/jpeg",
 		})
 		return target, nil
@@ -1796,7 +1912,7 @@ func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, ind
 	if err != nil {
 		return "", err
 	}
-	_ = a.Store.UpsertThumbnail(ctx, domain.Thumbnail{
+	_ = a.storeFor(ctx).UpsertThumbnail(ctx, domain.Thumbnail{
 		MediaID: item.ID, Index: index, Path: target, MIMEType: "image/jpeg",
 	})
 	return target, nil
@@ -1806,7 +1922,7 @@ func (a *API) mediaSourcePath(ctx context.Context, item domain.Media) (string, e
 	if item.Path != "" {
 		return item.Path, nil
 	}
-	folder, err := a.Store.Folder(ctx, item.FolderID)
+	folder, err := a.storeFor(ctx).Folder(ctx, item.FolderID)
 	if err != nil {
 		return "", err
 	}
@@ -2143,7 +2259,7 @@ func (a *API) startMetadataRenewJob(library domain.Library, recreateExisting, up
 func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, recreateExisting, updateGps, updateTakenAt bool) error {
 	ctx := a.jobContext(context.Background(), job.ID)
 	extractor := metadata.New()
-	items, err := a.Store.MediaForLibrary(ctx, 0, library.ID)
+	items, err := a.jobStore().MediaForLibrary(ctx, 0, library.ID)
 	if err != nil {
 		return err
 	}
@@ -2183,7 +2299,7 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, recrea
 				if updateTakenAt {
 					takenAt = extracted.TakenAt
 				}
-				if err := a.Store.UpdateMediaMetadata(ctx, item.ID, extracted.Metadata, gps, takenAt, metadataError, recreateExisting); err != nil {
+				if err := a.jobStore().UpdateMediaMetadata(ctx, item.ID, extracted.Metadata, gps, takenAt, metadataError, recreateExisting); err != nil {
 					applog.Printf(applog.Error, "metadata renew failed for %s: %s", item.RelativePath, err)
 					a.updateJob(job.ID, func(job *JobStatus) {
 						job.Error = fmt.Sprintf("%s: %v", item.RelativePath, err)
@@ -2225,7 +2341,7 @@ func (a *API) startScanJob(library domain.Library) JobStatus {
 
 func (a *API) runScanJob(job *JobStatus, library domain.Library) error {
 	ctx := a.jobContext(context.Background(), job.ID)
-	thumbnailRefs, err := a.Store.ThumbnailCleanupRefsForLibrary(ctx, library.ID)
+	thumbnailRefs, err := a.storeFor(ctx).ThumbnailCleanupRefsForLibrary(ctx, library.ID)
 	if err != nil {
 		return err
 	}
@@ -2366,10 +2482,10 @@ func (a *API) runOrphanThumbnailCleanupJob(job *JobStatus) error {
 		a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = task.path })
 		keep := false
 		if task.folderID != 0 {
-			_, err = a.Store.FolderThumbnailFile(ctx, task.folderID)
+			_, err = a.storeFor(ctx).FolderThumbnailFile(ctx, task.folderID)
 			keep = err == nil
 		} else {
-			_, err = a.Store.Thumbnail(ctx, task.mediaID, task.index)
+			_, err = a.storeFor(ctx).Thumbnail(ctx, task.mediaID, task.index)
 			keep = err == nil
 		}
 		if !keep {
@@ -2387,18 +2503,18 @@ func (a *API) runOrphanThumbnailCleanupJob(job *JobStatus) error {
 
 func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate bool) error {
 	ctx := a.jobContext(context.Background(), job.ID)
-	items, err := a.Store.MediaForLibrary(ctx, 0, library.ID)
+	items, err := a.jobStore().MediaForLibrary(ctx, 0, library.ID)
 	if err != nil {
 		return err
 	}
-	folders, err := a.Store.FoldersForLibrary(ctx, library.ID)
+	folders, err := a.jobStore().FoldersForLibrary(ctx, library.ID)
 	if err != nil {
 		return err
 	}
 	total := 0
 	for _, item := range items {
 		if item.Kind == domain.KindVideo {
-			total += len(a.videoThumbnailTimes(context.Background(), item))
+			total += len(a.videoThumbnailTimes(ctx, item))
 		} else {
 			total++
 		}
@@ -2413,7 +2529,7 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 	for _, item := range items {
 		indexes := []int{0}
 		if item.Kind == domain.KindVideo {
-			times := a.videoThumbnailTimes(context.Background(), item)
+			times := a.videoThumbnailTimes(ctx, item)
 			indexes = make([]int, len(times))
 			for index := range times {
 				indexes[index] = index
@@ -2443,7 +2559,7 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 				}
 				if _, err := a.ensureThumbnailForItem(ctx, item, index); err != nil {
 					applog.Printf(applog.Error, "thumbnail failed for %s: %s", item.RelativePath, err)
-					_ = a.Store.SetMediaActionError(ctx, item.ID, "thumbnail", err.Error())
+					_ = a.storeFor(ctx).SetMediaActionError(ctx, item.ID, "thumbnail", err.Error())
 					a.updateJob(job.ID, func(job *JobStatus) {
 						job.Error = fmt.Sprintf("%s: %v", item.RelativePath, err)
 						job.Processed++
@@ -2463,7 +2579,7 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 			return err
 		}
 		a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = folder.RelativePath })
-		refs, err := a.Store.FolderThumbnailRefs(ctx, folder.ID, 3)
+		refs, err := a.storeFor(ctx).FolderThumbnailRefs(ctx, folder.ID, 3)
 		if err != nil || len(refs) == 0 {
 			a.updateJob(job.ID, func(job *JobStatus) { job.Processed++ })
 			continue
@@ -2475,7 +2591,7 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 		if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
 			err = a.generateFolderThumbnail(ctx, folder.ID, refs, target)
 		} else if err == nil {
-			err = a.Store.UpsertFolderThumbnail(ctx, domain.FolderThumbnail{FolderID: folder.ID, MIMEType: "image/jpeg", Sources: refs})
+			err = a.storeFor(ctx).UpsertFolderThumbnail(ctx, domain.FolderThumbnail{FolderID: folder.ID, MIMEType: "image/jpeg", Sources: refs})
 		}
 		if err != nil {
 			applog.Printf(applog.Error, "folder thumbnail failed for %s: %s", folder.RelativePath, err)
@@ -2518,7 +2634,7 @@ func (a *API) startJob(job JobStatus, run func(*JobStatus) error) JobStatus {
 	a.jobCancels[job.ID] = cancel
 	a.jobContexts[job.ID] = ctx
 	a.jobMu.Unlock()
-	if err := a.Store.SaveJob(context.Background(), copy); err != nil {
+	if err := a.jobStore().SaveJob(context.Background(), copy); err != nil {
 		applog.Printf(applog.Error, "could not persist job %s: %v", copy.ID, err)
 	}
 	go a.runJob(&copy, run, cancel)
@@ -2553,7 +2669,7 @@ func (a *API) runJob(snapshot *JobStatus, run func(*JobStatus) error, cancel con
 }
 
 func (a *API) recoverJobs() {
-	jobs, err := a.Store.UnfinishedJobs(context.Background())
+	jobs, err := a.jobStore().UnfinishedJobs(context.Background())
 	if err != nil {
 		applog.Printf(applog.Error, "could not load unfinished jobs: %v", err)
 		return
@@ -2565,20 +2681,20 @@ func (a *API) recoverJobs() {
 			job.Paused = false
 			job.Cancelable = false
 			job.FinishedAt = &now
-			_ = a.Store.SaveJob(context.Background(), job)
+			_ = a.jobStore().SaveJob(context.Background(), job)
 			continue
 		}
 		library := domain.Library{ID: 0, Name: "All libraries"}
 		if job.LibraryID != 0 {
 			var err error
-			library, err = a.Store.Library(context.Background(), job.LibraryID)
+			library, err = a.jobStore().Library(context.Background(), job.LibraryID)
 			if err != nil {
 				now := time.Now()
 				job.Status = "failed"
 				job.Error = "library not found during job recovery"
 				job.Cancelable = false
 				job.FinishedAt = &now
-				_ = a.Store.SaveJob(context.Background(), job)
+				_ = a.jobStore().SaveJob(context.Background(), job)
 				continue
 			}
 		}
@@ -2605,7 +2721,7 @@ func (a *API) recoverJobs() {
 			job.Paused = false
 			job.Cancelable = false
 			job.FinishedAt = &now
-			_ = a.Store.SaveJob(context.Background(), job)
+			_ = a.jobStore().SaveJob(context.Background(), job)
 		}
 	}
 }
@@ -2618,6 +2734,10 @@ func (a *API) jobContext(parent context.Context, id string) context.Context {
 		return parent
 	}
 	ctx, cancel := context.WithCancel(parent)
+	// Attach the dedicated job store so every helper (thumbnail construction,
+	// refs cleanup, source resolution) runs its DB work on the background
+	// connection instead of whichever store built the request.
+	ctx = context.WithValue(ctx, storeCtxKey{}, a.jobStore())
 	go func() {
 		defer cancel()
 		select {
@@ -2626,6 +2746,20 @@ func (a *API) jobContext(parent context.Context, id string) context.Context {
 		}
 	}()
 	return ctx
+}
+
+// storeCtxKey is the context key carrying the dedicated job store into
+// background work spawned by jobs.
+type storeCtxKey struct{}
+
+// storeFor resolves the store a background helper should use: the dedicated
+// job store when ctx carries it (i.e. inside jobs), the interactive store
+// otherwise (HTTP handlers).
+func (a *API) storeFor(ctx context.Context) store.Store {
+	if s, ok := ctx.Value(storeCtxKey{}).(store.Store); ok && s != nil {
+		return s
+	}
+	return a.Store
 }
 
 // jobPauseCond returns the condition variable bound to jobMu, creating it on
@@ -2709,7 +2843,7 @@ func (a *API) updateJob(id string, update func(*JobStatus)) {
 	}
 	a.jobMu.Unlock()
 	if should {
-		if err := a.Store.SaveJob(context.Background(), copy); err != nil {
+		if err := a.jobStore().SaveJob(context.Background(), copy); err != nil {
 			applog.Printf(applog.Error, "could not persist job %s: %v", copy.ID, err)
 		}
 	}
@@ -3065,8 +3199,9 @@ func tailLogLines(path string, limit int) ([]string, error) {
 }
 
 func (a *API) pruneFinishedJobs(now time.Time) {
-	keepFinishedFor := time.Duration(a.serverSettings(context.Background()).FinishedJobRetentionMinutes) * time.Minute
-	if err := a.Store.DeleteFinishedJobsBefore(context.Background(), now.Add(-keepFinishedFor)); err != nil {
+	jobSettings, _ := a.jobStore().ServerSettings(context.Background())
+	keepFinishedFor := time.Duration(jobSettings.FinishedJobRetentionMinutes) * time.Minute
+	if err := a.jobStore().DeleteFinishedJobsBefore(context.Background(), now.Add(-keepFinishedFor)); err != nil {
 		applog.Printf(applog.Error, "could not prune finished jobs: %v", err)
 	}
 	a.jobMu.Lock()
@@ -3177,7 +3312,7 @@ func (a *API) controlJob(id string, update func(*JobStatus) error) (JobStatus, b
 	a.jobPauseCond().Broadcast()
 	copy = *job
 	a.jobMu.Unlock()
-	if err := a.Store.SaveJob(context.Background(), copy); err != nil {
+	if err := a.jobStore().SaveJob(context.Background(), copy); err != nil {
 		applog.Printf(applog.Error, "could not persist job %s: %v", copy.ID, err)
 	}
 	return copy, true
@@ -3366,10 +3501,11 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 		"logRotateMaxSizeMB":               settings.LogRotateMaxSizeMB,
 		"logRotateMaxBackups":              settings.LogRotateMaxBackups,
 		"logRotateMaxAgeDays":              settings.LogRotateMaxAgeDays,
-		"smtpHost":                         settings.SMTPHost,
-		"smtpPort":                         settings.SMTPPort,
-		"smtpUsername":                     settings.SMTPUsername,
-		"smtpFrom":                         settings.SMTPFrom,
+"smtpHost":              settings.SMTPHost,
+		"smtpPort":              settings.SMTPPort,
+		"smtpUsername":          settings.SMTPUsername,
+		"smtpFrom":              settings.SMTPFrom,
+		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
 	})
 }
 
@@ -3381,6 +3517,29 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	input.SMTPHost = strings.TrimSpace(input.SMTPHost)
 	input.SMTPFrom = strings.TrimSpace(input.SMTPFrom)
+	providers := map[string]map[string]string{}
+	optionCount := 0
+	for id, options := range input.MapTileProviders {
+		if id != "osm" && id != "esri" && id != "carto" {
+			continue
+		}
+		clean := map[string]string{}
+		for key, value := range options {
+			key = strings.TrimSpace(key)
+			value = strings.TrimSpace(value)
+			if key == "" || value == "" {
+				continue
+			}
+			clean[key] = value
+			optionCount++
+		}
+		providers[id] = clean
+	}
+	if optionCount > 64 {
+		problem(w, http.StatusBadRequest, "too many map tile provider options (max 64)")
+		return
+	}
+	input.MapTileProviders = providers
 	if input.SMTPHost != "" && (input.SMTPPort < 1 || input.SMTPPort > 65535) {
 		problem(w, http.StatusBadRequest, "smtpPort must be between 1 and 65535")
 		return
@@ -3472,15 +3631,37 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		"logRotateMaxSizeMB":               input.LogRotateMaxSizeMB,
 		"logRotateMaxBackups":              input.LogRotateMaxBackups,
 		"logRotateMaxAgeDays":              input.LogRotateMaxAgeDays,
-		"smtpHost":                         input.SMTPHost,
-		"smtpPort":                         input.SMTPPort,
-		"smtpUsername":                     input.SMTPUsername,
-		"smtpFrom":                         input.SMTPFrom,
+"smtpHost":              input.SMTPHost,
+		"smtpPort":              input.SMTPPort,
+		"smtpUsername":          input.SMTPUsername,
+		"smtpFrom":              input.SMTPFrom,
+		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
 	})
+}
+
+// jobStore returns the dedicated connection for background jobs, falling back
+// to the interactive store so tests and callers that never set JobStore keep
+// working.
+func (a *API) jobStore() store.Store {
+	if a.JobStore != nil {
+		return a.JobStore
+	}
+	return a.Store
 }
 
 func (a *API) serverSettings(ctx context.Context) domain.ServerSettings {
 	settings, err := a.Store.ServerSettings(ctx)
+	if err != nil {
+		return domain.DefaultServerSettings()
+	}
+	return settings
+}
+
+// serverSettingsFor resolves settings from the store the caller belongs to:
+// the dedicated job store inside background jobs (ctx carries it), the
+// interactive store otherwise.
+func (a *API) serverSettingsFor(ctx context.Context) domain.ServerSettings {
+	settings, err := a.storeFor(ctx).ServerSettings(ctx)
 	if err != nil {
 		return domain.DefaultServerSettings()
 	}

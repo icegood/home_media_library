@@ -4,6 +4,7 @@ deploy/.env
 
 # Runtime data (single bind mount)
 runtime/
+build/
 
 # Local tooling / editors
 .continue/
@@ -16,7 +17,15 @@ web/android/app/build/
 
 # Generated / installed dependencies
 web/node_modules/
+web/coverage/
 web/src/generated-version.ts
 
 # Playwright e2e artifacts (videos, traces, reports)
 web/test-output/
+
+# Vite/vitest local caches
+.vite/
+web/*.tsbuildinfo
+
+# Release signing credentials (never commit)
+web/android/keystore.properties

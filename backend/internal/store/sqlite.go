@@ -51,6 +51,11 @@ type SQLite struct {
 	db *sql.DB
 }
 
+// defaultConnMaxLifetime caps how long a single pooled connection may live
+// before database/sql closes and replaces it. Periodic rotation keeps the pool
+// healthy for a long-running server (prepared-statement caches, memory).
+const defaultConnMaxLifetime = 5 * time.Minute
+
 func NewSQLite(dsn string) (*SQLite, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("sqlite dsn is empty")
@@ -71,9 +76,14 @@ func NewSQLite(dsn string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Single connection: SQLite writes serialize on one writer and this keeps
-	// transaction semantics predictable for the small self-hosted workload.
+	// Single connection per handle: SQLite writes serialize on one writer and
+	// this keeps transaction semantics predictable for the small self-hosted
+	// workload. The server opens two handles (interactive and job) on the same
+	// file so background jobs get their own dedicated connection.
 	db.SetMaxOpenConns(1)
+	// Bound how long a single connection may live so the pool rotates
+	// periodically instead of serving every query from the same handle.
+	db.SetConnMaxLifetime(defaultConnMaxLifetime)
 	store := &SQLite{db: db}
 	if err := store.migrate(); err != nil {
 		db.Close()

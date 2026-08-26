@@ -968,3 +968,65 @@ func TestSQLiteTHMExtensionMapsToImageJPEG(t *testing.T) {
 		t.Fatalf("THM mime = %q, want image/jpeg", mimeType)
 	}
 }
+
+// TestSQLiteSeparateHandlesOnSameFile verifies the dual-connection layout the
+// server uses: one interactive handle and one dedicated job handle opened on
+// the same file can operate concurrently, and a write committed by one handle
+// is immediately visible from the other. This guards against regressions that
+// would let a background job wedge the single connection a UI is reading.
+func TestSQLiteSeparateHandlesOnSameFile(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "media-library.db")
+	repository, err := store.NewSQLite(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	jobStore, err := store.NewSQLite(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jobStore.Close()
+
+	ctx := context.Background()
+	if _, err := repository.CreateInitialAdmin(ctx, domain.User{
+		ID: domain.InvalidID, Login: "owner",
+	}, "a-secure-password"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Writes through the job handle are visible to the interactive handle...
+	if err := jobStore.SaveUserSettings(ctx, 1, domain.UserSettings{Theme: "dark", StreamChunkSize: 40}); err != nil {
+		t.Fatal(err)
+	}
+	readBack, err := repository.UserSettings(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readBack.StreamChunkSize != 40 {
+		t.Fatalf("interactive handle did not see job-handle write: %+v", readBack)
+	}
+
+	// ...and both handles stay usable under concurrent reads/writes.
+	done := make(chan error, 2)
+	go func() {
+		var err error
+		for i := 0; i < 20 && err == nil; i++ {
+			_, err = jobStore.ServerSettings(ctx)
+		}
+		done <- err
+	}()
+	go func() {
+		var err error
+		for i := 0; i < 20 && err == nil; i++ {
+			if _, err = repository.ServerSettings(ctx); err == nil {
+				_, err = repository.Authenticate(ctx, "owner", "a-secure-password")
+			}
+		}
+		done <- err
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent handle access failed: %v", err)
+		}
+	}
+}
