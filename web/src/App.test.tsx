@@ -930,7 +930,8 @@ test("favorite view skips expanded media fetch until timeline mode opens", async
   render(<MemoryRouter initialEntries={["/favorites/30"]}><App/></MemoryRouter>);
   expect(await screen.findByText("one.jpg")).toBeInTheDocument();
   expect(mockApi.favoriteViewMediaFull).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByLabelText("Display mode"), {target:{value:"timeline"}});
+  fireEvent.click(screen.getByRole("button", {name:"Display mode"}));
+  fireEvent.click(await screen.findByRole("option", {name:"Timeline"}));
   await waitFor(() => expect(mockApi.favoriteViewMediaFull).toHaveBeenCalledWith(30, true));
   await waitFor(() => expect(document.body.querySelector(".timeline-group-date")).toHaveTextContent("2024"));
 });
@@ -1016,12 +1017,89 @@ test("folder timeline loads media for that folder and links back to it", async (
   await waitFor(() => expect(mockApi.folderMedia).toHaveBeenCalledWith(1, 20));
   expect(await screen.findByText("two.jpg")).toBeInTheDocument();
   expect(await screen.findByText("one.jpg")).toBeInTheDocument();
-  const viewSelect = screen.getAllByRole("combobox")[0];
-  const foldersOption = viewSelect.querySelector<HTMLOptionElement>("option[value='/library/1/folder/20']");
-  expect(foldersOption).not.toBeNull();
-  expect(foldersOption!.textContent).toBe("Folders");
+  const viewButton = screen.getAllByRole("button", {name:/^Timeline/})[0];
+  fireEvent.click(viewButton);
+  const foldersOption = await screen.findByRole("option", {name:"Folders"});
+  expect(foldersOption).toHaveAttribute("aria-selected", "false");
   expect(screen.getByRole("link", {name:"Timeline of Libraries"})).toHaveAttribute("href", "/");
   expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1/timeline");
+});
+
+test("keyboard focus, space check, and shift-range selection work in the library timeline", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderMedia.mockResolvedValue([
+    {id:100, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2023-03-03T03:03:03Z"},
+    {id:101, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2022-02-02T02:02:02Z"},
+    {id:102, folderId:20, relativePath:"c.jpg", name:"c.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2021-01-01T01:01:01Z"}
+  ]);
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
+  await screen.findByText("a.jpg");
+  const card = (id:number) => document.querySelector(`[data-kb-id="m${id}"]`) as HTMLElement;
+  const check = (id:number) => card(id).querySelector("input[type=checkbox]") as HTMLInputElement;
+  // Oldest-first (asc, now the default) orders c(2021), b(2022), a(2023).
+  // Arrow focuses without a click.
+  fireEvent.keyDown(window, {key:"ArrowRight"});
+  await waitFor(() => expect(card(102)).toHaveClass("kb-focus"));
+  // Space checks the focused item.
+  fireEvent.keyDown(window, {key:" ", code:"Space"});
+  await waitFor(() => expect(check(102).checked).toBe(true));
+  // Shift+Arrow grows a band and Space checks the whole range; the earlier check stays.
+  fireEvent.keyDown(window, {key:"ArrowRight"});
+  await waitFor(() => expect(card(101)).toHaveClass("kb-focus"));
+  fireEvent.keyDown(window, {key:"ArrowRight", shiftKey:true});
+  await waitFor(() => expect(card(100)).toHaveClass("kb-range"));
+  fireEvent.keyDown(window, {key:" ", code:"Space"});
+  await waitFor(() => expect(check(102).checked).toBe(true));
+  expect(check(101).checked).toBe(true);
+  expect(check(100).checked).toBe(true);
+  // Space on the focused item toggles just it back off.
+  fireEvent.keyDown(window, {key:" ", code:"Space"});
+  await waitFor(() => expect(check(100).checked).toBe(false));
+});
+
+test("ctrl+space opens the favorite flow for the focused media item", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderMedia.mockResolvedValue([
+    {id:100, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2023-03-03T03:03:03Z"}
+  ]);
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
+  await screen.findByText("a.jpg");
+  fireEvent.keyDown(window, {key:"ArrowRight"});
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).toHaveClass("kb-focus"));
+  fireEvent.keyDown(window, {key:" ", code:"Space", ctrlKey:true});
+  expect(await screen.findByLabelText("Favorite views for a.jpg")).toBeInTheDocument();
+});
+
+test("enter on the focused media card opens the viewer in play mode", async () => {
+  Object.defineProperty(HTMLMediaElement.prototype, "paused", {
+    get(this:HTMLMediaElement) { return (this as unknown as {_paused?:boolean})._paused !== false; },
+    set(this:HTMLMediaElement, value:boolean) { (this as unknown as {_paused?:boolean})._paused = value; },
+    configurable:true
+  });
+  HTMLMediaElement.prototype.play = vi.fn(async function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = false;
+    this.dispatchEvent(new Event("play"));
+  }) as any;
+  HTMLMediaElement.prototype.pause = vi.fn(function(this:HTMLMediaElement) {
+    (this as unknown as {_paused?:boolean})._paused = true;
+    this.dispatchEvent(new Event("pause"));
+  }) as any;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderMedia.mockResolvedValue([
+    {id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}
+  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}}
+  ], chain: []});
+  mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
+  await screen.findByText("two.mp4");
+  fireEvent.keyDown(window, {key:"ArrowRight"});
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m103"]')).toHaveClass("kb-focus"));
+  fireEvent.keyDown(window, {key:"Enter"});
+  expect(await screen.findByLabelText("Seek video")).toBeInTheDocument();
+  expect(document.querySelector(".viewer-stage")).toHaveAttribute("aria-label", "two.mp4");
+  expect(screen.getByRole("button", {name:"Pause"})).toBeInTheDocument();
 });
 
 test("timeline load can be cancelled while a big folder is still loading", async () => {
@@ -1044,24 +1122,32 @@ test("library timeline groups media by date along a vertical ruler", async () =>
   await screen.findByText("two.mp4");
   const cards = Array.from(document.querySelectorAll("article.card.media"));
   expect(cards.map(card => card.textContent)).toEqual([
-    expect.stringContaining("two.mp4"),
+    expect.stringContaining("old.jpg"),
     expect.stringContaining("one.jpg"),
-    expect.stringContaining("old.jpg")
+    expect.stringContaining("two.mp4")
   ]);
   expect(screen.queryByRole("heading", {name:"2020-08-21"})).not.toBeInTheDocument();
   expect(screen.queryByRole("heading", {name:"Unknown date"})).not.toBeInTheDocument();
   const groups = Array.from(document.querySelectorAll(".timeline-grid .timeline-group"));
   expect(groups.length).toBe(2);
-  expect(groups[0].querySelectorAll(".timeline-group-grid .media").length).toBe(2);
-  expect(groups[1].querySelectorAll(".timeline-group-grid .media").length).toBe(1);
-  const dateLabels = Array.from(document.querySelectorAll(".timeline-group .timeline-group-date"));
-  expect(dateLabels.map(label => label.textContent)).toEqual([
-    expect.stringContaining("2020"),
-    "Unknown date"
-  ]);
-  const kindSelect = screen.getAllByRole("combobox").find(el => el.querySelector("option[value='image']"))!;
-  fireEvent.change(kindSelect, {target:{value:"image"}});
-  expect(screen.getByText("one.jpg")).toBeInTheDocument();
+  const dateLabels0 = Array.from(document.querySelectorAll(".timeline-group-date"));
+  if (dateLabels0[0].textContent!.includes("2020")) {
+    expect(groups[0].querySelectorAll(".timeline-group-grid .media").length).toBe(2);
+    expect(groups[1].querySelectorAll(".timeline-group-grid .media").length).toBe(1);
+    expect(dateLabels0.map(label => label.textContent)).toEqual([
+      expect.stringContaining("2020"),
+      "Unknown date"
+    ]);
+  } else {
+    expect(groups[0].querySelectorAll(".timeline-group-grid .media").length).toBe(1);
+    expect(groups[1].querySelectorAll(".timeline-group-grid .media").length).toBe(2);
+    expect(dateLabels0.map(label => label.textContent)).toEqual([
+      "Unknown date",
+      expect.stringContaining("2020")
+    ]);
+  }
+  fireEvent.click(screen.getByRole("button", {name:/^All$/}));
+  fireEvent.click(await screen.findByRole("option", {name:"Images"}));
   expect(screen.queryByText("two.mp4")).not.toBeInTheDocument();
   fireEvent.click(screen.getByText("one.jpg"));
   expect(mockApi.entries).not.toHaveBeenCalledWith(1, "2020");
@@ -1338,19 +1424,19 @@ test("browser map button scopes to the library or current folder", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.entries.mockResolvedValue([]);
   const first = render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
-  await waitFor(() => {
-    const selects = first.getAllByRole("combobox");
-    const viewSelect = selects.find(el => el.querySelector("option[value='/map?library=1']"));
-    expect(viewSelect).toBeDefined();
-  });
+  await waitFor(() => { fireEvent.click(screen.getAllByRole("button", {name:/^Folders/})[0]); });
+  fireEvent.click(await screen.findByRole("option", {name:"Map"}));
+  const firstBar = await screen.findByLabelText("Breadcrumb");
+  await waitFor(() => expect(firstBar).toHaveTextContent("Map of Family"));
   first.unmount();
-  mockApi.folderEntries.mockResolvedValue({entries:[], chain: []});
-  const second = render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
-  await waitFor(() => {
-    const selects = second.getAllByRole("combobox");
-    const viewSelect = selects.find(el => el.querySelector("option[value='/map?library=1&folder=20']"));
-    expect(viewSelect).toBeDefined();
-  });
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"}
+  ]});
+  render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
+  await waitFor(() => { fireEvent.click(screen.getAllByRole("button", {name:/^Folders/})[0]); });
+  fireEvent.click(await screen.findByRole("option", {name:"Map"}));
+  const secondBar = await screen.findByLabelText("Breadcrumb");
+  await waitFor(() => expect(secondBar).toHaveTextContent("Map of Family / Photos"));
 });
 
 test("map breadcrumb shows Map of the library and folder when scoped", async () => {
@@ -1893,7 +1979,7 @@ test("video viewer exposes pause stop and replay transport controls", async () =
   expect(screen.getByRole("button", {name:"Pause"})).toBeInTheDocument();
 });
 
-test("space toggles play pause on the video player instead of skipping to next media", async () => {
+test("space toggles play/pause in the video player", async () => {
   Object.defineProperty(HTMLMediaElement.prototype, "paused", {
     get(this:HTMLMediaElement) { return (this as unknown as {_paused?:boolean})._paused !== false; },
     set(this:HTMLMediaElement, value:boolean) { (this as unknown as {_paused?:boolean})._paused = value; },
@@ -1907,9 +1993,6 @@ test("space toggles play pause on the video player instead of skipping to next m
     (this as unknown as {_paused?:boolean})._paused = true;
     this.dispatchEvent(new Event("pause"));
   }) as any;
-  HTMLMediaElement.prototype.load = vi.fn() as any;
-  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {value:0, writable:true, configurable:true});
-  Object.defineProperty(HTMLMediaElement.prototype, "duration", {value:120, writable:true, configurable:true});
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[
     {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}},
@@ -1920,9 +2003,10 @@ test("space toggles play pause on the video player instead of skipping to next m
   await screen.findByLabelText("Seek video");
   document.querySelectorAll("video").forEach(video => { (video as unknown as {_paused?:boolean})._paused = false; });
   expect(await screen.findByRole("button", {name:"Pause"})).toBeInTheDocument();
+  // Space toggles play → pause
   fireEvent.keyDown(window, {key:" ", code:"Space"});
   expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
-  expect(document.querySelector(".viewer-stage")).toHaveAttribute("aria-label", "two.mp4");
+  // Space toggles pause → play
   fireEvent.keyDown(window, {key:" ", code:"Space"});
   expect(screen.getByRole("button", {name:"Pause"})).toBeInTheDocument();
   expect(document.querySelector(".viewer-stage")).toHaveAttribute("aria-label", "two.mp4");

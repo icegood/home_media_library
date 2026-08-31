@@ -45,6 +45,7 @@ export function App() {
   const [streamChunkSize, setStreamChunkSize] = useState(DEFAULT_STREAM_CHUNK_SIZE);
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [settingsWarn, setSettingsWarn] = useState(false);
   const shellRef = useRef<HTMLDivElement|null>(null);
   // Subscribes App to language switches: the shell below is keyed by the
   // resolved language, so switching remounts it and every string is
@@ -94,7 +95,7 @@ export function App() {
   }, [overlayLocation.pathname]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); }).catch(() => undefined);
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
   }, [user?.id]);
   useEffect(() => {
     function closeTopMenus(event:PointerEvent) {
@@ -130,6 +131,7 @@ export function App() {
   }
   return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
+    {settingsWarn && <div className="shell-warning" role="alert">Couldn't load your account preferences (theme, zoom, …) — showing defaults. <button type="button" className="secondary" onClick={() => setSettingsWarn(false)}>Dismiss</button></div>}
     <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
@@ -1439,6 +1441,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   const [defaultThumbFolder, setDefaultThumbFolder] = useState("mountains");
   const [mapTileProviderLight, setMapTileProviderLight] = useState<MapTileSource>("osm");
   const [mapTileProviderDark, setMapTileProviderDark] = useState<MapTileSource>("osm");
+  const [loadError, setLoadError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1459,7 +1462,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       setMapTileProviderLight(settings.mapTileProviderLight ?? "osm");
       setMapTileProviderDark(settings.mapTileProviderDark ?? "osm");
       setLoaded(true);
-    }).catch(() => undefined);
+    }).catch((cause: unknown) => setLoadError((cause as Error).message));
   }, [user.id]);
   useEffect(() => {
     document.documentElement.style.fontSize = `${draftZoom}%`;
@@ -1508,6 +1511,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
         <button type="button" className="secondary" onClick={close}>Close</button>
       </div>
       <p className="muted">Preferences for {user.login}. These apply only to your account.</p>
+      {loadError && <p className="error" role="alert">Couldn't load your settings: {loadError}. Saving is disabled until they load.</p>}
       <fieldset><legend>Appearance</legend>
         <label>Language
           <select value={draftLanguage} onChange={event => setDraftLanguage(event.target.value as LanguageSetting)}>
@@ -1810,6 +1814,36 @@ function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string
   </div>;
 }
 
+function BarSelect<T extends string>({value, options, onChange, ariaLabel, className}:{value:T; options:{value:T; label:string}[]; onChange:(value:T)=>void; ariaLabel?:string; className?:string}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement|null>(null);
+  const openRef = useRef(open);
+  useEffect(() => {
+    openRef.current = open;
+    if (!open) return;
+    function onDocClick(event:Event) {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    function onKey(event:KeyboardEvent) { if (event.key === "Escape") setOpen(false); }
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("click", onDocClick); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  const current = options.find(option => option.value === value) ?? options[0];
+  return <div className={`select-wrap bar-select-wrap${open ? " open" : ""}`} ref={wrapRef}>
+    <button type="button" className={`bar-select bar-select-button${className ? " " + className : ""}`} aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(v => !v)}>
+      <span>{current?.label ?? value}</span><span className="select-caret" aria-hidden="true">▾</span>
+    </button>
+    {open && <ul className="bar-listbox" role="listbox" aria-label={ariaLabel}>
+      {options.map(option => (
+        <li key={option.value} role="option" aria-selected={option.value === value} onClick={() => { setOpen(false); onChange(option.value); }}>
+          <span>{option.label}</span>
+        </li>
+      ))}
+    </ul>}
+  </div>;
+}
+
 function Browser() {
   const {id="", folderId} = useParams(); const navigate = useNavigate(); const location = useLocation();
   const libraryId = Number(id);
@@ -1823,6 +1857,24 @@ function Browser() {
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
+  const gridRef = useRef<HTMLDivElement|null>(null);
+  const [favItem, setFavItem] = useState<Media|null>(null);
+  const [favFolder, setFavFolder] = useState<{id:ID; name:string}|null>(null);
+  const kb = useGridKeyboard({
+    enabled: favItem == null && favFolder == null,
+    containerRef: gridRef,
+    onToggle: id => {
+      const entryId = Number(id.slice(1));
+      if (id.startsWith("f")) toggleSelected(setSelectedFolders)(entryId);
+      else toggleSelected(setSelected)(entryId);
+    },
+    onFavorite: id => {
+      const entry = entries.find(e => (id.startsWith("f") ? `f${e.id}` : e.type === "media" && e.media ? `m${e.media.id}` : "") === id);
+      if (!entry) return;
+      if (entry.type === "folder") setFavFolder({id: entry.id, name: entry.name});
+      else setFavItem(entry.media ?? null);
+    }
+  });
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
@@ -1832,26 +1884,24 @@ function Browser() {
     }));
     setSelected([]);
   }
-  return <main className="browser-page"><div className="browser-bar"><div className="browser-bar-inner">
-    <select className="bar-select" value={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`} onChange={event => { const v = event.target.value; if (v.startsWith("/map")) navigate(v); else navigate(v); }}>
-      <option value={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</option>
-      <option value={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</option>
-      <option value={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</option>
-    </select>
+  return <main className="browser-page" ref={gridRef}><div className="browser-bar"><div className="browser-bar-inner">
+    <BarSelect value={currentFolderId == null ? `/library/${id}` : `/library/${id}/folder/${currentFolderId}`}
+      options={[
+        {value:`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`, label:"Folders"},
+        {value:`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`, label:"Timeline"},
+        {value:`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`, label:"Map"},
+      ]}
+      onChange={v => navigate(v)}/>
     <span className="bar-sep"/>
-    <select className="bar-select" value={view} onChange={event => setView(event.target.value as "tile"|"list")}>
-      <option value="tile">Tile</option>
-      <option value="list">List</option>
-    </select>
+    <BarSelect value={view} options={[{value:"tile", label:"Tile"}, {value:"list", label:"List"}]} onChange={v => setView(v as "tile"|"list")}/>
     <span className="bar-sep"/>
-    <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
-      <option value="all">All</option>
-      <option value="image">Images</option>
-      <option value="video">Videos</option>
-    </select>
+    <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}]} onChange={v => setKind(v as "all"|"image"|"video")}/>
     <span className="bar-sep"/>
     <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
-    <VirtualEntries entries={entries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone}/></main>;
+    <VirtualEntries entries={entries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone} kbFocusId={kb.focusId} kbBand={kb.bandIds}/>
+    {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
+    {favFolder && createPortal(<FolderFavoriteViewChooser folderId={favFolder.id} folderName={favFolder.name} onChange={() => setFavFolder(null)} onClose={() => setFavFolder(null)}/>, document.body)}
+  </main>;
 }
 
 function LibraryTimeline() {
@@ -1865,7 +1915,7 @@ function LibraryTimeline() {
   const [items, setItems] = useState<Media[]>([]);
   const [loading, setLoading] = useState(true);
   const [kind, setKind] = useState<"all"|"image"|"video">("all");
-  const [sort, setSort] = useState<"desc"|"asc">("desc");
+  const [sort, setSort] = useState<"desc"|"asc">("asc");
   useEffect(() => {
     if (!Number.isFinite(libraryId)) return;
     let cancelled = false;
@@ -1879,6 +1929,14 @@ function LibraryTimeline() {
   const filtered = items.filter(item => kind === "all" || item.kind === kind);
   const sorted = sortMedia(filtered, sort);
   const [selected, setSelected] = useState<ID[]>([]);
+  const gridRef = useRef<HTMLDivElement|null>(null);
+  const [favItem, setFavItem] = useState<Media|null>(null);
+  const kb = useGridKeyboard({
+    enabled: favItem == null && !loading,
+    containerRef: gridRef,
+    onToggle: id => { if (id.startsWith("m")) toggleSelected(setSelected)(Number(id.slice(1))); },
+    onFavorite: id => { if (id.startsWith("m")) { const found = items.find(m => `m${m.id}` === id); if (found) setFavItem(found); } }
+  });
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -1886,24 +1944,18 @@ function LibraryTimeline() {
     }));
     setSelected([]);
   }
-  return <main className="browser-page">
+  return <main className="browser-page" ref={gridRef}>
     <div className="browser-bar"><div className="browser-bar-inner">
-      <select className="bar-select" value={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`} onChange={event => { const v = event.target.value; if (v) navigate(v); }}>
-        <option value="">View</option>
-        <option value={`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`}>Folders</option>
-        <option value={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}>Timeline</option>
-        <option value={`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`}>Map</option>
-      </select>
+      <BarSelect value={`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`}
+        options={[
+          {value:`/library/${id}${currentFolderId != null ? `/folder/${currentFolderId}` : ""}`, label:"Folders"},
+          {value:`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`, label:"Timeline"},
+          {value:`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`, label:"Map"},
+        ]}
+        onChange={v => { if (v) navigate(v); }}/>
       <span className="bar-sep"/>
-      <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
-        <option value="all">All</option>
-        <option value="image">Images</option>
-        <option value="video">Videos</option>
-      </select>
-      <select className="bar-select" value={sort} onChange={event => setSort(event.target.value as "desc"|"asc")}>
-        <option value="desc">Newest first</option>
-        <option value="asc">Oldest first</option>
-      </select>
+      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}]} onChange={v => setKind(v as "all"|"image"|"video")}/>
+      <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
       <span className="bar-sep"/>
     <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
     {loading ? <div className="empty-state">
@@ -1916,10 +1968,11 @@ function LibraryTimeline() {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(favParam ? {fav:favParam} : {})}}/>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(favParam ? {fav:favParam} : {})}} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)}/>
           )}</div>
         </div>
       )}</div>}
+    {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
   </main>;
 }
 
@@ -1994,7 +2047,7 @@ function FavoriteViewRow({view,onChange}:{view:FavoriteView; onChange:()=>void})
 
 type FavoriteItem = {id:ID; name:string; mimeType?:string; isFolder?:boolean};
 
-function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected, onToggleSelected}:{id:ID; name:string; view:"tile"|"list"; favoriteViewId?:ID; onRemove?:(id:ID)=>void; selected?:boolean; onToggleSelected?:(id:ID)=>void}) {
+function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected, onToggleSelected, kbFocused=false, kbRange=false}:{id:ID; name:string; view:"tile"|"list"; favoriteViewId?:ID; onRemove?:(id:ID)=>void; selected?:boolean; onToggleSelected?:(id:ID)=>void; kbFocused?:boolean; kbRange?:boolean}) {
   const [busy, setBusy] = useState(false);
   async function remove(event:MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -2039,7 +2092,7 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected,
       setBusy(false);
     }
   }
-  return <article className={`card media folder-card ${view}`} onClick={event => { if (event.button === 1 || event.ctrlKey || event.metaKey) void openFolderNewTab(event); else void openFolder(); }} onAuxClick={openFolderNewTab}>
+  return <article className={`card media folder-card ${view}${kbRange ? " kb-range" : ""}${kbFocused ? " kb-focus" : ""}`} data-kb-card="true" data-kb-id={`f${id}`} onClick={event => { if ((event.target as HTMLElement).closest("button, a, input, label, select, textarea")) return; if (event.button === 1 || event.ctrlKey || event.metaKey) void openFolderNewTab(event); else void openFolder(); }} onAuxClick={openFolderNewTab}>
     {onToggleSelected && <label className="select-media" aria-label={`Select ${name}`} onClick={event => event.stopPropagation()}>
       <input type="checkbox" checked={Boolean(selected)} onChange={() => onToggleSelected(id)}/>
     </label>}
@@ -2066,6 +2119,27 @@ function FavoriteViewPage() {
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
   useSyncBrowserBarMetrics();
+  const gridRef = useRef<HTMLDivElement|null>(null);
+  const kb = useGridKeyboard({
+    enabled: true,
+    containerRef: gridRef,
+    onToggle: id => { const num = Number(id.slice(1)); if (id.startsWith("f")) toggleSelected(setSelectedFolders)(num); else toggleSelected(setSelected)(num); },
+    onFavorite: id => void keyboardFavorite(id)
+  });
+  async function keyboardFavorite(raw:string) {
+    if (!Number.isFinite(favoriteViewId)) return;
+    const num = Number(raw.slice(1));
+    if (raw.startsWith("f")) {
+      try { await api.unfavoriteFolder(favoriteViewId, num); } catch (cause) { setError((cause as Error).message); return; }
+      setItems(current => current.filter(i => i.id !== num || !i.isFolder));
+      setSelectedFolders(current => current.filter(i => i !== num));
+    } else {
+      try { await api.unfavoriteMedia(favoriteViewId, num); } catch (cause) { setError((cause as Error).message); return; }
+      setMediaItems(current => current.filter(m => m.id !== num));
+      setItems(current => current.filter(i => i.id !== num || i.isFolder));
+      setSelected(current => current.filter(i => i !== num));
+    }
+  }
   useEffect(() => {
     if (!Number.isFinite(favoriteViewId)) return;
     const req = ++mediaReqRef.current;
@@ -2105,30 +2179,16 @@ function FavoriteViewPage() {
     setSelected([]);
     setSelectedFolders([]);
   }
-  return <main className="browser-page">
+  return <main className="browser-page" ref={gridRef}>
     <div className="browser-bar"><div className="browser-bar-inner">
-      <select className="bar-select" aria-label="Display mode" value={displayMode} onChange={event => { const v = event.target.value as "folders"|"timeline"|"map"; if (v === "map") { window.location.href = `/map?favorite=${favoriteViewId}`; } else setDisplayMode(v); }}>
-        <option value="folders">Folders</option>
-        <option value="timeline">Timeline</option>
-        <option value="map">Map</option>
-      </select>
+      <BarSelect ariaLabel="Display mode" value={displayMode} options={[{value:"folders", label:"Folders"}, {value:"timeline", label:"Timeline"}, {value:"map", label:"Map"}]} onChange={v => { if (v === "map") { window.location.href = `/map?favorite=${favoriteViewId}`; } else setDisplayMode(v as "folders"|"timeline"); }}/>
       <span className="bar-sep"/>
-      <select className="bar-select" value={view} onChange={event => setView(event.target.value as "tile"|"list")}>
-        <option value="tile">Tile</option>
-        <option value="list">List</option>
-      </select>
+      <BarSelect value={view} options={[{value:"tile", label:"Tile"}, {value:"list", label:"List"}]} onChange={v => setView(v as "tile"|"list")}/>
       <span className="bar-sep"/>
-      <select className="bar-select" value={kind} onChange={event => setKind(event.target.value as "all"|"image"|"video")}>
-        <option value="all">All</option>
-        <option value="image">Images</option>
-        <option value="video">Videos</option>
-      </select>
+      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}]} onChange={v => setKind(v as "all"|"image"|"video")}/>
       {displayMode === "timeline" && <>
         <span className="bar-sep"/>
-        <select className="bar-select" value={sort} onChange={event => setSort(event.target.value as "desc"|"asc")}>
-          <option value="desc">Newest first</option>
-          <option value="asc">Oldest first</option>
-        </select>
+        <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
       </>}
       <span className="bar-sep"/>
       <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
@@ -2139,8 +2199,8 @@ function FavoriteViewPage() {
       {orderedItems.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
         <div className={view === "tile" ? "grid" : "list-view"}>{orderedItems.map(item =>
           item.isFolder
-            ? <FavoriteFolderCard key={`f-${item.id}`} id={item.id} name={item.name} view={view} favoriteViewId={favoriteViewId} onRemove={removedId => setItems(current => current.filter(i => i.id !== removedId || !i.isFolder))} selected={selectedFolders.includes(item.id)} onToggleSelected={toggleSelected(setSelectedFolders)}/>
-            : <MediaCard key={item.id} item={{id:item.id, name:item.name, mimeType:item.mimeType??"", favorite:true} as Media} view={view} favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} onFavoriteChange={updated => setItems(current => current.filter(i => i.id !== updated.id || i.isFolder))}/>
+            ? <FavoriteFolderCard key={`f-${item.id}`} id={item.id} name={item.name} view={view} favoriteViewId={favoriteViewId} onRemove={removedId => setItems(current => current.filter(i => i.id !== removedId || !i.isFolder))} selected={selectedFolders.includes(item.id)} onToggleSelected={toggleSelected(setSelectedFolders)} kbFocused={kb.focusId === `f${item.id}`} kbRange={kb.bandIds.includes(`f${item.id}`)}/>
+            : <MediaCard key={item.id} item={{id:item.id, name:item.name, mimeType:item.mimeType??"", favorite:true} as Media} view={view} favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} onFavoriteChange={updated => setItems(current => current.filter(i => i.id !== updated.id || i.isFolder))} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)}/>
         )}</div>}
     </>}
     {loaded && displayMode === "timeline" && <>
@@ -2151,7 +2211,7 @@ function FavoriteViewPage() {
             <span className="timeline-group-date">{group.label}</span>
             <span className="timeline-group-dot" aria-hidden="true"/>
             <div className="timeline-group-grid">{group.items.map((item, itemIndex) =>
-              <MediaCard key={`${item.id}-${itemIndex}`} item={item} view="tile" favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "asc" : "desc"}/>
+              <MediaCard key={`${item.id}-${itemIndex}`} item={item} view="tile" favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "asc" : "desc"} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)}/>
             )}</div>
           </div>
         )}</div>}
@@ -2199,6 +2259,7 @@ function FavoriteMediaViewerPage() {
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
       if (isEditableTarget(event.target)) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key === "ArrowLeft" && previous) {
         event.preventDefault();
         go(previous);
@@ -2308,6 +2369,137 @@ function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdate
 
 function toggleSelected(setSelected:(update:(current:ID[])=>ID[])=>void) {
   return (id:ID) => setSelected(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
+}
+
+// useGridKeyboard implements focus-without-click navigation for the media grids.
+// Arrow keys move a keyboard focus; Shift+Arrow grows a highlighted band between
+// the last anchor and the current focus; Space commits the whole band (or the
+// focused item alone) into the existing selection, preserving earlier checks;
+// Ctrl+Space opens the favorite flow for the focused item. Cards are registered
+// with data-kb-card / data-kb-id (ids are prefixed "m" for media, "f" for
+// folders) and get the kb-focus / kb-range classes.
+function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<HTMLElement|null>; onToggle:(id:string)=>void; onFavorite:(id:string)=>void}) {
+  const [focusId, setFocusId] = useState<string|null>(null);
+  const [anchorId, setAnchorId] = useState<string|null>(null);
+  const [bandIds, setBandIds] = useState<string[]>([]);
+  const stateRef = useRef({focusId, anchorId, onToggle:options.onToggle, onFavorite:options.onFavorite});
+  useEffect(() => {
+    stateRef.current.focusId = focusId;
+    stateRef.current.anchorId = anchorId;
+    stateRef.current.onToggle = options.onToggle;
+    stateRef.current.onFavorite = options.onFavorite;
+  });
+  useEffect(() => {
+    if (!options.enabled) return;
+    function cards() {
+      const el = options.containerRef.current;
+      return el ? Array.from(el.querySelectorAll<HTMLElement>("[data-kb-card]")) : [];
+    }
+    function moveChooser(el:HTMLElement, dir:"left"|"right"|"up"|"down", index:number, els:HTMLElement[]) {
+      if (dir === "left" || dir === "right") {
+        const sibling = dir === "right" ? index + 1 : index - 1;
+        return sibling >= 0 && sibling < els.length ? els[sibling] : null;
+      }
+      const r = el.getBoundingClientRect();
+      let best:HTMLElement|null = null;
+      let bestScore = Infinity;
+      for (let i = 0; i < els.length; i++) {
+        const cand = els[i];
+        if (cand === el) continue;
+        if (cand.getBoundingClientRect().width <= 0) continue;
+        const b = cand.getBoundingClientRect();
+        let score = Infinity;
+        if (dir === "down" && b.top > r.top) score = (b.top - r.bottom) + Math.min(Math.abs(b.left - r.left), 60);
+        else if (dir === "up" && b.top < r.top) score = (r.top - b.bottom) + Math.min(Math.abs(b.left - r.left), 60);
+        if (score < bestScore) { bestScore = score; best = cand; }
+      }
+      if (best) return best;
+      const sibling = dir === "down" ? index + 1 : index - 1;
+      return sibling >= 0 && sibling < els.length ? els[sibling] : null;
+    }
+    function applyMove(next:HTMLElement|null, shift:boolean, els:HTMLElement[]) {
+      if (!next) return;
+      const s = stateRef.current;
+      const ids = els.map(card => card.dataset.kbId ?? "");
+      const nextId = next.dataset.kbId ?? "";
+      if (!nextId) return;
+      if (shift) {
+        const anchor = s.anchorId ?? s.focusId ?? nextId;
+        setAnchorId(anchor);
+        setFocusId(nextId);
+        const aIdx = ids.indexOf(anchor);
+        const fIdx = ids.indexOf(nextId);
+        setBandIds(aIdx >= 0 && fIdx >= 0 ? ids.slice(Math.min(aIdx, fIdx), Math.max(aIdx, fIdx) + 1) : []);
+      } else {
+        setAnchorId(nextId);
+        setFocusId(nextId);
+        setBandIds([]);
+      }
+      next.scrollIntoView?.({block:"nearest", inline:"nearest"});
+    }
+    function onKeyDown(event:KeyboardEvent) {
+      if (isEditableTarget(event.target)) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target && target.closest("input, button, select, textarea, a, label")) return;
+      const key = event.key;
+      const dir = key === "ArrowRight" ? "right" : key === "ArrowLeft" ? "left" : key === "ArrowDown" ? "down" : key === "ArrowUp" ? "up" : null;
+      const isSpace = key === " " || key === "Spacebar";
+      const s = stateRef.current;
+      const els = cards();
+      if (event.ctrlKey || event.metaKey) {
+        if (isSpace && s.focusId) {
+          event.preventDefault();
+          s.onFavorite(s.focusId);
+        }
+        return;
+      }
+      if (key === "Enter" && s.focusId) {
+        event.preventDefault();
+        els.find(el => el.dataset.kbId === s.focusId)?.click();
+        return;
+      }
+      if (dir) {
+        if (els.length === 0) return;
+        event.preventDefault();
+        if (s.focusId == null) { applyMove(dir === "left" || dir === "up" ? els[els.length - 1] : els[0], event.shiftKey, els); return; }
+        const index = els.findIndex(card => card.dataset.kbId === s.focusId);
+        if (index < 0) { applyMove(els[0], event.shiftKey, els); return; }
+        applyMove(moveChooser(els[index], dir, index, els), event.shiftKey, els);
+        return;
+      }
+      if (isSpace) {
+        if (els.length === 0 || !s.focusId) return;
+        event.preventDefault();
+        const ids = els.map(card => card.dataset.kbId ?? "");
+        const focus = s.focusId;
+        const anchor = s.anchorId;
+        if (anchor && anchor !== focus) {
+          const aIdx = ids.indexOf(anchor);
+          const fIdx = ids.indexOf(focus);
+          if (aIdx >= 0 && fIdx >= 0) {
+            ids.slice(Math.min(aIdx, fIdx), Math.max(aIdx, fIdx) + 1).forEach(s.onToggle);
+          }
+        } else {
+          s.onToggle(focus);
+        }
+        setAnchorId(focus);
+        setBandIds([]);
+        return;
+      }
+      if ((event.key === "Home" || event.key === "End") && els.length > 0) {
+        event.preventDefault();
+        applyMove(event.key === "Home" ? els[0] : els[els.length - 1], event.shiftKey, els);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setFocusId(null); setAnchorId(null); setBandIds([]);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [options.enabled, options.containerRef]);
+  return {focusId, bandIds};
 }
 
 function sortMedia<T extends Media>(items:readonly T[], sort:"desc"|"asc") {
@@ -2469,7 +2661,7 @@ export function useBufferedFolderEntries(libraryId:number, folderId:number|null,
   return {entries, setEntries, done, loading, loadMore};
 }
 
-function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onLoadMore,moreLoading,moreDone}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; itemNav?:ItemNav; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean}) {
+function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onLoadMore,moreLoading,moreDone,kbFocusId=null,kbBand=[]}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; itemNav?:ItemNav; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean; kbFocusId?:string|null; kbBand?:string[]}) {
   const sentinelRef = useRef<HTMLDivElement|null>(null);
   useEffect(() => {
     if (moreDone || !onLoadMore) return;
@@ -2486,15 +2678,15 @@ function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFold
   return <div className={`cv-browser ${view === "tile" ? "virtual-tile" : "virtual-list"}`}>
     <div className={view === "tile" ? "grid" : "list-view"}>
       {entries.map(entry => entry.type === "folder" ?
-        <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected}/> :
-        <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} nav={itemNav} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date"/>
+        <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected} kbFocused={kbFocusId === `f${entry.id}`} kbRange={kbBand.includes(`f${entry.id}`)}/> :
+        <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} nav={itemNav} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date" kbFocused={kbFocusId === `m${entry.media!.id}`} kbRange={kbBand.includes(`m${entry.media!.id}`)}/>
       )}
     </div>
     {!moreDone && <div ref={sentinelRef} className="load-more">{moreLoading ? <span>Loading…</span> : null}</div>}
   </div>;
 }
 
-function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFolderIds, onToggleFolderSelected}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void; selectedFolderIds?:ID[]; onToggleFolderSelected?:(id:ID)=>void}) {
+function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFolderIds, onToggleFolderSelected, kbFocused=false, kbRange=false}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void; selectedFolderIds?:ID[]; onToggleFolderSelected?:(id:ID)=>void; kbFocused?:boolean; kbRange?:boolean}) {
   const location = useLocation();
   const favParam = new URLSearchParams(location.search).get("fav");
   const [refreshing, setRefreshing] = useState(false);
@@ -2539,7 +2731,11 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
     if (event.button === 1 || event.ctrlKey || event.metaKey) { window.open(folderUrl, "_blank"); event.preventDefault(); return; }
     onOpenFolder(entry);
   }
-  return <div className={`card library folder-entry ${view === "list" ? "folder-entry-list" : ""}`}>
+  function handleCardClick(event:React.MouseEvent) {
+    if ((event.target as HTMLElement).closest("button, a, input, label, select, textarea, [role=menuitem]")) return;
+    handleOpen(event);
+  }
+  return <div className={`card library folder-entry ${view === "list" ? "folder-entry-list" : ""}${kbRange ? " kb-range" : ""}${kbFocused ? " kb-focus" : ""}`} data-kb-card="true" data-kb-id={`f${entry.id}`} onClick={handleCardClick}>
     {onToggleFolderSelected && <label className="select-media" aria-label={`Select ${entry.name}`} onClick={event => event.stopPropagation()}>
       <input type="checkbox" checked={folderSelected} onChange={() => onToggleFolderSelected(entry.id)}/>
     </label>}
@@ -2635,7 +2831,7 @@ function FolderCover({folderId, priority}:{folderId?:ID; priority?:boolean}) {
   return <div className="folder-cover"><ThumbImage src={api.folderThumbnailUrl(folderId)} priority={priority} kind="folder"/></div>;
 }
 
-function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort,nav}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string; nav?:ItemNav}) {
+function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort,nav,kbId,kbFocused=false,kbRange=false}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string; nav?:ItemNav; kbId?:string; kbFocused?:boolean; kbRange?:boolean}) {
   const navigate = useNavigate();
   const favoriteSort = sort === "asc" ? "date-asc" : sort === "desc" ? "date" : null;
   const url = favoriteViewId != null || libraryId == null
@@ -2645,8 +2841,8 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,o
     if (event.button === 1 || event.ctrlKey || event.metaKey) { window.open(url, "_blank"); event.preventDefault(); return; }
     navigate(url);
   }
-  return <article className="card media" onClick={handleClick} role="button" tabIndex={0}
-    onKeyDown={event => { if (event.key === "Enter" || event.key === " ") navigate(url); }}>
+  return <article className={`card media ${view}${kbRange ? " kb-range" : ""}${kbFocused ? " kb-focus" : ""}`} data-kb-card="true" data-kb-id={kbId ?? `m${item.id}`} onClick={handleClick} role="button" tabIndex={0}
+    onKeyDown={event => { if (event.key === "Enter") navigate(url); }}>
     {onToggleSelected && <label className="select-media" aria-label={`Select ${item.name}`} onClick={event => event.stopPropagation()}>
       <input type="checkbox" checked={selected} onChange={() => onToggleSelected(item.id)}/>
     </label>}
@@ -2911,6 +3107,7 @@ function MediaViewerPage() {
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
       if (isEditableTarget(event.target)) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key === "ArrowLeft" && previous) {
         event.preventDefault();
         go(previous);
@@ -3030,23 +3227,23 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     setImageZoom(value => clampZoom(Math.round((value + delta) * 100) / 100));
   }
   function onImageWheel(event:WheelEvent<HTMLDivElement>) {
-    if (item.kind !== "image") return;
+    if (item.kind !== "image" && item.kind !== "video") return;
     event.preventDefault();
     adjustImageZoom(event.deltaY < 0 ? 0.25 : -0.25);
   }
-  function startImagePan(event:ReactPointerEvent<HTMLImageElement>) {
-    if (item.kind !== "image" || imageZoom <= 1) return;
+  function startImagePan(event:ReactPointerEvent<HTMLElement>) {
+    if ((item.kind !== "image" && item.kind !== "video") || imageZoom <= 1) return;
     event.preventDefault();
     const point = eventPoint(event);
     event.currentTarget.setPointerCapture?.(event.pointerId);
     setDrag({pointerId:event.pointerId, startX:point.x, startY:point.y, originX:imagePan.x, originY:imagePan.y});
   }
-  function moveImagePan(event:ReactPointerEvent<HTMLImageElement>) {
+  function moveImagePan(event:ReactPointerEvent<HTMLElement>) {
     if (!drag || drag.pointerId !== event.pointerId) return;
     const point = eventPoint(event);
     setImagePan({x:drag.originX + point.x - drag.startX, y:drag.originY + point.y - drag.startY});
   }
-  function stopImagePan(event:ReactPointerEvent<HTMLImageElement>) {
+  function stopImagePan(event:ReactPointerEvent<HTMLElement>) {
     if (!drag || drag.pointerId !== event.pointerId) return;
     try {
       event.currentTarget.releasePointerCapture?.(event.pointerId);
@@ -3090,8 +3287,19 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     window.addEventListener("keydown", onFullscreenKey);
     return () => window.removeEventListener("keydown", onFullscreenKey);
   }, [item.id]);
+  useEffect(() => {
+    if (item.kind !== "image" && item.kind !== "video") return;
+    function onZoomKey(event:KeyboardEvent) {
+      if (isEditableTarget(event.target)) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key === "ArrowUp" || event.key === "=" || event.key === "+") { event.preventDefault(); adjustImageZoom(0.25); }
+      else if (event.key === "ArrowDown" || event.key === "-" || event.key === "_") { event.preventDefault(); adjustImageZoom(-0.25); }
+    }
+    window.addEventListener("keydown", onZoomKey);
+    return () => window.removeEventListener("keydown", onZoomKey);
+  }, [item.id]);
   function onTouchStart(event:React.TouchEvent<HTMLDivElement>) {
-    if (item.kind === "image" && imageZoom > 1) { swipeStart.current = null; return; }
+    if ((item.kind === "image" || item.kind === "video") && imageZoom > 1) { swipeStart.current = null; return; }
     const target = event.target;
     if (!(target instanceof HTMLElement) || isEditableTarget(target) || target.closest("button, a, .video-controls")) {
       swipeStart.current = null;
@@ -3120,17 +3328,14 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
-      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported}/> :
+      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imagePan={imagePan} drag={drag} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{transform:`translate(${imagePan.x}px, ${imagePan.y}px) scale(${imageZoom})`}} src={api.contentUrl(item.id)} alt={item.name}
           onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/>}
       <button type="button" className="viewer-arrow viewer-arrow-right" aria-label="Next media" disabled={!next} onClick={() => onGo(next)}>{">"}</button>
-      {item.kind === "image" && <div className="zoom-controls" aria-label="Image zoom controls">
+      {(item.kind === "image" || item.kind === "video") && <div className="zoom-controls" aria-label="Zoom controls">
         <button type="button" aria-label="Zoom out" disabled={imageZoom <= 0.5} onClick={() => adjustImageZoom(-0.25)}>−</button>
         <button type="button" aria-label="Reset zoom" disabled={imageZoom === 1} onClick={() => setImageZoom(1)}>{Math.round(imageZoom * 100)}%</button>
-        <button type="button" aria-label="Zoom in" disabled={imageZoom >= 5} onClick={() => adjustImageZoom(0.25)}>+</button>
-      </div>}
-      {item.kind === "video" && <div className="fullscreen-controls">
-        <button type="button" aria-label={isFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen ? "⤡" : "⛶"}</button>
+        <button type="button" aria-label="Zoom in" disabled={imageZoom >= 10} onClick={() => adjustImageZoom(0.25)}>+</button>
       </div>}
     </div>
     <button type="button" className="info-handle" aria-label={infoOpen ? "Hide info panel" : "Show info panel"} onClick={onToggleInfo}>{infoOpen ? ">>" : "<<"}</button>
@@ -3141,10 +3346,10 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
 }
 
 function clampZoom(value:number) {
-  return Math.min(5, Math.max(0.5, value));
+  return Math.min(10, Math.max(0.5, value));
 }
 
-function eventPoint(event:ReactPointerEvent<HTMLImageElement>) {
+function eventPoint(event:ReactPointerEvent<HTMLElement>) {
   const native = event.nativeEvent;
   return {
     x: Number.isFinite(event.clientX) ? Number(event.clientX) : Number(native.pageX ?? 0),
@@ -3319,7 +3524,7 @@ function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"
   return {mode: reasons.length > 0 ? "transcoded" : "original", reasons};
 }
 
-function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
+function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,imagePan,drag,onPointerDown,onPointerMove,onPointerUp,onPointerCancel}:{item:Media; supported:string[]; isFullscreen?:boolean; onToggleFullscreen?:()=>void; imageZoom?:number; imagePan?:{x:number;y:number}; drag?:{pointerId:number}|null; onPointerDown?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerMove?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerUp?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerCancel?:(e:React.PointerEvent<HTMLElement>)=>void}) {
   const metadataDuration = videoMetadataDuration(item.metadata);
   const [thumbs, setThumbs] = useState<VideoThumbnail[]>([]);
   const [hover, setHover] = useState<VideoThumbnail|null>(null);
@@ -3347,18 +3552,18 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
     if (seekNoticeTimer.current !== null) clearTimeout(seekNoticeTimer.current);
   }, []);
   useEffect(() => { activeRef.current = active; }, [active]);
-  const spaceToggle = useRef(toggle);
-  spaceToggle.current = toggle;
+  const toggleRef = useRef(toggle);
+  toggleRef.current = toggle;
   useEffect(() => {
-    function onSpace(event:KeyboardEvent) {
-      if (isEditableTarget(event.target)) return;
-      if (event.code === "Space" || event.key === " ") {
-        event.preventDefault();
-        spaceToggle.current();
-      }
+    function onKeyDown(event:KeyboardEvent) {
+      if (event.key !== " ") return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.closest("button")) return;
+      event.preventDefault();
+      toggleRef.current();
     }
-    window.addEventListener("keydown", onSpace);
-    return () => window.removeEventListener("keydown", onSpace);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
   function showSeekNotice(delta:number) {
     setSeekNotice(`${delta > 0 ? "+" : "−"}${Math.abs(delta)} seconds`);
@@ -3468,7 +3673,7 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
   }
   return <div className="video-box">
     {stopped ? <div className="video-stack video-stopped" aria-label="Video stopped" onDoubleClick={onVideoDoubleClick}/> :
-    <div className="video-stack" onDoubleClick={onVideoDoubleClick}>
+    <div className={`video-stack${imageZoom != null && imageZoom > 1 ? " zoomed-image" : ""}${drag ? " panning-image" : ""}`} style={imageZoom != null && imageZoom > 1 ? {transform:`translate(${imagePan?.x ?? 0}px, ${imagePan?.y ?? 0}px) scale(${imageZoom})`} : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onDoubleClick={onVideoDoubleClick}>
       {renderVideo(active)}
       {transcoded && pending !== null && renderVideo(targetSlot)}
     </div>}
@@ -3493,6 +3698,7 @@ function VideoPlayer({item,supported}:{item:Media; supported:string[]}) {
         </div>}
       </div>
       <span>{duration ? formatTime(duration) : "0:00"}</span>
+      {onToggleFullscreen && <button type="button" aria-label={isFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void onToggleFullscreen()}>{isFullscreen ? "⤡" : "⛶"}</button>}
     </div>
     {seekNotice && <div className="seek-notice" role="status">{seekNotice}</div>}
   </div>;
@@ -3561,12 +3767,14 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
   const [selectMode, setSelectMode] = useState(false);
   const [area, setArea] = useState<{bounds:L.LatLngBounds; items:MapMedia[]}|null>(null);
   const [rendering, setRendering] = useState(false);
+  const [tileWarn, setTileWarn] = useState("");
+  const [mapError, setMapError] = useState("");
   const [query] = useSearchParams();
   const libraryParam = query.get("library");
   const folderParam = query.get("folder");
   const favoriteParam = query.get("favorite");
   useEffect(() => {
-    api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems);
+    api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
   }, [libraryParam, folderParam, favoriteParam]);
   useEffect(() => {
     let alive = true;
@@ -3577,7 +3785,8 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
         providerDark: settings.mapTileProviderDark ?? "osm",
         mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}},
       });
-    }).catch(() => undefined);
+      setTileWarn("");
+    }).catch(() => { if (alive) setTileWarn("Couldn't load your map tile preferences — showing OpenStreetMap."); });
     return () => { alive = false; };
   }, []);
   const focused = items.find(item => item.id === Number(query.get("item")));
@@ -3595,7 +3804,7 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
       const sortedItems = sortMedia(selected, "desc");
       storeMapSelection(sortedItems);
       setArea({bounds, items: sortedItems});
-    });
+    }).catch(cause => setMapError((cause as Error).message));
   }
   function selectCluster(cluster:MapMedia[]) {
     const points = cluster.map(item => parseGPS(item.gps)).filter((point): point is [number,number] => point !== null);
@@ -3626,12 +3835,11 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
           const foldersUrl = libraryParam ? `/library/${libraryParam}${folderParam ? `/folder/${folderParam}` : ""}` : favoriteParam ? `/favorites/${favoriteParam}` : "/";
           const timelineUrl = libraryParam ? `/library/${libraryParam}/timeline${folderParam ? `/${folderParam}` : ""}` : "/";
           const mapUrl = `/map${libraryParam ? `?library=${libraryParam}${folderParam ? `&folder=${folderParam}` : ""}` : favoriteParam ? `?favorite=${favoriteParam}` : ""}`;
-          return <select className="bar-select" value={mapUrl} onChange={event => { const v = event.target.value; if (v) navigate(v); }}>
-            <option value="">View</option>
-            <option value={foldersUrl}>Folders</option>
-            <option value={timelineUrl}>Timeline</option>
-            <option value={mapUrl}>Map</option>
-          </select>;
+          return <BarSelect value={mapUrl} options={[
+            {value:foldersUrl, label:"Folders"},
+            {value:timelineUrl, label:"Timeline"},
+            {value:mapUrl, label:"Map"},
+          ]} onChange={v => { if (v) navigate(v); }}/>;
         })()}
         <span className="bar-sep"/>
       <div className="button-group">
@@ -3641,6 +3849,7 @@ function GeoMap({theme}:{theme:"light"|"dark"|"forest"}) {
       {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
     </div></div>
     <div className="map-stage">
+      {(mapError || tileWarn) && <div className="map-notice" role="alert">{mapError || tileWarn}</div>}
       <MapContainer center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className={`map${filterDark ? " dark-tile-filter" : ""}`}>
         <TileLayer key={`${theme}-${cartoTiles ? subStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}/>
         <ScaleControl position="bottomleft" imperial={false}/>
