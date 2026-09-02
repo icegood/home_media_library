@@ -71,27 +71,27 @@ test("useLanguage hook re-renders components when the language changes", () => {
 
 test("every supported language translates chrome strings and composites", () => {
   const expectations:Record<string, {brand:string; items:(html:string)=>string; stats:string; openLabel:string; menuLabel:string}> = {
-    ua: {brand:"Медіатека", items:() => "12 елементів", stats:"Фото: 2 · Відео: 1", openLabel:"Відкрити Family", menuLabel:"Меню бібліотеки Family"},
-    de: {brand:"Mediathek", items:() => "12 Elemente", stats:"Fotos: 2 · Videos: 1", openLabel:"Öffnen Family", menuLabel:"Bibliotheksmenü Family"},
-    nl: {brand:"Mediatheek", items:() => "12 items", stats:"Foto's: 2 · Video's: 1", openLabel:"Openen Family", menuLabel:"Bibliotheekmenu Family"},
-    pl: {brand:"Medioteka", items:() => "12 elementów", stats:"Zdjęcia: 2 · Filmy: 1", openLabel:"Otwórz Family", menuLabel:"Menu biblioteki Family"},
-    che:{brand:"Mediální knihovna", items:() => "12 položek", stats:"Fotky: 2 · Videa: 1", openLabel:"Otevřít Family", menuLabel:"Menu knihovny Family"},
-    slo:{brand:"Mediálna knižnica", items:() => "12 položiek", stats:"Fotky: 2 · Videá: 1", openLabel:"Otvoriť Family", menuLabel:"Menu knižnice Family"},
-    hu: {brand:"Médiakönyvtár", items:() => "12 elem", stats:"Képek: 2 · Videók: 1", openLabel:"Megnyitás Family", menuLabel:"Könyvtár menüje Family"},
-    fi: {brand:"Mediakirjasto", items:() => "12 kohdetta", stats:"Kuvat: 2 · Videot: 1", openLabel:"Avaa Family", menuLabel:"Kirjaston valikko Family"},
-    sv: {brand:"Mediebibliotek", items:() => "12 objekt", stats:"Bilder: 2 · Videor: 1", openLabel:"Öppna Family", menuLabel:"Biblioteksmeny Family"},
-    es: {brand:"Mediateca", items:() => "12 elementos", stats:"Fotos: 2 · Vídeos: 1", openLabel:"Abrir Family", menuLabel:"Menú de biblioteca Family"},
-    it: {brand:"Mediateca", items:() => "12 elementi", stats:"Foto: 2 · Video: 1", openLabel:"Apri Family", menuLabel:"Menu libreria Family"},
-    sl: {brand:"Medijska knjižnica", items:() => "12 predmetov", stats:"Fotografije: 2 · Videoposnetki: 1", openLabel:"Odpri Family", menuLabel:"Meni knjižnice Family"},
-    no: {brand:"Mediebibliotek", items:() => "12 elementer", stats:"Bilder: 2 · Videoer: 1", openLabel:"Åpne Family", menuLabel:"Bibliotekmeny Family"},
-    pt: {brand:"Mediateca", items:() => "12 elementos", stats:"Fotos: 2 · Vídeos: 1", openLabel:"Abrir Family", menuLabel:"Menu da biblioteca Family"}
+    ua: {brand:"Медіатека", items:() => "12 елементів", stats:"Фото: 2 · Відео: 1 · Документи: 3", openLabel:"Відкрити Family", menuLabel:"Меню бібліотеки Family"},
+    de: {brand:"Mediathek", items:() => "12 Elemente", stats:"Fotos: 2 · Videos: 1 · Dokumente: 3", openLabel:"Öffnen Family", menuLabel:"Bibliotheksmenü Family"},
+    nl: {brand:"Mediatheek", items:() => "12 items", stats:"Foto's: 2 · Video's: 1 · Documenten: 3", openLabel:"Openen Family", menuLabel:"Bibliotheekmenu Family"},
+    pl: {brand:"Medioteka", items:() => "12 elementów", stats:"Zdjęcia: 2 · Filmy: 1 · Dokumenty: 3", openLabel:"Otwórz Family", menuLabel:"Menu biblioteki Family"},
+    che:{brand:"Mediální knihovna", items:() => "12 položek", stats:"Fotky: 2 · Videa: 1 · Dokumenty: 3", openLabel:"Otevřít Family", menuLabel:"Menu knihovny Family"},
+    slo:{brand:"Mediálna knižnica", items:() => "12 položiek", stats:"Fotky: 2 · Videá: 1 · Dokumenty: 3", openLabel:"Otvoriť Family", menuLabel:"Menu knižnice Family"},
+    hu: {brand:"Médiakönyvtár", items:() => "12 elem", stats:"Képek: 2 · Videók: 1 · Dokumentumok: 3", openLabel:"Megnyitás Family", menuLabel:"Könyvtár menüje Family"},
+    fi: {brand:"Mediakirjasto", items:() => "12 kohdetta", stats:"Kuvat: 2 · Videot: 1 · Asiakirjat: 3", openLabel:"Avaa Family", menuLabel:"Kirjaston valikko Family"},
+    sv: {brand:"Mediebibliotek", items:() => "12 objekt", stats:"Bilder: 2 · Videor: 1 · Dokument: 3", openLabel:"Öppna Family", menuLabel:"Biblioteksmeny Family"},
+    es: {brand:"Mediateca", items:() => "12 elementos", stats:"Fotos: 2 · Vídeos: 1 · Documentos: 3", openLabel:"Abrir Family", menuLabel:"Menú de biblioteca Family"},
+    it: {brand:"Mediateca", items:() => "12 elementi", stats:"Foto: 2 · Video: 1 · Documenti: 3", openLabel:"Apri Family", menuLabel:"Menu libreria Family"},
+    sl: {brand:"Medijska knjižnica", items:() => "12 predmetov", stats:"Fotografije: 2 · Videoposnetki: 1 · Dokumenti: 3", openLabel:"Odpri Family", menuLabel:"Meni knjižnice Family"},
+    no: {brand:"Mediebibliotek", items:() => "12 elementer", stats:"Bilder: 2 · Videoer: 1 · Dokumenter: 3", openLabel:"Åpne Family", menuLabel:"Bibliotekmeny Family"},
+    pt: {brand:"Mediateca", items:() => "12 elementos", stats:"Fotos: 2 · Vídeos: 1 · Documentos: 3", openLabel:"Abrir Family", menuLabel:"Menu da biblioteca Family"}
   };
   for (const [id, expected] of Object.entries(expectations)) {
     expect(applyLanguageSetting(id)).toBe(true);
     document.body.innerHTML = `
       <a class="brand">Media Library</a>
       <span id="count">12 items</span>
-      <span id="stats">Images: 2 · Videos: 1</span>
+      <span id="stats">Images: 2 · Videos: 1 · Documents: 3</span>
       <span id="view">Trip from this favorite view</span>
       <span id="loading">Loading 3 of 10…</span>
       <a id="thumb" aria-label="Open Family">thumb</a>

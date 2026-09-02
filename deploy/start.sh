@@ -96,7 +96,7 @@ case "$mode" in
     export PROJECT_VERSION API_IMAGE WEB_IMAGE VCS_REF BUILD_DATE ENV_FILE RUNTIME_DIR
 
     docker buildx bake --allow=fs.read=../backend --allow=fs.read=../web --load -f compose.yaml -f compose.local.yaml
-    docker compose --env-file .env -f compose.yaml -f compose.local.yaml up -d --remove-orphans
+    docker compose --env-file .env -f compose.yaml -f compose.local.yaml up -d --force-recreate --remove-orphans
     ;;
 
   e2e)

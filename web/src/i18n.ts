@@ -94,7 +94,7 @@ interface Grammar {
   // "<Name> from this favorite view"
   fromThisView:(name:string)=>string;
   itemCount:(n:number)=>string;
-  statsLine:(images:string, videos:string)=>string;
+  statsLine:(images:string, videos:string, documents:string)=>string;
   loadingOf:(done:string, total:string)=>string;
   verbs:{Open:string; Remove:string; Select:string; Delete:string};
   manageViewsFor:(name:string)=>string;
@@ -2326,7 +2326,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   ua: {strings:UA_STRINGS, grammar:{
     fromThisView: name => `${name} з цієї підбірки`,
     itemCount: uaItemCount,
-    statsLine: (images, videos) => `Фото: ${images} · Відео: ${videos}`,
+    statsLine: (images, videos, documents) => `Фото: ${images} · Відео: ${videos} · Документи: ${documents}`,
     loadingOf: (done, total) => `Завантажено ${done} з ${total}…`,
     verbs: {Open:"Відкрити", Remove:"Прибрати", Select:"Вибрати", Delete:"Видалити"},
     manageViewsFor: name => `Підбірки для ${name}`,
@@ -2336,7 +2336,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   de: {strings:DE_STRINGS, grammar:{
     fromThisView: name => `${name} aus dieser Favoriten-Ansicht`,
     itemCount: n => n === 1 ? "1 Element" : `${n} Elemente`,
-    statsLine: (images, videos) => `Fotos: ${images} · Videos: ${videos}`,
+    statsLine: (images, videos, documents) => `Fotos: ${images} · Videos: ${videos} · Dokumente: ${documents}`,
     loadingOf: (done, total) => `${done} von ${total} geladen…`,
     verbs: {Open:"Öffnen", Remove:"Entfernen", Select:"Auswählen", Delete:"Löschen"},
     manageViewsFor: name => `Favoriten-Ansichten verwalten für ${name}`,
@@ -2346,7 +2346,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   nl: {strings:NL_STRINGS, grammar:{
     fromThisView: name => `${name} uit deze verzameling`,
     itemCount: n => n === 1 ? "1 item" : `${n} items`,
-    statsLine: (images, videos) => `Foto's: ${images} · Video's: ${videos}`,
+    statsLine: (images, videos, documents) => `Foto's: ${images} · Video's: ${videos} · Documenten: ${documents}`,
     loadingOf: (done, total) => `${done} van ${total} geladen…`,
     verbs: {Open:"Openen", Remove:"Weghalen", Select:"Selecteren", Delete:"Verwijderen"},
     manageViewsFor: name => `Favoriete verzamelingen beheren voor ${name}`,
@@ -2356,7 +2356,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   fi: {strings:FI_STRINGS, grammar:{
     fromThisView: name => `${name} tästä kokoelmasta`,
     itemCount: n => n === 1 ? "1 kohde" : `${n} kohdetta`,
-    statsLine: (images, videos) => `Kuvat: ${images} · Videot: ${videos}`,
+    statsLine: (images, videos, documents) => `Kuvat: ${images} · Videot: ${videos} · Asiakirjat: ${documents}`,
     loadingOf: (done, total) => `Ladattu ${done}/${total}…`,
     verbs: {Open:"Avaa", Remove:"Poista", Select:"Valitse", Delete:"Poista"},
     manageViewsFor: name => `Hallitse kohteen ${name} suosikkikokoelmia`,
@@ -2366,7 +2366,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   sv: {strings:SV_STRINGS, grammar:{
     fromThisView: name => `${name} från den här samlingen`,
     itemCount: n => n === 1 ? "1 objekt" : `${n} objekt`,
-    statsLine: (images, videos) => `Bilder: ${images} · Videor: ${videos}`,
+    statsLine: (images, videos, documents) => `Bilder: ${images} · Videor: ${videos} · Dokument: ${documents}`,
     loadingOf: (done, total) => `Laddat ${done} av ${total}…`,
     verbs: {Open:"Öppna", Remove:"Ta bort", Select:"Markera", Delete:"Ta bort"},
     manageViewsFor: name => `Hantera favoritsamlingar för ${name}`,
@@ -2376,7 +2376,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   pl: {strings:PL_STRINGS, grammar:{
     fromThisView: name => `${name} z tego ulubionego widoku`,
     itemCount: plItemCount,
-    statsLine: (images, videos) => `Zdjęcia: ${images} · Filmy: ${videos}`,
+    statsLine: (images, videos, documents) => `Zdjęcia: ${images} · Filmy: ${videos} · Dokumenty: ${documents}`,
     loadingOf: (done, total) => `Wczytano ${done} z ${total}…`,
     verbs: {Open:"Otwórz", Remove:"Usuń", Select:"Zaznacz", Delete:"Usuń"},
     manageViewsFor: name => `Ulubione widoki dla ${name}`,
@@ -2386,7 +2386,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   che: {strings:CHE_STRINGS, grammar:{
     fromThisView: name => `${name} z tohoto oblíbeného zobrazení`,
     itemCount: cheItemCount,
-    statsLine: (images, videos) => `Fotky: ${images} · Videa: ${videos}`,
+    statsLine: (images, videos, documents) => `Fotky: ${images} · Videa: ${videos} · Dokumenty: ${documents}`,
     loadingOf: (done, total) => `Načteno ${done} z ${total}…`,
     verbs: {Open:"Otevřít", Remove:"Odebrat", Select:"Vybrat", Delete:"Smazat"},
     manageViewsFor: name => `Spravovat oblíbená zobrazení pro ${name}`,
@@ -2396,7 +2396,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   slo: {strings:SLO_STRINGS, grammar:{
     fromThisView: name => `${name} z tohto obľúbeného zobrazenia`,
     itemCount: sloItemCount,
-    statsLine: (images, videos) => `Fotky: ${images} · Videá: ${videos}`,
+    statsLine: (images, videos, documents) => `Fotky: ${images} · Videá: ${videos} · Dokumenty: ${documents}`,
     loadingOf: (done, total) => `Načítaných ${done} z ${total}…`,
     verbs: {Open:"Otvoriť", Remove:"Odobrať", Select:"Vybrať", Delete:"Odstrániť"},
     manageViewsFor: name => `Spravovať obľúbené zobrazenia pre ${name}`,
@@ -2406,7 +2406,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   hu: {strings:HU_STRINGS, grammar:{
     fromThisView: name => `${name} ebből a kedvenc nézetből`,
     itemCount: n => `${n} elem`,
-    statsLine: (images, videos) => `Képek: ${images} · Videók: ${videos}`,
+    statsLine: (images, videos, documents) => `Képek: ${images} · Videók: ${videos} · Dokumentumok: ${documents}`,
     loadingOf: (done, total) => `${done}/${total} betöltve…`,
     verbs: {Open:"Megnyitás", Remove:"Eltávolítás", Select:"Kijelölés", Delete:"Törlés"},
     manageViewsFor: name => `Kedvenc nézetek kezelése: ${name}`,
@@ -2416,7 +2416,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   es: {strings:ES_STRINGS, grammar:{
     fromThisView: name => `${name} de esta vista favorita`,
     itemCount: n => n === 1 ? "1 elemento" : `${n} elementos`,
-    statsLine: (images, videos) => `Fotos: ${images} · Vídeos: ${videos}`,
+    statsLine: (images, videos, documents) => `Fotos: ${images} · Vídeos: ${videos} · Documentos: ${documents}`,
     loadingOf: (done, total) => `Cargados ${done} de ${total}…`,
     verbs: {Open:"Abrir", Remove:"Quitar", Select:"Seleccionar", Delete:"Eliminar"},
     manageViewsFor: name => `Gestionar vistas favoritas de ${name}`,
@@ -2426,7 +2426,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   it: {strings:IT_STRINGS, grammar:{
     fromThisView: name => `${name} da questa vista preferita`,
     itemCount: n => n === 1 ? "1 elemento" : `${n} elementi`,
-    statsLine: (images, videos) => `Foto: ${images} · Video: ${videos}`,
+    statsLine: (images, videos, documents) => `Foto: ${images} · Video: ${videos} · Documenti: ${documents}`,
     loadingOf: (done, total) => `Caricati ${done} di ${total}…`,
     verbs: {Open:"Apri", Remove:"Rimuovi", Select:"Seleziona", Delete:"Elimina"},
     manageViewsFor: name => `Gestisci viste preferite per ${name}`,
@@ -2436,7 +2436,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   sl: {strings:SL_STRINGS, grammar:{
     fromThisView: name => `${name} iz tega priljubljenega pogleda`,
     itemCount: n => n === 1 ? `${n} predmet` : n === 2 ? `${n} predmeta` : n === 3 || n === 4 ? `${n} predmeti` : `${n} predmetov`,
-    statsLine: (images, videos) => `Fotografije: ${images} · Videoposnetki: ${videos}`,
+    statsLine: (images, videos, documents) => `Fotografije: ${images} · Videoposnetki: ${videos} · Dokumenti: ${documents}`,
     loadingOf: (done, total) => `Naloženo ${done} od ${total}…`,
     verbs: {Open:"Odpri", Remove:"Odstrani", Select:"Izberi", Delete:"Izbriši"},
     manageViewsFor: name => `Upravljanje priljubljenih pogledov za ${name}`,
@@ -2446,7 +2446,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   no: {strings:NO_STRINGS, grammar:{
     fromThisView: name => `${name} fra denne favorittvisningen`,
     itemCount: n => n === 1 ? "1 element" : `${n} elementer`,
-    statsLine: (images, videos) => `Bilder: ${images} · Videoer: ${videos}`,
+    statsLine: (images, videos, documents) => `Bilder: ${images} · Videoer: ${videos} · Dokumenter: ${documents}`,
     loadingOf: (done, total) => `Lastet ${done} av ${total}…`,
     verbs: {Open:"Åpne", Remove:"Fjern", Select:"Velg", Delete:"Slett"},
     manageViewsFor: name => `Behandle favorittvisninger for ${name}`,
@@ -2456,7 +2456,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
   pt: {strings:PT_STRINGS, grammar:{
     fromThisView: name => `${name} desta vista favorita`,
     itemCount: n => n === 1 ? "1 elemento" : `${n} elementos`,
-    statsLine: (images, videos) => `Fotos: ${images} · Vídeos: ${videos}`,
+    statsLine: (images, videos, documents) => `Fotos: ${images} · Vídeos: ${videos} · Documentos: ${documents}`,
     loadingOf: (done, total) => `Carregados ${done} de ${total}…`,
     verbs: {Open:"Abrir", Remove:"Remover", Select:"Selecionar", Delete:"Eliminar"},
     manageViewsFor: name => `Gerir vistas favoritas de ${name}`,
@@ -2485,8 +2485,8 @@ function translateText(value:string):string {
   if (match) return table.grammar.fromThisView(match[1]);
   match = trimmed.match(/^(\d+) items?$/);
   if (match) return table.grammar.itemCount(Number(match[1]));
-  match = trimmed.match(/^Images:\s*(\d+)\s*·\s*Videos:\s*(\d+)$/);
-  if (match) return table.grammar.statsLine(match[1], match[2]);
+  match = trimmed.match(/^Images:\s*(\d+)\s*·\s*Videos:\s*(\d+)\s*·\s*Documents:\s*(\d+)$/);
+  if (match) return table.grammar.statsLine(match[1], match[2], match[3]);
   match = trimmed.match(/^Loading (\d+) of (\d+)…$/);
   if (match) return table.grammar.loadingOf(match[1], match[2]);
   return value;

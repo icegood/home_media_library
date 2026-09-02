@@ -35,6 +35,7 @@ import (
 	"media-library/backend/internal/gatewayconfig"
 	"media-library/backend/internal/jobpool"
 	"media-library/backend/internal/metadata"
+	"media-library/backend/internal/poi"
 	"media-library/backend/internal/scanner"
 	"media-library/backend/internal/scheduler"
 	"media-library/backend/internal/store"
@@ -144,8 +145,12 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/folders/{id}/thumbnail", a.auth(http.HandlerFunc(a.folderThumbnail)))
 	mux.Handle("PATCH /api/v1/media/{id}/gps", a.auth(http.HandlerFunc(a.gps)))
 	mux.Handle("PATCH /api/v1/media/{id}/details", a.auth(http.HandlerFunc(a.mediaDetails)))
+	mux.Handle("PATCH /api/v1/media/{id}/trajectory-start", a.auth(http.HandlerFunc(a.trajectoryStart)))
+	mux.Handle("PATCH /api/v1/media/{id}/trajectory-end", a.auth(http.HandlerFunc(a.trajectoryEnd)))
+	mux.Handle("PATCH /api/v1/media/{id}/trajectory-name", a.auth(http.HandlerFunc(a.trajectoryName)))
 	mux.Handle("PATCH /api/v1/media/bulk", a.auth(http.HandlerFunc(a.bulkMediaUpdate)))
 	mux.Handle("GET /api/v1/map", a.auth(http.HandlerFunc(a.mapItems)))
+	mux.Handle("GET /api/v1/map/poi", a.auth(http.HandlerFunc(a.mapPOI)))
 	mux.Handle("POST /api/v1/admin/libraries", a.auth(a.admin(http.HandlerFunc(a.createLibrary))))
 	mux.Handle("PUT /api/v1/admin/libraries/{id}", a.auth(a.admin(http.HandlerFunc(a.updateLibrary))))
 	mux.Handle("DELETE /api/v1/admin/libraries/{id}", a.auth(a.admin(http.HandlerFunc(a.deleteLibrary))))
@@ -204,8 +209,8 @@ func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "login must contain 3 to 64 letters, numbers, dots, dashes, or underscores")
 		return
 	}
-	if len(input.Password) < 12 || len(input.Password) > 72 {
-		problem(w, http.StatusBadRequest, "password must contain between 12 and 72 characters")
+	if len(input.Password) > 72 {
+		problem(w, http.StatusBadRequest, "password must contain no more than 72 characters")
 		return
 	}
 	user := domain.User{ID: domain.InvalidID, Login: login, Role: domain.RoleAdmin}
@@ -287,8 +292,8 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if len(input.New) < 12 || len(input.New) > 72 {
-		problem(w, http.StatusBadRequest, "password must contain between 12 and 72 characters")
+	if len(input.New) > 72 {
+		problem(w, http.StatusBadRequest, "password must contain no more than 72 characters")
 		return
 	}
 	user, err := a.Store.User(r.Context(), p.ID)
@@ -387,8 +392,8 @@ func (a *API) resetPassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if len(input.Password) < 12 || len(input.Password) > 72 {
-		problem(w, http.StatusBadRequest, "password must contain between 12 and 72 characters")
+	if len(input.Password) > 72 {
+		problem(w, http.StatusBadRequest, "password must contain no more than 72 characters")
 		return
 	}
 	if strings.TrimSpace(input.Token) == "" {
@@ -481,7 +486,30 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 		"mapTileProviderLight":  settings.MapTileProviderLight,
 		"mapTileProviderDark":   settings.MapTileProviderDark,
 		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
+		"poiProviderLight":      settings.POIProviderLight,
+		"poiProviderDark":       settings.POIProviderDark,
+		"poiProviders":          a.poiProvidersJSON(r.Context()),
 	})
+}
+
+// poiProvidersJSON returns the POI provider options as a shallow copy that is
+// always a non-nil map, so the JSON payload is stable for all clients.
+func (a *API) poiProvidersJSON(ctx context.Context) map[string]map[string]string {
+	providers := a.serverSettings(ctx).POIProviders
+	if providers == nil {
+		return map[string]map[string]string{"overpass": {}}
+	}
+	copy := make(map[string]map[string]string, len(providers))
+	for id, options := range providers {
+		if options == nil {
+			options = map[string]string{}
+		}
+		copy[id] = options
+	}
+	if _, ok := copy["overpass"]; !ok {
+		copy["overpass"] = map[string]string{}
+	}
+	return copy
 }
 
 // mapTileProvidersJSON returns the provider options as a shallow copy that is
@@ -515,6 +543,8 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		DefaultThumbFolder string `json:"defaultThumbFolder"`
 		MapTileProviderLight string `json:"mapTileProviderLight"`
 		MapTileProviderDark  string `json:"mapTileProviderDark"`
+		POIProviderLight     string `json:"poiProviderLight"`
+		POIProviderDark      string `json:"poiProviderDark"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		problem(w, http.StatusBadRequest, "invalid JSON")
@@ -564,17 +594,28 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	lightSource, ok := normalizeMapTileSource(input.MapTileProviderLight, false)
 	if !ok {
-		problem(w, http.StatusBadRequest, "light map tile source must be osm, esri, carto, carto:voyager, or carto:light")
+		problem(w, http.StatusBadRequest, "light map tile source must be osm, esri, esri:satellite, carto, carto:voyager, or carto:light")
 		return
 	}
 	darkSource, ok := normalizeMapTileSource(input.MapTileProviderDark, true)
 	if !ok {
-		problem(w, http.StatusBadRequest, "dark map tile source must be osm, esri, carto, carto:voyager, or carto:dark")
+		problem(w, http.StatusBadRequest, "dark map tile source must be osm, esri, esri:satellite, carto, carto:voyager, or carto:dark")
+		return
+	}
+	lightPOI, ok := normalizePOISource(input.POIProviderLight)
+	if !ok {
+		problem(w, http.StatusBadRequest, "light POI source must be overpass, geoapify, or mapbox")
+		return
+	}
+	darkPOI, ok := normalizePOISource(input.POIProviderDark)
+	if !ok {
+		problem(w, http.StatusBadRequest, "dark POI source must be overpass, geoapify, or mapbox")
 		return
 	}
 	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat, StreamChunkSize: chunk,
 		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder, Language: input.Language,
-		MapTileProviderLight: lightSource, MapTileProviderDark: darkSource}
+		MapTileProviderLight: lightSource, MapTileProviderDark: darkSource,
+		POIProviderLight: lightPOI, POIProviderDark: darkPOI}
 	settings.DateFormat = normalizeDateFormat(settings.DateFormat)
 	settings.Language = normalizeLanguage(settings.Language)
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {
@@ -590,13 +631,27 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 func normalizeMapTileSource(value string, dark bool) (string, bool) {
 	value = strings.TrimSpace(value)
 	switch value {
-	case "", "osm", "esri", "carto", "carto:voyager":
+	case "", "osm", "esri", "carto", "carto:voyager", "esri:satellite":
 		if value == "carto" {
 			value = "carto:voyager"
 		}
 		return value, true
 	}
 	if dark && value == "carto:dark" || !dark && value == "carto:light" {
+		return value, true
+	}
+	return "", false
+}
+
+// normalizePOISource validates a user-chosen POI provider id. Empty falls back
+// to the keyless Overpass provider; else the id must be one of the fixed set.
+func normalizePOISource(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "overpass":
+		return "overpass", true
+	}
+	if value == "geoapify" || value == "mapbox" {
 		return value, true
 	}
 	return "", false
@@ -1153,6 +1208,109 @@ func (a *API) mediaDetails(w http.ResponseWriter, r *http.Request) {
 	}
 	item = a.withFavorite(r.Context(), p, item)
 	writeJSON(w, 200, item)
+}
+
+func (a *API) trajectoryStart(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.Store.Media(r.Context(), id)
+	if err != nil {
+		problem(w, 404, "media not found")
+		return
+	}
+	if !a.requireMediaRead(w, r, p, item.ID) {
+		return
+	}
+	var body struct {
+		FolderID *int  `json:"folderId"`
+		Start    *bool `json:"start"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.FolderID == nil || body.Start == nil {
+		problem(w, 400, "invalid JSON")
+		return
+	}
+	if err := a.Store.SetTrajectoryStart(r.Context(), *body.FolderID, id, *body.Start); err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	start := *body.Start
+	writeJSON(w, 200, struct {
+		FolderID        int  `json:"folderId"`
+		MediaID         int  `json:"mediaId"`
+		Start           bool `json:"start"`
+		TrajectoryStart bool `json:"trajectoryStart"`
+	}{FolderID: *body.FolderID, MediaID: id, Start: start, TrajectoryStart: start})
+}
+
+func (a *API) trajectoryEnd(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.Store.Media(r.Context(), id)
+	if err != nil {
+		problem(w, 404, "media not found")
+		return
+	}
+	if !a.requireMediaRead(w, r, p, item.ID) {
+		return
+	}
+	var body struct {
+		FolderID *int  `json:"folderId"`
+		End      *bool `json:"end"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.FolderID == nil || body.End == nil {
+		problem(w, 400, "invalid JSON")
+		return
+	}
+	if err := a.Store.SetTrajectoryEnd(r.Context(), *body.FolderID, id, *body.End); err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	end := *body.End
+	writeJSON(w, 200, struct {
+		FolderID      int  `json:"folderId"`
+		MediaID       int  `json:"mediaId"`
+		End           bool `json:"end"`
+		TrajectoryEnd bool `json:"trajectoryEnd"`
+	}{FolderID: *body.FolderID, MediaID: id, End: end, TrajectoryEnd: end})
+}
+
+func (a *API) trajectoryName(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.Store.Media(r.Context(), id)
+	if err != nil {
+		problem(w, 404, "media not found")
+		return
+	}
+	if !a.requireMediaRead(w, r, p, item.ID) {
+		return
+	}
+	var body struct {
+		FolderID *int   `json:"folderId"`
+		Name     *string `json:"name"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.FolderID == nil || body.Name == nil {
+		problem(w, 400, "invalid JSON")
+		return
+	}
+	if err := a.Store.SetTrajectoryName(r.Context(), *body.FolderID, id, *body.Name); err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, struct {
+		FolderID int    `json:"folderId"`
+		MediaID  int    `json:"mediaId"`
+		Name     string `json:"name"`
+	}{FolderID: *body.FolderID, MediaID: id, Name: *body.Name})
 }
 
 func (a *API) bulkMediaUpdate(w http.ResponseWriter, r *http.Request) {
@@ -1890,6 +2048,9 @@ func (a *API) mediaForRefs(ctx context.Context, refs []domain.ThumbnailRef) (map
 }
 
 func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, index int) (string, error) {
+	if item.Kind == domain.KindDocument {
+		return "", fmt.Errorf("document media cannot be rendered to a thumbnail: %s", item.RelativePath)
+	}
 	target := a.thumbnailPath(item.ID, index)
 	if usableThumbnail(target) {
 		_ = a.storeFor(ctx).UpsertThumbnail(ctx, domain.Thumbnail{
@@ -2056,6 +2217,88 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 		items = filtered
 	}
 	writeJSON(w, 200, items)
+}
+
+// mapPOI serves points of interest from the selected provider for a bounding
+// box. The provider is chosen per user (theme-relative) — "overpass",
+// "geoapify", or "mapbox" — and resolves against the configured POI provider
+// keys/endpoints from server settings. Requests are cached server-side.
+func (a *API) mapPOI(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	bboxRaw := r.URL.Query().Get("bbox")
+	catRaw := r.URL.Query().Get("categories")
+	theme := r.URL.Query().Get("theme")
+	if theme == "" {
+		theme = "light"
+	}
+	parts := strings.Split(bboxRaw, ",")
+	if len(parts) != 4 {
+		problem(w, http.StatusBadRequest, "invalid bbox, want west,south,east,north")
+		return
+	}
+	values := make([]float64, 4)
+	for i, part := range parts {
+		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil {
+			problem(w, http.StatusBadRequest, "invalid bbox")
+			return
+		}
+		values[i] = value
+	}
+	if values[0] < -180 || values[2] > 180 || values[1] < -90 || values[3] > 90 || values[0] >= values[2] || values[1] >= values[3] {
+		problem(w, http.StatusBadRequest, "invalid bbox")
+		return
+	}
+	categories := make([]poi.CategoryID, 0, 8)
+	for _, raw := range strings.Split(catRaw, ",") {
+		cat := poi.CategoryID(strings.TrimSpace(raw))
+		if cat == "" || !poi.ValidCategories[cat] {
+			continue
+		}
+		categories = append(categories, cat)
+	}
+	if len(categories) == 0 {
+		writeJSON(w, http.StatusOK, []poi.POI{})
+		return
+	}
+
+	settings, err := a.Store.UserSettings(r.Context(), p.ID)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not read user settings")
+		return
+	}
+	providerID := settings.POIProviderDark
+	if theme != "dark" && theme != "forest" {
+		providerID = settings.POIProviderLight
+	}
+	if providerID == "" {
+		providerID = "overpass"
+	}
+	if providerID != "overpass" && providerID != "geoapify" && providerID != "mapbox" {
+		problem(w, http.StatusBadRequest, "unknown POI provider configured")
+		return
+	}
+
+	ss := a.serverSettings(r.Context())
+	key := ""
+	if ss.POIProviders != nil {
+		if opts, ok := ss.POIProviders[providerID]; ok {
+			switch providerID {
+			case "overpass":
+				key = opts["endpoint"]
+			case "geoapify":
+				key = opts["apiKey"]
+			case "mapbox":
+				key = opts["token"]
+			}
+		}
+	}
+	items, err := poi.Fetch(r.Context(), providerID, key, poi.BBox{West: values[0], South: values[1], East: values[2], North: values[3]}, categories)
+	if err != nil {
+		problem(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (a *API) createLibrary(w http.ResponseWriter, r *http.Request) {
@@ -2263,6 +2506,14 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, recrea
 	if err != nil {
 		return err
 	}
+	// Documents carry no extractable metadata, so the renew job skips them.
+	filtered := items[:0]
+	for _, item := range items {
+		if item.Kind != domain.KindDocument {
+			filtered = append(filtered, item)
+		}
+	}
+	items = filtered
 	// Resume after a restart: MediaForLibrary returns items in a stable
 	// relative-path order, so skipping the persisted Processed count continues
 	// where the interrupted run stopped (off by at most one save interval).
@@ -2513,6 +2764,9 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 	}
 	total := 0
 	for _, item := range items {
+		if item.Kind == domain.KindDocument {
+			continue
+		}
 		if item.Kind == domain.KindVideo {
 			total += len(a.videoThumbnailTimes(ctx, item))
 		} else {
@@ -2527,6 +2781,9 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, recreate b
 	}
 	tasks := []thumbnailTask{}
 	for _, item := range items {
+		if item.Kind == domain.KindDocument {
+			continue
+		}
 		indexes := []int{0}
 		if item.Kind == domain.KindVideo {
 			times := a.videoThumbnailTimes(ctx, item)
@@ -3362,7 +3619,7 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := a.Store.CreateUser(r.Context(), domain.User{Login: input.Login, Role: input.Role}, input.Password)
 	if err != nil {
-		problem(w, http.StatusBadRequest, "login, role, and 12+ character password are required")
+		problem(w, http.StatusBadRequest, "login and role are required and password is mandatory")
 		return
 	}
 	writeJSON(w, http.StatusCreated, user)
@@ -3506,6 +3763,7 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 		"smtpUsername":          settings.SMTPUsername,
 		"smtpFrom":              settings.SMTPFrom,
 		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
+		"poiProviders":          a.poiProvidersJSON(r.Context()),
 	})
 }
 
@@ -3540,6 +3798,39 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.MapTileProviders = providers
+	// POI providers: overpass (endpoint override), geoapify (apiKey), mapbox (token).
+	poiProviders := map[string]map[string]string{}
+	poiOptionCount := 0
+	for id, options := range input.POIProviders {
+		if id != "overpass" && id != "geoapify" && id != "mapbox" {
+			continue
+		}
+		clean := map[string]string{}
+		for key, value := range options {
+			key = strings.TrimSpace(key)
+			value = strings.TrimSpace(value)
+			if key == "" || value == "" {
+				continue
+			}
+			if id == "overpass" && key != "endpoint" {
+				continue
+			}
+			if id == "geoapify" && key != "apiKey" {
+				continue
+			}
+			if id == "mapbox" && key != "token" {
+				continue
+			}
+			clean[key] = value
+			poiOptionCount++
+		}
+		poiProviders[id] = clean
+	}
+	if poiOptionCount > 64 {
+		problem(w, http.StatusBadRequest, "too many map POI provider options (max 64)")
+		return
+	}
+	input.POIProviders = poiProviders
 	if input.SMTPHost != "" && (input.SMTPPort < 1 || input.SMTPPort > 65535) {
 		problem(w, http.StatusBadRequest, "smtpPort must be between 1 and 65535")
 		return

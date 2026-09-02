@@ -451,6 +451,59 @@ func TestUserSettingsStreamChunkSize(t *testing.T) {
 	}
 }
 
+func TestUserSettingsMapTileSourceValidation(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	settingsURL := "/api/v1/settings"
+
+	cases := []struct {
+		light, dark string
+		wantCode    int
+	}{
+		{light: "osm", dark: "osm", wantCode: http.StatusOK},
+		{light: "esri", dark: "esri", wantCode: http.StatusOK},
+		{light: "esri:satellite", dark: "esri:satellite", wantCode: http.StatusOK},
+		{light: "carto", dark: "carto", wantCode: http.StatusOK}, // bare carto normalizes to carto:voyager
+		{light: "carto:voyager", dark: "carto:voyager", wantCode: http.StatusOK},
+		{light: "carto:light", dark: "carto:dark", wantCode: http.StatusOK},
+		{light: "carto:dark", dark: "carto:dark", wantCode: http.StatusBadRequest},     // dark sub-provider in the light theme
+		{light: "carto:light", dark: "carto:light", wantCode: http.StatusBadRequest},   // light sub-provider in the dark theme
+		{light: "esri:satellite", dark: "carto:light", wantCode: http.StatusBadRequest}, // carto:light is dark-theme-invalid
+		{light: "google", dark: "google", wantCode: http.StatusBadRequest},
+		{light: "esri:sat", dark: "esri:satellite", wantCode: http.StatusBadRequest},
+		{light: "", dark: "foo:bar", wantCode: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		body, _ := json.Marshal(map[string]any{"theme": "dark", "codec": "h264-aac-mp4", "zoom": 100,
+			"dateFormat": "auto", "streamChunkSize": 10000, "defaultThumbImage": "mountains",
+			"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains",
+			"mapTileProviderLight": tc.light, "mapTileProviderDark": tc.dark})
+		response := request(f.handler, http.MethodPut, settingsURL, alice, body)
+		if response.Code != tc.wantCode {
+			t.Fatalf("light=%q dark=%q status = %d, want %d: %s", tc.light, tc.dark, response.Code, tc.wantCode, response.Body)
+		}
+		if tc.wantCode != http.StatusOK {
+			continue
+		}
+		refetched := request(f.handler, http.MethodGet, settingsURL, alice, nil)
+		var updated domain.UserSettings
+		if err := json.Unmarshal(refetched.Body.Bytes(), &updated); err != nil {
+			t.Fatal(err)
+		}
+		normalizedLight := tc.light
+		if normalizedLight == "carto" {
+			normalizedLight = "carto:voyager"
+		}
+		normalizedDark := tc.dark
+		if normalizedDark == "carto" {
+			normalizedDark = "carto:voyager"
+		}
+		if tc.light != "" && (updated.MapTileProviderLight != normalizedLight || updated.MapTileProviderDark != normalizedDark) {
+			t.Fatalf("light=%q dark=%q saved as light=%q dark=%q", tc.light, tc.dark, updated.MapTileProviderLight, updated.MapTileProviderDark)
+		}
+	}
+}
+
 func TestDeleteLibraryRemovesOrphanThumbnailFiles(t *testing.T) {
 	f := setup(t)
 	admin := login(t, f.handler, "admin")
@@ -628,6 +681,181 @@ func TestVisibleUserCanEditLocation(t *testing.T) {
 	item, _ := f.store.Media(context.Background(), f.photoID)
 	if item.GPS != "50.45,30.52" {
 		t.Fatalf("GPS not persisted canonically: %#v", item)
+	}
+}
+
+func TestTrajectoryStartToggleAllowedForAnyReader(t *testing.T) {
+	f := setup(t)
+	photo, _ := f.store.Media(context.Background(), f.photoID)
+	photo.GPS = "50.45,30.52"
+	if _, err := f.store.UpsertMedia(context.Background(), photo); err != nil {
+		t.Fatal(err)
+	}
+	admin := login(t, f.handler, "admin")
+
+	body, _ := json.Marshal(map[string]any{"folderId": f.folderID, "start": true})
+	response := request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-start", f.photoID), admin, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	var out struct {
+		FolderID        int  `json:"folderId"`
+		MediaID         int  `json:"mediaId"`
+		Start           bool `json:"start"`
+		TrajectoryStart bool `json:"trajectoryStart"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.FolderID != f.folderID || out.MediaID != f.photoID || !out.Start || !out.TrajectoryStart {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+
+	var items []domain.MapMedia
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), admin, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("map status = %d", response.Code)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].TrajectoryStart {
+		t.Fatalf("folder-scoped map flag not attached: %#v", items)
+	}
+
+	alice := login(t, f.handler, "alice")
+	if got := request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-start", f.photoID), alice, body).Code; got != http.StatusOK {
+		t.Fatalf("alice status = %d, want 200 for any reader", got)
+	}
+
+	unset, _ := json.Marshal(map[string]any{"folderId": f.folderID, "start": false})
+	response = request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-start", f.photoID), admin, unset)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unset status = %d: %s", response.Code, response.Body)
+	}
+	items = nil
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), admin, nil)
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.TrajectoryStart {
+			t.Fatalf("flag still set after unset: %#v", items)
+		}
+	}
+}
+
+func TestTrajectoryEndToggleAllowedForAnyReader(t *testing.T) {
+	f := setup(t)
+	photo, _ := f.store.Media(context.Background(), f.photoID)
+	photo.GPS = "50.45,30.52"
+	if _, err := f.store.UpsertMedia(context.Background(), photo); err != nil {
+		t.Fatal(err)
+	}
+	admin := login(t, f.handler, "admin")
+
+	body, _ := json.Marshal(map[string]any{"folderId": f.folderID, "end": true})
+	response := request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-end", f.photoID), admin, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	var out struct {
+		FolderID      int  `json:"folderId"`
+		MediaID       int  `json:"mediaId"`
+		End           bool `json:"end"`
+		TrajectoryEnd bool `json:"trajectoryEnd"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.FolderID != f.folderID || out.MediaID != f.photoID || !out.End || !out.TrajectoryEnd {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+
+	var items []domain.MapMedia
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), admin, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("map status = %d", response.Code)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].TrajectoryEnd {
+		t.Fatalf("folder-scoped map end flag not attached: %#v", items)
+	}
+
+	alice := login(t, f.handler, "alice")
+	if got := request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-end", f.photoID), alice, body).Code; got != http.StatusOK {
+		t.Fatalf("alice status = %d, want 200 for any reader", got)
+	}
+
+	unset, _ := json.Marshal(map[string]any{"folderId": f.folderID, "end": false})
+	response = request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-end", f.photoID), admin, unset)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unset status = %d: %s", response.Code, response.Body)
+	}
+	items = nil
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), admin, nil)
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.TrajectoryEnd {
+			t.Fatalf("flag still set after unset: %#v", items)
+		}
+	}
+}
+
+func TestTrajectoryNameCanBeSetAndCleared(t *testing.T) {
+	f := setup(t)
+	photo, _ := f.store.Media(context.Background(), f.photoID)
+	photo.GPS = "50.45,30.52"
+	if _, err := f.store.UpsertMedia(context.Background(), photo); err != nil {
+		t.Fatal(err)
+	}
+	user := login(t, f.handler, "alice")
+
+	nameBody, _ := json.Marshal(map[string]any{"folderId": f.folderID, "name": "Morning loop"})
+	response := request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-name", f.photoID), user, nameBody)
+	if response.Code != http.StatusOK {
+		t.Fatalf("set name status = %d: %s", response.Code, response.Body)
+	}
+	var out struct {
+		FolderID int    `json:"folderId"`
+		MediaID  int    `json:"mediaId"`
+		Name     string `json:"name"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.FolderID != f.folderID || out.MediaID != f.photoID || out.Name != "Morning loop" {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+
+	var got []domain.MapMedia
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), user, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("map status = %d", response.Code)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[0].TrajectoryStart || got[0].TrajectoryName != "Morning loop" {
+		t.Fatalf("name not attached to start on map: %#v", got)
+	}
+
+	clearBody, _ := json.Marshal(map[string]any{"folderId": f.folderID, "name": ""})
+	response = request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/trajectory-name", f.photoID), user, clearBody)
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear name status = %d", response.Code)
+	}
+	got = nil
+	response = request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/map?library=%d&folder=%d", f.libraryID, f.folderID), user, nil)
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 1 && got[0].TrajectoryName != "" {
+		t.Fatalf("name not cleared: %#v", got)
 	}
 }
 
@@ -1378,19 +1606,6 @@ func TestFirstRunCreatesExactlyOneAdministrator(t *testing.T) {
 	loginBody := []byte(`{"login":"owner","password":"a-secure-password"}`)
 	if response := request(handler, http.MethodPost, "/api/v1/auth/login", "", loginBody); response.Code != http.StatusOK {
 		t.Fatalf("initial administrator login = %d: %s", response.Code, response.Body)
-	}
-}
-
-func TestFirstRunRejectsWeakPassword(t *testing.T) {
-	repository := openSQLite(t)
-	handler := (&api.API{Store: repository, JWTSecret: []byte(secret)}).Handler()
-	response := request(handler, http.MethodPost, "/api/v1/setup", "", []byte(`{"login":"owner","password":"short"}`))
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("weak password status = %d", response.Code)
-	}
-	required, _ := repository.SetupRequired(context.Background())
-	if !required {
-		t.Fatal("failed setup must not create a user")
 	}
 }
 

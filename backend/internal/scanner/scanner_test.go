@@ -69,7 +69,8 @@ func TestScanPreservesRelativeFoldersAndFiltersFiles(t *testing.T) {
 		t.Fatalf("unexpected root entries: %#v", entries)
 	}
 	entries, _ = repository.Entries(context.Background(), 0, library.ID, "family")
-	if len(entries) != 2 || entries[0].RelativePath != "family/2025" || entries[1].RelativePath != "family/empty" {
+	if len(entries) != 3 || entries[0].RelativePath != "family/2025" || entries[1].RelativePath != "family/empty" ||
+		entries[2].Type != "media" || entries[2].Media.RelativePath != "family/notes.txt" || entries[2].Media.Kind != domain.KindDocument {
 		t.Fatalf("unexpected current entries: %#v", entries)
 	}
 	entries, _ = repository.Entries(context.Background(), 0, library.ID, "family/empty")
@@ -96,11 +97,14 @@ func TestMIMETypeForPathIsResolvedFromDatabaseCaseInsensitively(t *testing.T) {
 	repository := openSQLite(t)
 	subject := scanner.Scanner{Store: repository}
 	cases := map[string]string{
-		"photo.JPG":  "image/jpeg",
-		"photo.JpEg": "image/jpeg",
-		"clip.MOV":   "video/quicktime",
-		"clip.MPG":   "video/mpeg",
-		"movie.MpEg": "video/mpeg",
+		"photo.JPG":   "image/jpeg",
+		"photo.JpEg":  "image/jpeg",
+		"clip.MOV":    "video/quicktime",
+		"clip.MPG":    "video/mpeg",
+		"movie.MpEg":  "video/mpeg",
+		"notes.TXT":   "text/plain",
+		"readme.MD":   "text/markdown",
+		"manual.PDF":  "application/pdf",
 	}
 	for name, expected := range cases {
 		mimeType, ok := subject.MIMETypeForPath(context.Background(), name)
@@ -108,8 +112,8 @@ func TestMIMETypeForPathIsResolvedFromDatabaseCaseInsensitively(t *testing.T) {
 			t.Fatalf("%s => %q, %v; want %q", name, mimeType, ok, expected)
 		}
 	}
-	if _, ok := subject.MIMETypeForPath(context.Background(), "notes.TXT"); ok {
-		t.Fatal("txt should not be treated as media")
+	if _, ok := subject.MIMETypeForPath(context.Background(), "unknown.XYZ"); ok {
+		t.Fatal("xyz should not be treated as media")
 	}
 }
 
@@ -123,7 +127,7 @@ func TestScanReportsPerRootTotalsForOverlappingRoots(t *testing.T) {
 		filepath.Join(album, "one.JPG"):         []byte("image"),
 		filepath.Join(album, "two.MPG"):         []byte("video"),
 		filepath.Join(album, "nested", "x.mov"): []byte("video"),
-		filepath.Join(album, "notes.txt"):       []byte("ignore"),
+		filepath.Join(album, "notes.txt"):       []byte("hello"),
 	}
 	for path, data := range files {
 		if err := os.WriteFile(path, data, 0o644); err != nil {
@@ -147,13 +151,10 @@ func TestScanReportsPerRootTotalsForOverlappingRoots(t *testing.T) {
 	}
 	// Totals are reported per root, so the overlapping nested root reports
 	// x.mov twice; imports stay unique because media rows are keyed by path.
-	if total != 4 || walkedRoots != 2 {
-		t.Fatalf("total = %d across %d roots, want 4 across 2", total, walkedRoots)
+	if total != 5 || walkedRoots != 2 {
+		t.Fatalf("total = %d across %d roots, want 5 across 2", total, walkedRoots)
 	}
 	for path := range files {
-		if path == filepath.Join(album, "notes.txt") {
-			continue
-		}
 		if _, err := repository.MediaByPath(context.Background(), path); err != nil {
 			t.Fatalf("%s not imported: %v", path, err)
 		}
@@ -377,5 +378,55 @@ func TestMetadataErrorIsStoredAndPreventsRetry(t *testing.T) {
 	}
 	if string(count) != "1\n" {
 		t.Fatalf("metadata extractor retried despite stored error, count=%q", count)
+	}
+}
+
+func TestScanImportsDocumentMediaWithoutMetadataAndAttachesKind(t *testing.T) {
+	root := t.TempDir()
+	docs := filepath.Join(root, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		filepath.Join(docs, "notes.txt"): []byte("hello"),
+		filepath.Join(docs, "readme.md"): []byte("# Title"),
+		filepath.Join(docs, "doc.pdf"):   []byte("%PDF-1.4"),
+	}
+	for path, data := range files {
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repository := openSQLite(t)
+	library := scanner.NewLibrary("Docs", []domain.LibraryRoot{{ID: domain.InvalidID, Path: docs}})
+	var err error
+	library, err = repository.CreateLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Any extractor invocation would run a binary that does not exist, proving
+	// documents never reach the metadata extractor.
+	subject := scanner.Scanner{
+		Store:    repository,
+		Metadata: metadata.Extractor{ExifTool: filepath.Join(root, "missing-exiftool"), FFProbe: filepath.Join(root, "missing-ffprobe"), Timeout: time.Second},
+	}
+	if err := subject.Scan(context.Background(), library); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := repository.Entries(context.Background(), 0, library.ID, "docs")
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 documents, got %#v", entries)
+	}
+	for _, entry := range entries {
+		m := entry.Media
+		if m.Kind != domain.KindDocument {
+			t.Fatalf("%s kind = %q, want document", m.RelativePath, m.Kind)
+		}
+		if m.MetadataError != "" {
+			t.Fatalf("%s metadata error = %q, want none", m.RelativePath, m.MetadataError)
+		}
+		if len(m.Metadata) != 0 {
+			t.Fatalf("%s metadata = %#v, want empty", m.RelativePath, m.Metadata)
+		}
 	}
 }

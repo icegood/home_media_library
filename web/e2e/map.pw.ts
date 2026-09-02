@@ -58,7 +58,8 @@ test('clicking a panel item pages through exactly the selected range', async ({ 
   test.skip(items === 0, 'empty selection');
   await page.locator('.map-area-item').first().click();
   await page.waitForSelector('.viewer-page', { timeout: 10_000 });
-  expect(page.url()).toContain('list=media-library-map-selection');
+  const listParam = new URL(page.url()).searchParams.get('list') ?? '';
+  expect(listParam).toMatch(/^\d+(,\d+)*$/);
   let steps = 0;
   for (; steps <= items; steps++) {
     const next = page.locator('button[aria-label="Next media"]');

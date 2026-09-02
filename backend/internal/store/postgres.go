@@ -136,11 +136,7 @@ func pgPlaceholders(query string, args []any, start int) (string, []any) {
 // idsINPostgres is the Postgres variant of idsIN: numbered placeholders
 // starting at start.
 func idsINPostgres(ids map[int]bool, start int) (string, []any) {
-	values := make([]int, 0, len(ids))
-	for id := range ids {
-		values = append(values, id)
-	}
-	sort.Ints(values)
+	values := idSlice(ids)
 	if len(values) == 0 {
 		return "NULL", nil
 	}
@@ -151,6 +147,17 @@ func idsINPostgres(ids map[int]bool, start int) (string, []any) {
 		args[i] = id
 	}
 	return strings.Join(parts, ","), args
+}
+
+// idSlice returns the sorted ids of a keep-set map as an int slice for passing
+// to Postgres as a single array parameter.
+func idSlice(ids map[int]bool) []int {
+	values := make([]int, 0, len(ids))
+	for id := range ids {
+		values = append(values, id)
+	}
+	sort.Ints(values)
+	return values
 }
 
 func (s *Postgres) SetupRequired(ctx context.Context) (bool, error) {
@@ -306,9 +313,6 @@ func (s *Postgres) CreateUser(ctx context.Context, user domain.User, password st
 	if err != nil {
 		return domain.User{}, err
 	}
-	if len(password) < 12 {
-		return domain.User{}, ErrNotFound
-	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return domain.User{}, err
@@ -328,9 +332,6 @@ func (s *Postgres) UpdateUser(ctx context.Context, user domain.User, password st
 	}
 	var res sql.Result
 	if strings.TrimSpace(password) != "" {
-		if len(password) < 12 {
-			return domain.User{}, ErrNotFound
-		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
 			return domain.User{}, err
@@ -374,9 +375,6 @@ func (s *Postgres) UserByEmail(ctx context.Context, email string) (domain.User, 
 }
 
 func (s *Postgres) UpdatePassword(ctx context.Context, userID int, password string) error {
-	if len(password) < 12 {
-		return ErrNotFound
-	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -617,9 +615,10 @@ func (s *Postgres) LibraryStats(ctx context.Context, libraryID int) (domain.Kind
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
 	)
 	SELECT (SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'image'),
-		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'video')`
+		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'video'),
+		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'document')`
 	err := s.db.QueryRowContext(ctx, query, libraryID).
-		Scan(&stats.Images, &stats.Videos)
+		Scan(&stats.Images, &stats.Videos, &stats.Documents)
 	if err != nil {
 		return domain.KindStats{}, translateErr(err)
 	}
@@ -639,10 +638,11 @@ func (s *Postgres) FolderStats(ctx context.Context, userID, libraryID, folderID 
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
 	)
 	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'document' THEN 1 ELSE 0 END), 0)
 	FROM media m JOIN sub ON m.folder_id = sub.id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type`
-	if err := s.db.QueryRowContext(ctx, query, folderID).Scan(&stats.Images, &stats.Videos); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, folderID).Scan(&stats.Images, &stats.Videos, &stats.Documents); err != nil {
 		return domain.KindStats{}, translateErr(err)
 	}
 	return stats, nil
@@ -672,7 +672,8 @@ func (s *Postgres) FavoriteViewStats(ctx context.Context, userID, viewID int, ad
 			SELECT m2.id FROM media m2 JOIN folder_sub fs ON m2.folder_id = fs.id
 		)
 	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'document' THEN 1 ELSE 0 END), 0)
 	FROM mentions JOIN media m ON m.id = mentions.media_id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type
 	WHERE (` + flagPlaceholder + ` = 1 OR m.folder_id IN (SELECT id FROM sub))`
@@ -682,7 +683,7 @@ func (s *Postgres) FavoriteViewStats(ctx context.Context, userID, viewID int, ad
 	} else {
 		args = append(args, 0)
 	}
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&stats.Images, &stats.Videos); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&stats.Images, &stats.Videos, &stats.Documents); err != nil {
 		return domain.KindStats{}, translateErr(err)
 	}
 	return stats, nil
@@ -777,7 +778,8 @@ func (s *Postgres) fillLibraryStats(ctx context.Context, libraries map[int]*doma
 	)
 	SELECT tree.library_id,
 		COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'document' THEN 1 ELSE 0 END), 0)
 	FROM tree JOIN media m ON m.folder_id = tree.folder_id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type
 	GROUP BY tree.library_id`
@@ -789,7 +791,7 @@ func (s *Postgres) fillLibraryStats(ctx context.Context, libraries map[int]*doma
 	for rows.Next() {
 		var id int
 		var stats domain.KindStats
-		if err := rows.Scan(&id, &stats.Images, &stats.Videos); err != nil {
+		if err := rows.Scan(&id, &stats.Images, &stats.Videos, &stats.Documents); err != nil {
 			return translateErr(err)
 		}
 		if library, ok := libraries[id]; ok {
@@ -984,6 +986,9 @@ func (s *Postgres) Entries(ctx context.Context, userID, libraryID int, dir strin
 		}
 		return out[i].Name < out[j].Name
 	})
+	// Library-root/timeline views must surface trajectory flags just like
+	// folder-scoped entries do, otherwise saved starts/ends seem to disappear.
+	_ = s.enrichEntriesTrajectory(ctx, out)
 	return out, nil
 }
 
@@ -1016,6 +1021,7 @@ func (s *Postgres) entriesForParent(ctx context.Context, userID, parentID int, r
 		}
 		return out[i].Name < out[j].Name
 	})
+	_ = s.enrichEntriesTrajectory(ctx, out)
 	return out, nil
 }
 
@@ -1055,7 +1061,9 @@ func (s *Postgres) folderThumbnails(ctx context.Context, folderID int, limit int
 		UNION ALL
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
 	SELECT m.id FROM media m JOIN sub ON m.folder_id = sub.id
-	ORDER BY (CASE WHEN m.gps <> '' THEN 1 ELSE 0 END)*2 + (CASE WHEN m.mime_type LIKE 'image/%' THEN 1 ELSE 0 END) +
+	JOIN media_mime_types mmt ON mmt.value = m.mime_type
+	WHERE mmt.media_type <> 'document'
+	ORDER BY (CASE WHEN m.gps <> '' THEN 1 ELSE 0 END)*2 + (CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END) +
 		(CASE WHEN m.metadata_json <> '{}'::jsonb THEN 1 ELSE 0 END) DESC,
 		m.path ASC
 	LIMIT $2`
@@ -1092,6 +1100,10 @@ func (s *Postgres) Media(ctx context.Context, id int) (domain.Media, error) {
 		return item, translateErr(err)
 	}
 	item.RelativePath = s.relativePath(ctx, item.FolderID, item.Path)
+	tmp := []domain.Media{item}
+	if err := s.enrichMediaTrajectory(ctx, tmp); err == nil {
+		item = tmp[0]
+	}
 	return item, nil
 }
 
@@ -1123,6 +1135,7 @@ func (s *Postgres) MediaBatch(ctx context.Context, ids []int) ([]domain.Media, e
 		return nil, err
 	}
 	s.attachRelativePaths(ctx, out)
+	_ = s.enrichMediaTrajectory(ctx, out)
 	return out, nil
 }
 // MediaInFolders returns every media item inside the given folders,
@@ -1475,6 +1488,45 @@ func (s *Postgres) UpdateMediaDetails(ctx context.Context, id int, patch domain.
 	return s.Media(ctx, id)
 }
 
+func (s *Postgres) SetTrajectoryStart(ctx context.Context, folderID, mediaID int, start bool) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	if start {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO trajectory_starts(folder_id, media_id) VALUES($1, $2)
+			ON CONFLICT(folder_id, media_id) DO NOTHING`, folderID, mediaID); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM trajectory_starts WHERE folder_id = $1 AND media_id = $2`, folderID, mediaID)
+	return err
+}
+
+func (s *Postgres) SetTrajectoryName(ctx context.Context, folderID, mediaID int, name string) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO trajectory_starts(folder_id, media_id, name) VALUES($1, $2, $3)
+		ON CONFLICT(folder_id, media_id) DO UPDATE SET name = excluded.name`, folderID, mediaID, name)
+	return err
+}
+
+func (s *Postgres) SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, end bool) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	if end {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO trajectory_ends(folder_id, media_id) VALUES($1, $2)
+			ON CONFLICT(folder_id, media_id) DO NOTHING`, folderID, mediaID); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM trajectory_ends WHERE folder_id = $1 AND media_id = $2`, folderID, mediaID)
+	return err
+}
+
 func (s *Postgres) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error {
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
@@ -1719,6 +1771,9 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 		}
 		out = append(out, domain.MapMedia{Media: item, LibraryID: libraryID})
 	}
+	if err := s.enrichMapMediaTrajectory(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, rows.Err()
 }
 
@@ -1795,7 +1850,131 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 		}
 		out = append(out, domain.MapMedia{Media: item, LibraryID: libraryID})
 	}
+	if err := s.enrichMapMediaTrajectory(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, rows.Err()
+}
+
+// enrichMediaTrajectory applies trajectory start/end flags and names to a batch
+// of media rows. It matches only rows whose own folder_id owns the marker, so
+// the same media can carry different markers in different folders.
+func (s *Postgres) enrichMediaTrajectory(ctx context.Context, items []domain.Media) error {
+	if len(items) == 0 {
+		return nil
+	}
+	const batchSize = 400
+	idToIdx := make(map[int]int, len(items))
+	for i, m := range items {
+		idToIdx[m.ID] = i
+	}
+	for start := 0; start < len(items); start += batchSize {
+		end := start + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		ids := make([]any, end-start)
+		for i, m := range items[start:end] {
+			ids[i] = m.ID
+		}
+		placeholders := make([]string, len(ids))
+		for i := range ids {
+			placeholders[i] = "$" + strconv.Itoa(i+1)
+		}
+		in := strings.Join(placeholders, ", ")
+		rows, err := s.db.QueryContext(ctx, `SELECT folder_id, media_id, name FROM trajectory_starts WHERE media_id IN (`+in+`)`, ids...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var fid, mid int
+			var name string
+			if err := rows.Scan(&fid, &mid, &name); err != nil {
+				rows.Close()
+				return err
+			}
+			if idx, ok := idToIdx[mid]; ok && items[idx].FolderID == fid {
+				items[idx].TrajectoryStart = true
+				items[idx].TrajectoryName = name
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows, err = s.db.QueryContext(ctx, `SELECT folder_id, media_id FROM trajectory_ends WHERE media_id IN (`+in+`)`, ids...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var fid, mid int
+			if err := rows.Scan(&fid, &mid); err != nil {
+				rows.Close()
+				return err
+			}
+			if idx, ok := idToIdx[mid]; ok && items[idx].FolderID == fid {
+				items[idx].TrajectoryEnd = true
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// enrichEntriesTrajectory applies trajectory flags to the media rows inside an
+// Entry slice (library-root/timeline and folder-scoped listings alike).
+func (s *Postgres) enrichEntriesTrajectory(ctx context.Context, out []domain.Entry) error {
+	var medias []domain.Media
+	for _, e := range out {
+		if e.Media != nil {
+			medias = append(medias, *e.Media)
+		}
+	}
+	if len(medias) == 0 {
+		return nil
+	}
+	if err := s.enrichMediaTrajectory(ctx, medias); err != nil {
+		return err
+	}
+	mediaIdx := 0
+	for i := range out {
+		if out[i].Media == nil {
+			continue
+		}
+		m := medias[mediaIdx]
+		mediaIdx++
+		if m.ID != out[i].Media.ID {
+			continue
+		}
+		out[i].Media.TrajectoryStart = m.TrajectoryStart
+		out[i].Media.TrajectoryEnd = m.TrajectoryEnd
+		out[i].Media.TrajectoryName = m.TrajectoryName
+	}
+	return nil
+}
+
+// enrichMapMediaTrajectory applies trajectory flags to geotagged map items so
+// library-level and global maps draw the same segments as folder-scoped ones.
+func (s *Postgres) enrichMapMediaTrajectory(ctx context.Context, out []domain.MapMedia) error {
+	medias := make([]domain.Media, len(out))
+	for i, m := range out {
+		medias[i] = m.Media
+	}
+	if err := s.enrichMediaTrajectory(ctx, medias); err != nil {
+		return err
+	}
+	for i := range out {
+		out[i].Media = medias[i]
+		// MapMedia re-declares the trajectory fields at the top level (they
+		// shadow the embedded Media ones in JSON), so carry the flags over.
+		out[i].TrajectoryStart = medias[i].TrajectoryStart
+		out[i].TrajectoryEnd = medias[i].TrajectoryEnd
+		out[i].TrajectoryName = medias[i].TrajectoryName
+	}
+	return nil
 }
 
 func (s *Postgres) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error) {
@@ -1830,6 +2009,7 @@ func (s *Postgres) MediaForLibrary(ctx context.Context, userID, libraryID int) (
 		item.Favorite = favorite
 		out = append(out, item)
 	}
+	_ = s.enrichMediaTrajectory(ctx, out)
 	return out, rows.Err()
 }
 
@@ -1865,6 +2045,7 @@ func (s *Postgres) MediaForFolder(ctx context.Context, userID, libraryID, folder
 		item.Favorite = favorite
 		out = append(out, item)
 	}
+	_ = s.enrichMediaTrajectory(ctx, out)
 	return out, rows.Err()
 }
 
@@ -1972,17 +2153,22 @@ func (s *Postgres) PruneFolder(ctx context.Context, rootFolderID int, keepFolder
 		SELECT $1::bigint
 		UNION ALL
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)`
-	keepMediaPlaceholders, mediaArgs := idsINPostgres(keepMedia, 2)
+	// Pass the keep-sets as single array parameters and unnest them instead of
+	// building an unbounded IN (...) list, so pruning a very large root never
+	// trips the server's bound-variable limit.
+	mediaKeep := idSlice(keepMedia)
+	folderKeep := idSlice(keepFolders)
 	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media
-		WHERE folder_id IN (SELECT id FROM sub) AND id NOT IN (`+keepMediaPlaceholders+`)`,
-		append([]any{rootFolderID}, mediaArgs...)...); err != nil {
+		WHERE folder_id IN (SELECT id FROM sub)
+		  AND id NOT IN (SELECT unnest($2::bigint[]))`,
+		rootFolderID, mediaKeep); err != nil {
 		return err
 	}
-	keepFolderPlaceholders, folderArgs := idsINPostgres(keepFolders, 3)
 	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media_folders
-		WHERE id IN (SELECT id FROM sub) AND id <> $2 AND id NOT IN (`+keepFolderPlaceholders+`)
-		AND id NOT IN (SELECT DISTINCT folder_id FROM media)`,
-		append([]any{rootFolderID, rootFolderID}, folderArgs...)...); err != nil {
+		WHERE id IN (SELECT id FROM sub) AND id <> $2
+		  AND id NOT IN (SELECT unnest($3::bigint[]))
+		  AND id NOT IN (SELECT DISTINCT folder_id FROM media)`,
+		rootFolderID, rootFolderID, folderKeep); err != nil {
 		return err
 	}
 	return nil

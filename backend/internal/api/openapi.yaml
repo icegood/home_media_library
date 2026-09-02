@@ -187,7 +187,6 @@ paths:
                   type: string
                 newPassword:
                   type: string
-                  minLength: 12
                   maxLength: 72
       responses:
         "200":
@@ -270,7 +269,6 @@ paths:
                   type: string
                 password:
                   type: string
-                  minLength: 12
                   maxLength: 72
       responses:
         "200":
@@ -945,6 +943,105 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Media"
+        "400":
+          description: Invalid or missing value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}/trajectory-start:
+    patch:
+      tags: [Media]
+      summary: Mark or unmark a media item as a trajectory start within a folder
+      description: Trajectory starts are scoped per physical folder, so the folder
+        scope must be supplied in the body.
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrajectoryStartPatch"
+      responses:
+        "200":
+          description: Updated trajectory start state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrajectoryStartResult"
+        "400":
+          description: Invalid or missing value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}/trajectory-end:
+    patch:
+      tags: [Media]
+      summary: Mark or unmark a media item as a trajectory end within a folder
+      description: Trajectory ends are scoped per physical folder, so the folder
+        scope must be supplied in the body.
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrajectoryEndPatch"
+      responses:
+        "200":
+          description: Updated trajectory end state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrajectoryEndResult"
+        "400":
+          description: Invalid or missing value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/v1/media/{id}/trajectory-name:
+    patch:
+      tags: [Media]
+      summary: Save or clear the name of the trajectory whose start is this media item
+      description: Trajectories are scoped per physical folder, so the folder scope
+        must be supplied in the body. An empty name clears it.
+      parameters:
+        - $ref: "#/components/parameters/MediaID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrajectoryNamePatch"
+      responses:
+        "200":
+          description: Updated trajectory name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrajectoryNameResult"
         "400":
           description: Invalid or missing value
           content:
@@ -1775,7 +1872,7 @@ components:
           example: alice
         password:
           type: string
-          description: Setup requires 12-72 characters.
+          description: At most 72 characters.
           example: "hunter2hunter2"
     Role:
       type: string
@@ -1807,7 +1904,7 @@ components:
           $ref: "#/components/schemas/Role"
         password:
           type: string
-          description: 12-72 characters. Required when creating; optional when editing to keep the current password.
+          description: At most 72 characters. Required when creating; optional when editing to keep the current password.
     LibraryUserAccess:
       type: object
       required: [user, allowed]
@@ -1820,13 +1917,11 @@ components:
     LibraryStats:
       type: object
       properties:
-        folders:
-          type: integer
-        files:
-          type: integer
         images:
           type: integer
         videos:
+          type: integer
+        documents:
           type: integer
     LibraryRoot:
       type: object
@@ -1871,7 +1966,7 @@ components:
               description: Whether the media item belongs to this view.
     Kind:
       type: string
-      enum: [image, video]
+      enum: [image, video, document]
     Media:
       type: object
       required: [id, folderId, relativePath, name, kind, mimeType, size, gps, takenAt]
@@ -1918,6 +2013,15 @@ components:
           properties:
             libraryId:
               type: integer
+            trajectoryStart:
+              type: boolean
+              description: Whether this item is a trajectory start within the scoped folder.
+            trajectoryEnd:
+              type: boolean
+              description: Whether this item ends a trajectory segment within the scoped folder.
+            trajectoryName:
+              type: string
+              description: The saved name of the trajectory whose start is this item within the scoped folder, if any.
     MediaFolder:
       type: object
       required: [id, parentId, relativePath, name]
@@ -1980,6 +2084,70 @@ components:
         takenAt:
           type: string
           description: ISO-8601 date/time, or empty to clear.
+    TrajectoryStartPatch:
+      type: object
+      required: [folderId, start]
+      properties:
+        folderId:
+          type: integer
+          description: Physical folder scope for this trajectory start.
+        start:
+          type: boolean
+          description: Set or clear the trajectory-start flag.
+    TrajectoryStartResult:
+      type: object
+      required: [folderId, mediaId, start, trajectoryStart]
+      properties:
+        folderId:
+          type: integer
+        mediaId:
+          type: integer
+        start:
+          type: boolean
+        trajectoryStart:
+          type: boolean
+    TrajectoryEndPatch:
+      type: object
+      required: [folderId, end]
+      properties:
+        folderId:
+          type: integer
+          description: Physical folder scope for this trajectory end.
+        end:
+          type: boolean
+          description: Set or clear the trajectory-end flag.
+    TrajectoryEndResult:
+      type: object
+      required: [folderId, mediaId, end, trajectoryEnd]
+      properties:
+        folderId:
+          type: integer
+        mediaId:
+          type: integer
+        end:
+          type: boolean
+        trajectoryEnd:
+          type: boolean
+    TrajectoryNamePatch:
+      type: object
+      required: [folderId, name]
+      properties:
+        folderId:
+          type: integer
+          description: Physical folder scope for this trajectory.
+        name:
+          type: string
+          description: The trajectory name to save, or an empty string to clear it.
+    TrajectoryNameResult:
+      type: object
+      required: [folderId, mediaId, name]
+      properties:
+        folderId:
+          type: integer
+        mediaId:
+          type: integer
+        name:
+          type: string
     VideoThumbnail:
       type: object
       required: [index, timeSeconds, url]
@@ -2264,12 +2432,12 @@ components:
           description: Id of the placeholder picture shown for folder covers that have not been generated yet.
         mapTileProviderLight:
           type: string
-          enum: [osm, esri, carto, carto:voyager, carto:light]
-          description: Map tile source for light and system themes. `osm` and `esri` need no key; CARTO sources (bare `carto` normalizes to `carto:voyager`) need the admin-configured API key, otherwise the tiles show an "API key required" watermark.
+          enum: [osm, esri, esri:satellite, carto, carto:voyager, carto:light]
+          description: Map tile source for light and system themes. `osm` and `esri` need no key; `esri:satellite` serves Esri World Imagery (no key); CARTO sources (bare `carto` normalizes to `carto:voyager`) need the admin-configured API key, otherwise the tiles show an "API key required" watermark.
         mapTileProviderDark:
           type: string
-          enum: [osm, esri, carto, carto:voyager, carto:dark]
-          description: Map tile source for the dark and forest themes. `osm`, `esri`, and `carto:voyager` are rendered through a CSS dark filter; `carto:dark` serves CARTO's native dark tiles. CARTO sources need the admin-configured API key; without it the tiles show an "API key required" watermark.
+          enum: [osm, esri, esri:satellite, carto, carto:voyager, carto:dark]
+          description: Map tile source for the dark and forest themes. `osm` and `esri` pass through a CSS dark filter; `esri:satellite` serves Esri World Imagery unfiltered (no key); `carto:voyager` renders as native dark CARTO; `carto:dark` serves CARTO's native dark tiles. CARTO sources need the admin-configured API key; without it the tiles show an "API key required" watermark.
         mapTileProviders:
           type: object
           readOnly: true

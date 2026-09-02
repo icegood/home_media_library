@@ -1,4 +1,4 @@
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, KindStats, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -69,9 +69,9 @@ export const api = {
     call<UserSettings>("/settings", {method:"PUT", body:JSON.stringify(settings)}),
   about: () => call<About>("/about"),
   libraries: () => call<Library[]>("/libraries"),
-  libraryStats: (id:ID) => call<{images:number; videos:number}>(`/libraries/${id}/stats`),
-  folderStats: (id:ID, folderId:ID) => call<{images:number; videos:number}>(`/libraries/${id}/folders/${folderId}/stats`),
-  favoriteViewStats: (id:ID) => call<{images:number; videos:number}>(`/favorite-views/${id}/stats`),
+  libraryStats: (id:ID) => call<KindStats>(`/libraries/${id}/stats`),
+  folderStats: (id:ID, folderId:ID) => call<KindStats>(`/libraries/${id}/folders/${folderId}/stats`),
+  favoriteViewStats: (id:ID) => call<KindStats>(`/favorite-views/${id}/stats`),
   createLibrary: (input:{name:string; roots:{path:string; watch?:boolean}[]}) =>
     call<Library>("/admin/libraries", {method:"POST", body:JSON.stringify(input)}),
   updateLibrary: (id:ID, input:{name:string; roots:{path:string; watch?:boolean}[]}) =>
@@ -135,10 +135,22 @@ export const api = {
     if (bounds != null) params.push(`bbox=${bounds.west},${bounds.south},${bounds.east},${bounds.north}`);
     return call<MapMedia[]>(`/map${params.length > 0 ? `?${params.join("&")}` : ""}`);
   },
+  poi: (bounds:{west:number; south:number; east:number; north:number}, categories:string[], theme:string) => {
+    const params = `bbox=${bounds.west},${bounds.south},${bounds.east},${bounds.north}&categories=${encodeURIComponent(categories.join(","))}&theme=${encodeURIComponent(theme)}`;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 8000);
+    return call<POI[]>(`/map/poi?${params}`, {signal: controller.signal}).finally(() => window.clearTimeout(timer));
+  },
   updateGPS: (id:ID, gps:string|null) =>
     call<Media>(`/media/${id}/gps`, {method:"PATCH", body:JSON.stringify({gps})}),
   updateMediaDetails: (id:ID, input:{name:string; gps:string|null; takenAt:string|null}) =>
     call<Media>(`/media/${id}/details`, {method:"PATCH", body:JSON.stringify(input)}),
+  setTrajectoryStart: (id:ID, folderId:ID, start:boolean) =>
+    call<{folderId:ID; mediaId:ID; start:boolean; trajectoryStart:boolean}>(`/media/${id}/trajectory-start`, {method:"PATCH", body:JSON.stringify({folderId, start})}),
+  setTrajectoryEnd: (id:ID, folderId:ID, end:boolean) =>
+    call<{folderId:ID; mediaId:ID; end:boolean; trajectoryEnd:boolean}>(`/media/${id}/trajectory-end`, {method:"PATCH", body:JSON.stringify({folderId, end})}),
+  setTrajectoryName: (id:ID, folderId:ID, name:string) =>
+    call<{folderId:ID; mediaId:ID; name:string}>(`/media/${id}/trajectory-name`, {method:"PATCH", body:JSON.stringify({folderId, name})}),
   bulkUpdateMedia: (input:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string|null; takenAt?:string|null; shiftMinutes?:number|null}) =>
     call<{id:ID; takenAt?:string; gps?:string}[]>(`/media/bulk`, {method:"PATCH", body:JSON.stringify(input)}),
   metadataRenew: (libraryId:ID, input:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean}) =>
@@ -163,6 +175,17 @@ export const api = {
     return results as GeocodeResult[];
   },
   contentUrl: (id:ID, download = false) => authUrl(`/media/${id}/content${download ? "?download=1" : ""}`),
+  async documentContent(id:ID) {
+    // In Android Capacitor the WebView's built-in PDF viewer fires a separate
+    // request without sending the HttpOnly auth cookie and surfaces "401
+    // Authorization required". Proxy the file through the authenticated
+    // fetch helper and hand the iframe a blob URL so the auth state stays
+    // attached.
+    const response = await fetch(authUrl(`/media/${id}/content`), {credentials:"same-origin"});
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText || "HTTP error"} from ${base}/media/${id}/content`);
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  },
   async downloadArchive(ids:ID[], folders:ID[] = []) {
     const response = await fetch(`${base}/archive`, {
       method:"POST",
@@ -220,6 +243,7 @@ export interface AdminSettings {
   smtpPassword?:string;
   smtpFrom:string;
   mapTileProviders?:Record<string, Record<string, string>>;
+  poiProviders?:Record<string, Record<string, string>>;
 }
 
 export type TranscodeSchemaId =
@@ -247,6 +271,10 @@ export interface UserSettings {
   mapTileProviderLight:MapTileSource;
   mapTileProviderDark:MapTileSource;
   mapTileProviders?:Record<string, Record<string, string>>;
+  poiProviderLight:POISource;
+  poiProviderDark:POISource;
+  poiProviders?:Record<string, Record<string, string>>;
 }
 
-export type MapTileSource = "osm" | "esri" | "carto" | "carto:voyager" | "carto:light" | "carto:dark";
+export type MapTileSource = "osm" | "esri" | "esri:satellite" | "carto" | "carto:voyager" | "carto:light" | "carto:dark";
+export type POISource = "overpass" | "geoapify" | "mapbox";

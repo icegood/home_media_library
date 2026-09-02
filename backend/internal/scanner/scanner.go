@@ -199,15 +199,23 @@ func (s Scanner) importMedia(ctx context.Context, root, filePath string, mimeTyp
 	if existing, existingErr := s.Store.MediaByPath(ctx, filePath); existingErr == nil {
 		return existing.ID, nil
 	}
-	extracted, err := s.metadata().Extract(ctx, filePath, mimeType)
+	isDocument := domain.KindFromMIME(mimeType) == domain.KindDocument
+	var extracted metadata.Result
 	metadataError := ""
-	if err != nil {
-		metadataError = err.Error()
+	if isDocument {
+		// Documents carry no EXIF/ffprobe metadata; their GPS comes from the
+		// media edit/PATCH endpoints instead, so skip extraction entirely.
+		extracted.Metadata = map[string]any{}
 	} else {
-		metadataError = extracted.Error
-	}
-	if metadataError != "" {
-		applog.Printf(applog.Error, "metadata failed for %s: %s", filePath, metadataError)
+		extracted, err = s.metadata().Extract(ctx, filePath, mimeType)
+		if err != nil {
+			metadataError = err.Error()
+		} else {
+			metadataError = extracted.Error
+		}
+		if metadataError != "" {
+			applog.Printf(applog.Error, "metadata failed for %s: %s", filePath, metadataError)
+		}
 	}
 	takenAt := extracted.TakenAt
 	if takenAt == "" {
