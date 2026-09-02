@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# Common web build root, shared (via FROM) by the nginx web image
+# (web/Dockerfile) and the Android APK build (deploy/Dockerfile.android).
+#
+# All the heavy, cache-beating work lives here and is built ONCE as
+# `media-library-web-assets:VERSION` (by deploy/start.sh). Both consumers
+# reference this image and only adapt paths after reuse, so the npm ci /
+# lint / test / vite-build layers are never repeated by the Android build.
+ARG NODE_IMAGE=node:22-alpine
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
+ARG VERSION
+ARG VCS_REF
+ARG BUILD_DATE
+ENV APP_VERSION=$VERSION
+ENV VCS_REF=$VCS_REF
+ENV BUILD_DATE=$BUILD_DATE
+WORKDIR /src
+
+COPY package.json package-lock.json* ./
+# Keep npm's tarball cache in a BuildKit cache mount so `npm ci` reuses already
+# downloaded packages when the dependency set changes.
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+COPY . .
+RUN npm run lint && npm test && npm run build

@@ -1,0 +1,20 @@
+# Root-context builds (Android APK, Playwright runner) use the repo root as the
+# build context. Exclude generated/runtime/secrets so the context stays small
+# and cache keys stay stable. The web/ excludes mirror web/.dockerignore so the
+# `COPY web/ .` layer matches the `web/Dockerfile` build stage and BuildKit can
+# reuse its cached layers.
+.git
+.idea
+.vscode
+runtime
+build
+deploy/.env
+.github-token
+
+web/node_modules
+web/dist
+web/.vite
+web/coverage
+web/android/.gradle
+web/android/app/build
+web/src/generated-version.ts

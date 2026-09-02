@@ -71,5 +71,5 @@ if (keystorePropertiesFile.exists()) {
     }
     android.buildTypes.release.signingConfig = android.signingConfigs.release
 } else {
-    logger.warn("keystore.properties not found: release APK will be signed with the debug key")
+    logger.warn("keystore.properties not found: release APK will be unsigned (this build is unusable for distribution and may be missing META-INF/MANIFEST.MF)")
 }

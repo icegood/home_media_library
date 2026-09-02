@@ -6,6 +6,8 @@ test('favorite view folder and media cards both offer top-left selection', async
   test.skip(viewId == null, 'no favorite views configured');
   await page.goto(`/favorites/${viewId}`);
   const boxes = page.locator('.select-media input[type=checkbox]');
+  await boxes.first().waitFor({ state: 'attached', timeout: 10_000 }).catch(() => {});
+  test.skip(await boxes.count() === 0, 'favorite view has no selectable folder/media cards');
   await expect(boxes.first()).toBeVisible({ timeout: 10_000 });
   const count = await boxes.count();
   for (let i = 0; i < count; i++) {

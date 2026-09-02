@@ -10,6 +10,7 @@ test('item menus are unified and top-right on library and folder tiles', async (
 
   await page.goto('/');
   await page.waitForSelector('.library-tile', { timeout: 10_000 });
+  await setTheme(page, 'dark');
   const tileCard = await page.locator('.library-tile').first().boundingBox();
   const tileBtn = await page.locator('.library-tile button.menu-summary').first().boundingBox();
   const tileBg = await page.locator('.library-tile button.menu-summary').first()

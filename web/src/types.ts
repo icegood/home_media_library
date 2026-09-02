@@ -3,19 +3,33 @@ export type ID = number;
 export interface User { id:ID; login:string; role:Role; email?:string }
 export interface LibraryUserAccess { user:User; allowed:boolean }
 export interface LibraryRoot { id:ID; path?:string; watch?:boolean }
-export interface KindStats { images:number; videos:number }
+export interface KindStats { images:number; videos:number; documents:number }
 export interface Library { id:ID; name:string; roots?:LibraryRoot[]; stats?:KindStats }
 export interface FavoriteView { id:ID; name:string; count:number }
 export interface FavoriteViewMembership extends FavoriteView { contains:boolean }
 export interface Media {
   id:ID; folderId:ID; relativePath:string; name:string;
-  kind:"image"|"video"; mimeType:string; size:number;
+  kind:"image"|"video"|"document"; mimeType:string; size:number;
   metadata:Record<string, unknown>; gps:string; takenAt:string;
   metadataError?:string; thumbnailError?:string;
   favorite?:boolean;
+  trajectoryStart?:boolean;
+  trajectoryEnd?:boolean;
+  trajectoryName?:string;
 }
 export interface MapMedia extends Media {
   libraryId:ID;
+}
+export type POICategory = "food" | "fuel_parking" | "lodging" | "attraction" | "health" | "shops";
+export interface POI {
+  id:string;
+  name:string;
+  category:POICategory;
+  lat:number;
+  lon:number;
+  website?:string;
+  wikipediaTitle?:string;
+  imageUrl?:string;
 }
 export interface GeocodeResult {
   place_id:number;

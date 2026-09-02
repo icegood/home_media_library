@@ -417,11 +417,14 @@ func TestPostgresLibraryStats(t *testing.T) {
 	if _, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folder.ID, Path: filepath.Join(root, "Camera", "two.mp4"), Name: "two.mp4", Kind: domain.KindVideo, MIMEType: "video/mp4"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folder.ID, Path: filepath.Join(root, "Camera", "readme.pdf"), Name: "readme.pdf", Kind: domain.KindDocument, MIMEType: "application/pdf"}); err != nil {
+		t.Fatal(err)
+	}
 	stats, err := repository.LibraryStats(context.Background(), library.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Images != 1 || stats.Videos != 1 {
+	if stats.Images != 1 || stats.Videos != 1 || stats.Documents != 1 {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
 }
@@ -744,5 +747,53 @@ func TestPostgresTHMExtensionMapsToImageJPEG(t *testing.T) {
 	}
 	if mimeType != "image/jpeg" {
 		t.Fatalf("THM mime = %q, want image/jpeg", mimeType)
+	}
+}
+
+func TestPostgresFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
+	repository := openPostgres(t, false)
+	ctx := context.Background()
+	root := t.TempDir()
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Trails", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(root, "day1"), RelativePath: "day1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: sub.ID, Path: filepath.Join(root, "day1", "a.jpg"), Name: "a.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg", Size: 10, Metadata: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gps := "50.45,30.52"
+	if _, err := repository.UpdateMediaDetails(ctx, media.ID, domain.MediaDetailsPatch{GPS: &gps}); err != nil {
+		t.Fatal(err)
+	}
+	// The media card attaches trajectory markers to the media's own folder; the
+	// map view may be scoped to an ancestor folder that must still surface them.
+	if err := repository.SetTrajectoryStart(ctx, sub.ID, media.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	name := "Evening loop"
+	if err := repository.SetTrajectoryName(ctx, sub.ID, media.ID, name); err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != media.ID {
+		t.Fatalf("expected one map item, got %#v", items)
+	}
+	if !items[0].TrajectoryStart || items[0].TrajectoryName != name {
+		t.Fatalf("expected start flag + name on folder map, got start=%v name=%q", items[0].TrajectoryStart, items[0].TrajectoryName)
+	}
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, library.Roots[0].ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(area) != 1 || !area[0].TrajectoryStart || area[0].TrajectoryName != name {
+		t.Fatalf("expected area item with start flag, got %#v", area)
 	}
 }

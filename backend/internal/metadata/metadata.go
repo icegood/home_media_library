@@ -53,7 +53,7 @@ func (e Extractor) Extract(ctx context.Context, path, mimeType string) (Result, 
 	}
 	result.GPS = gps
 	result.TakenAt = takenAt
-	if strings.HasPrefix(mimeType, "video/") {
+	if domain.KindFromMIME(mimeType) == domain.KindVideo {
 		ffprobe, err := e.extractFFProbe(ctx, path)
 		if err != nil && !isToolUnavailable(err) {
 			result.Metadata["ffprobeError"] = err.Error()

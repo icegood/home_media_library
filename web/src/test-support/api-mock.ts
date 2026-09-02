@@ -8,6 +8,8 @@ import { vi } from "vitest";
 import type { AdminSettings } from "../api";
 import type { About, Media, User } from "../types";
 
+interface POIPoint {id:string; name:string; category:string; lat:number; lon:number; website?:string; wikipediaTitle?:string}
+
 interface LibraryRow { id:number; name:string; roots:{id:number; path:string; watch?:boolean}[] }
 interface FolderRow { id:number; parentId:number; relativePath:string; name:string }
 interface FavoriteViewRow { id:number; name:string; count:number }
@@ -57,12 +59,13 @@ function createMockApi() {
         "2026/07/31 08:01:00 E thumbnail failed"
       ],
       mapPoints:[] as unknown[],
-      userSettings:{theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", language:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapTileProviders:{carto:{apiKey:""}}},
+      poiPoints:[] as POIPoint[],
+      userSettings:{theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", language:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapTileProviders:{carto:{apiKey:""}}, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}},
       adminSettings:{
         httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:true,
         thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,
         sessionMaxAgeHours:720, finishedJobRetentionMinutes:10, logLevel:"I", logRotateMaxSizeMB:10, logRotateMaxBackups:5, logRotateMaxAgeDays:30,
-        smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:"", mapTileProviders:{carto:{apiKey:""}}
+        smtpHost:"", smtpPort:587, smtpUsername:"", smtpPassword:"", smtpFrom:"", mapTileProviders:{carto:{apiKey:""}}, poiProviders:{overpass:{endpoint:""}}
       } as AdminSettings,
       filesystem:{
         "/media":{root:"/media", path:"/media", parent:"", directories:[{name:"photos", path:"/media/photos"}]},
@@ -124,14 +127,14 @@ function createMockApi() {
     about: vi.fn(async ():Promise<About> => ({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-01T00:00:00Z", goVersion:"go1.23", gatewayEnabled:false})),
     // --- libraries --------------------------------------------------------
     libraries: vi.fn(async () => JSON.parse(JSON.stringify(state.libraries))),
-    libraryStats: vi.fn(async () => ({images:10, videos:2})),
+    libraryStats: vi.fn(async () => ({images:10, videos:2, documents:0})),
     folderStats: vi.fn(async (_id:number, folderId:number) => {
       void folderId;
-      return {images:1, videos:1};
+      return {images:1, videos:1, documents:0};
     }),
     favoriteViewStats: vi.fn(async (id:number) => {
       const view = state.favoriteViews.find((row:FavoriteViewRow) => row.id === Number(id));
-      return {images:view ? Math.max(view.count - 1, 0) : 0, videos:view ? 1 : 0};
+      return {images:view ? Math.max(view.count - 1, 0) : 0, videos:view ? 1 : 0, documents:0};
     }),
     createLibrary: vi.fn(async (input:{name:string; roots:{path:string; watch?:boolean}[]}) => {
       const library:LibraryRow = {id:++nextId, name:input.name, roots:[]};
@@ -280,6 +283,11 @@ function createMockApi() {
       const filtered = bounds ? points.filter(point => point.lat >= bounds.south && point.lat <= bounds.north && point.lng >= bounds.west && point.lng <= bounds.east) : points;
       return JSON.parse(JSON.stringify(filtered));
     }),
+    poi: vi.fn(async (bounds:{west:number; south:number; east:number; north:number}, _categories:string[], _theme:string) => {
+      const points:POIPoint[] = state.poiPoints;
+      const filtered = bounds ? points.filter(point => point.lat >= bounds.south && point.lat <= bounds.north && point.lon >= bounds.west && point.lon <= bounds.east) : points;
+      return JSON.parse(JSON.stringify(filtered));
+    }),
     geocode: vi.fn(async () => []),
     updateGPS: vi.fn(async (id:number, gps:string|null) => {
       const row = state.media.get(Number(id));
@@ -292,6 +300,24 @@ function createMockApi() {
       if (!row) throw new Error(`media ${id} not found`);
       Object.assign(row, {name:input.name, gps:input.gps ?? "", takenAt:input.takenAt ?? ""});
       return JSON.parse(JSON.stringify(row));
+    }),
+    setTrajectoryStart: vi.fn(async (id:number, folderId:number, start:boolean) => {
+      const row = state.media.get(Number(id));
+      if (!row) throw new Error(`media ${id} not found`);
+      row.trajectoryStart = start;
+      return {folderId:Number(folderId), mediaId:row.id, start, trajectoryStart:start};
+    }),
+    setTrajectoryEnd: vi.fn(async (id:number, folderId:number, end:boolean) => {
+      const row = state.media.get(Number(id));
+      if (!row) throw new Error(`media ${id} not found`);
+      row.trajectoryEnd = end;
+      return {folderId:Number(folderId), mediaId:row.id, end, trajectoryEnd:end};
+    }),
+    setTrajectoryName: vi.fn(async (id:number, folderId:number, name:string) => {
+      const row = state.media.get(Number(id));
+      if (!row) throw new Error(`media ${id} not found`);
+      row.trajectoryName = name;
+      return {folderId:Number(folderId), mediaId:row.id, name};
     }),
     bulkUpdateMedia: vi.fn(async (input:{selectedIds?:number[]; selectedFolders?:number[]; gps?:string|null; takenAt?:string|null; shiftMinutes?:number|null}) => {
       const targets = [...state.media.values()].filter(row =>
@@ -376,6 +402,7 @@ function createMockApi() {
     playbackUrl: vi.fn((id:number, codecs:string[], start = 0) =>
       `/api/v1/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}${start > 0 ? `&start=${start}` : ""}`),
     downloadArchive: vi.fn(async () => {}),
+    documentContent: vi.fn(async (_id:number) => "blob:mock-document"),
     // --- admin settings -------------------------------------------------------
     settings: vi.fn(async () => ({...state.adminSettings})),
     updateSettings: vi.fn(async (settings:AdminSettings) => {

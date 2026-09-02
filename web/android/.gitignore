@@ -57,6 +57,11 @@ captures/
 #*.jks
 #*.keystore
 
+# Generated at build time by `sh deploy/start.sh android` from KEYSTORE_*
+# in deploy/.env. Contains storePassword / keyPassword / keyAlias values —
+# never commit it.
+keystore.properties
+
 # External native build folder generated in Android Studio 2.2 and later
 .externalNativeBuild
 .cxx/

@@ -64,6 +64,9 @@ type Store interface {
 	FavoritesForUser(ctx context.Context, userID int, mediaIDs []int) (map[int]bool, error)
 	UpdateGPS(ctx context.Context, id int, patch domain.GPSPatch) (domain.Media, error)
 	UpdateMediaDetails(ctx context.Context, id int, patch domain.MediaDetailsPatch) (domain.Media, error)
+	SetTrajectoryStart(ctx context.Context, folderID, mediaID int, start bool) error
+	SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, end bool) error
+	SetTrajectoryName(ctx context.Context, folderID, mediaID int, name string) error
 	BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs []int, gps string, lat, lng float64) ([]domain.BulkMediaResult, error)
 	BulkUpdateMediaSetTime(ctx context.Context, ids []int, folderIDs []int, takenAt string) ([]domain.BulkMediaResult, error)
 	BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folderIDs []int, shiftMinutes float64) ([]domain.BulkMediaResult, error)

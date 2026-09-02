@@ -476,9 +476,6 @@ func (s *SQLite) CreateUser(ctx context.Context, user domain.User, password stri
 	if err != nil {
 		return domain.User{}, err
 	}
-	if len(password) < 12 {
-		return domain.User{}, ErrNotFound
-	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return domain.User{}, err
@@ -504,9 +501,6 @@ func (s *SQLite) UpdateUser(ctx context.Context, user domain.User, password stri
 	}
 	var res sql.Result
 	if strings.TrimSpace(password) != "" {
-		if len(password) < 12 {
-			return domain.User{}, ErrNotFound
-		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
 			return domain.User{}, err
@@ -550,9 +544,6 @@ func (s *SQLite) UserByEmail(ctx context.Context, email string) (domain.User, er
 }
 
 func (s *SQLite) UpdatePassword(ctx context.Context, userID int, password string) error {
-	if len(password) < 12 {
-		return ErrNotFound
-	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -809,9 +800,10 @@ func (s *SQLite) LibraryStats(ctx context.Context, libraryID int) (domain.KindSt
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
 	)
 	SELECT (SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'image'),
-		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'video')`
+		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'video'),
+		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'document')`
 	err := s.db.QueryRowContext(ctx, query, libraryID).
-		Scan(&stats.Images, &stats.Videos)
+		Scan(&stats.Images, &stats.Videos, &stats.Documents)
 	if err != nil {
 		return domain.KindStats{}, translateErr(err)
 	}
@@ -831,10 +823,11 @@ func (s *SQLite) FolderStats(ctx context.Context, userID, libraryID, folderID in
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
 	)
 	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'document' THEN 1 ELSE 0 END), 0)
 	FROM media m JOIN sub ON m.folder_id = sub.id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type`
-	if err := s.db.QueryRowContext(ctx, query, folderID).Scan(&stats.Images, &stats.Videos); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, folderID).Scan(&stats.Images, &stats.Videos, &stats.Documents); err != nil {
 		return domain.KindStats{}, translateErr(err)
 	}
 	return stats, nil
@@ -860,7 +853,8 @@ func (s *SQLite) FavoriteViewStats(ctx context.Context, userID, viewID int, admi
 			SELECT m2.id FROM media m2 JOIN folder_sub fs ON m2.folder_id = fs.id
 		)
 	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'document' THEN 1 ELSE 0 END), 0)
 	FROM mentions JOIN media m ON m.id = mentions.media_id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type
 	WHERE (? = 1 OR m.folder_id IN (SELECT id FROM sub))`
@@ -870,7 +864,7 @@ func (s *SQLite) FavoriteViewStats(ctx context.Context, userID, viewID int, admi
 	} else {
 		args = append(args, viewID, viewID, 0)
 	}
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&stats.Images, &stats.Videos); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&stats.Images, &stats.Videos, &stats.Documents); err != nil {
 		return domain.KindStats{}, translateErr(err)
 	}
 	return stats, nil
@@ -965,7 +959,8 @@ func (s *SQLite) fillLibraryStats(ctx context.Context, libraries map[int]*domain
 	)
 	SELECT tree.library_id,
 		COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0)
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN mmt.media_type = 'document' THEN 1 ELSE 0 END), 0)
 	FROM tree JOIN media m ON m.folder_id = tree.folder_id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type
 	GROUP BY tree.library_id`
@@ -977,7 +972,7 @@ func (s *SQLite) fillLibraryStats(ctx context.Context, libraries map[int]*domain
 	for rows.Next() {
 		var id int
 		var stats domain.KindStats
-		if err := rows.Scan(&id, &stats.Images, &stats.Videos); err != nil {
+		if err := rows.Scan(&id, &stats.Images, &stats.Videos, &stats.Documents); err != nil {
 			return translateErr(err)
 		}
 		if library, ok := libraries[id]; ok {
@@ -1169,6 +1164,9 @@ func (s *SQLite) Entries(ctx context.Context, userID, libraryID int, dir string)
 		}
 		return out[i].Name < out[j].Name
 	})
+	// Library-root/timeline views must surface trajectory flags just like
+	// folder-scoped entries do, otherwise saved starts/ends seem to disappear.
+	_ = s.enrichEntriesTrajectory(ctx, out)
 	return out, nil
 }
 
@@ -1201,6 +1199,8 @@ func (s *SQLite) entriesForParent(ctx context.Context, userID, parentID int, roo
 		}
 		return out[i].Name < out[j].Name
 	})
+	// Enrich media entries with trajectory flags
+	_ = s.enrichEntriesTrajectory(ctx, out)
 	return out, nil
 }
 
@@ -1240,7 +1240,9 @@ func (s *SQLite) folderThumbnails(ctx context.Context, folderID int, limit int) 
 		UNION ALL
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
 	SELECT m.id FROM media m JOIN sub ON m.folder_id = sub.id
-	ORDER BY (m.gps <> '')*2 + (m.mime_type LIKE 'image/%') +
+	JOIN media_mime_types mmt ON mmt.value = m.mime_type
+	WHERE mmt.media_type <> 'document'
+	ORDER BY (m.gps <> '')*2 + (mmt.media_type = 'image') +
 		(CASE WHEN m.metadata_json <> '' AND m.metadata_json <> '{}' THEN 1 ELSE 0 END) DESC,
 		m.path ASC
 	LIMIT ?`
@@ -1279,6 +1281,11 @@ func (s *SQLite) Media(ctx context.Context, id int) (domain.Media, error) {
 	if root := s.rootPathForFolder(ctx, item.FolderID); root != "" {
 		item.RelativePath = strings.TrimPrefix(strings.TrimPrefix(item.Path, root), "/")
 	}
+	// Enrich trajectory
+	tmp := []domain.Media{item}
+	if err := s.enrichMediaTrajectory(ctx, tmp); err == nil {
+		item = tmp[0]
+	}
 	return item, nil
 }
 
@@ -1311,6 +1318,7 @@ func (s *SQLite) MediaBatch(ctx context.Context, ids []int) ([]domain.Media, err
 	}
 	rows.Close()
 	s.attachRelativePaths(ctx, out)
+	_ = s.enrichMediaTrajectory(ctx, out)
 	return out, nil
 }
 // MediaInFolders returns every media item inside the given folders,
@@ -1668,6 +1676,45 @@ func (s *SQLite) UpdateMediaDetails(ctx context.Context, id int, patch domain.Me
 	return s.Media(ctx, id)
 }
 
+func (s *SQLite) SetTrajectoryStart(ctx context.Context, folderID, mediaID int, start bool) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	if start {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO trajectory_starts(folder_id, media_id) VALUES(?, ?)
+			ON CONFLICT(folder_id, media_id) DO NOTHING`, folderID, mediaID); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM trajectory_starts WHERE folder_id = ? AND media_id = ?`, folderID, mediaID)
+	return err
+}
+
+func (s *SQLite) SetTrajectoryName(ctx context.Context, folderID, mediaID int, name string) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO trajectory_starts(folder_id, media_id, name) VALUES(?, ?, ?)
+		ON CONFLICT(folder_id, media_id) DO UPDATE SET name = excluded.name`, folderID, mediaID, name)
+	return err
+}
+
+func (s *SQLite) SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, end bool) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	if end {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO trajectory_ends(folder_id, media_id) VALUES(?, ?)
+			ON CONFLICT(folder_id, media_id) DO NOTHING`, folderID, mediaID); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM trajectory_ends WHERE folder_id = ? AND media_id = ?`, folderID, mediaID)
+	return err
+}
+
 func (s *SQLite) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error {
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
@@ -1921,6 +1968,9 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 		}
 		out = append(out, domain.MapMedia{Media: tuple.item, LibraryID: tuple.libraryID})
 	}
+	if err := s.enrichMapMediaTrajectory(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -2011,7 +2061,127 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 		}
 		out = append(out, domain.MapMedia{Media: tuple.item, LibraryID: tuple.libraryID})
 	}
+	if err := s.enrichMapMediaTrajectory(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+func (s *SQLite) enrichMediaTrajectory(ctx context.Context, items []domain.Media) error {
+	if len(items) == 0 {
+		return nil
+	}
+	const batchSize = 400 // stay well under SQLite's variable-count limit
+	idToIdx := make(map[int]int, len(items))
+	for i, m := range items {
+		idToIdx[m.ID] = i
+	}
+	for start := 0; start < len(items); start += batchSize {
+		end := start + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		ids := make([]any, end-start)
+		for i, m := range items[start:end] {
+			ids[i] = m.ID
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		// Starts
+		rows, err := s.db.QueryContext(ctx, `SELECT folder_id, media_id, name FROM trajectory_starts WHERE media_id IN (`+placeholders+`)`, ids...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var fid, mid int
+			var name string
+			if err := rows.Scan(&fid, &mid, &name); err != nil {
+				rows.Close()
+				return err
+			}
+			if idx, ok := idToIdx[mid]; ok && items[idx].FolderID == fid {
+				items[idx].TrajectoryStart = true
+				items[idx].TrajectoryName = name
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		// Ends
+		rows, err = s.db.QueryContext(ctx, `SELECT folder_id, media_id FROM trajectory_ends WHERE media_id IN (`+placeholders+`)`, ids...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var fid, mid int
+			if err := rows.Scan(&fid, &mid); err != nil {
+				rows.Close()
+				return err
+			}
+			if idx, ok := idToIdx[mid]; ok && items[idx].FolderID == fid {
+				items[idx].TrajectoryEnd = true
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// enrichEntriesTrajectory applies trajectory flags to the media rows inside an
+// Entry slice. It is the shared helper used by both folder-scoped and
+// library-root/timeline entry listings.
+func (s *SQLite) enrichEntriesTrajectory(ctx context.Context, out []domain.Entry) error {
+	var medias []domain.Media
+	for _, e := range out {
+		if e.Media != nil {
+			medias = append(medias, *e.Media)
+		}
+	}
+	if len(medias) == 0 {
+		return nil
+	}
+	if err := s.enrichMediaTrajectory(ctx, medias); err != nil {
+		return err
+	}
+	mediaIdx := 0
+	for i := range out {
+		if out[i].Media == nil {
+			continue
+		}
+		m := medias[mediaIdx]
+		mediaIdx++
+		if m.ID != out[i].Media.ID {
+			continue
+		}
+		out[i].Media.TrajectoryStart = m.TrajectoryStart
+		out[i].Media.TrajectoryEnd = m.TrajectoryEnd
+		out[i].Media.TrajectoryName = m.TrajectoryName
+	}
+	return nil
+}
+
+// enrichMapMediaTrajectory applies trajectory flags to geotagged map items so
+// library-level and global maps draw the same segments as folder-scoped ones.
+func (s *SQLite) enrichMapMediaTrajectory(ctx context.Context, out []domain.MapMedia) error {
+	medias := make([]domain.Media, len(out))
+	for i, m := range out {
+		medias[i] = m.Media
+	}
+	if err := s.enrichMediaTrajectory(ctx, medias); err != nil {
+		return err
+	}
+	for i := range out {
+		out[i].Media = medias[i]
+		// MapMedia re-declares the trajectory fields at the top level (they
+		// shadow the embedded Media ones in JSON), so carry the flags over.
+		out[i].TrajectoryStart = medias[i].TrajectoryStart
+		out[i].TrajectoryEnd = medias[i].TrajectoryEnd
+		out[i].TrajectoryName = medias[i].TrajectoryName
+	}
+	return nil
 }
 
 func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error) {
@@ -2042,6 +2212,7 @@ func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]
 		item.Favorite = favorite
 		out = append(out, item)
 	}
+	_ = s.enrichMediaTrajectory(ctx, out)
 	return out, rows.Err()
 }
 
@@ -2073,6 +2244,7 @@ func (s *SQLite) MediaForFolder(ctx context.Context, userID, libraryID, folderID
 		item.Favorite = favorite
 		out = append(out, item)
 	}
+	_ = s.enrichMediaTrajectory(ctx, out)
 	return out, rows.Err()
 }
 
@@ -2176,22 +2348,80 @@ func (s *SQLite) PruneFolder(ctx context.Context, rootFolderID int, keepFolders,
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE id = ?`, rootFolderID).Scan(&exists); err != nil {
 		return translateErr(err)
 	}
-	keepMediaPlaceholders, mediaArgs := idsIN(keepMedia)
-	keepFolderPlaceholders, folderArgs := idsIN(keepFolders)
 	subtree := `WITH RECURSIVE sub(id) AS (
 		SELECT ?
 		UNION ALL
 		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)`
+	// SQLite caps bound variables at 32766, and pruning a large adopted root can
+	// keep tens of thousands of ids. Route the keep-set through temp tables with
+	// chunked inserts instead of an unbounded IN (...) list so pruning never
+	// trips "SQL logic error: too many SQL variables".
+	if _, err := s.db.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS media_library_prune_keep_media(id INTEGER PRIMARY KEY)`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS media_library_prune_keep_folder(id INTEGER PRIMARY KEY)`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM media_library_prune_keep_media`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM media_library_prune_keep_folder`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = s.db.ExecContext(ctx, `DROP TABLE IF EXISTS media_library_prune_keep_media`)
+		_, _ = s.db.ExecContext(ctx, `DROP TABLE IF EXISTS media_library_prune_keep_folder`)
+	}()
+	// Media and folder ids live in separate namespaces, so they must stay in
+	// separate tables: a media id and a folder id can coincide numerically.
+	if err := s.keepIDsChunked(ctx, "media_library_prune_keep_media", keepMedia); err != nil {
+		return err
+	}
+	if err := s.keepIDsChunked(ctx, "media_library_prune_keep_folder", keepFolders); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media
-		WHERE folder_id IN (SELECT id FROM sub) AND id NOT IN (`+keepMediaPlaceholders+`)`,
-		append([]any{rootFolderID}, mediaArgs...)...); err != nil {
+		WHERE folder_id IN (SELECT id FROM sub)
+		  AND NOT EXISTS (SELECT 1 FROM media_library_prune_keep_media k WHERE k.id = media.id)`,
+		rootFolderID); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media_folders
-		WHERE id IN (SELECT id FROM sub) AND id <> ? AND id NOT IN (`+keepFolderPlaceholders+`)
-		AND id NOT IN (SELECT DISTINCT folder_id FROM media)`,
-		append([]any{rootFolderID, rootFolderID}, folderArgs...)...); err != nil {
+		WHERE id IN (SELECT id FROM sub) AND id <> ?
+		  AND NOT EXISTS (SELECT 1 FROM media_library_prune_keep_folder k WHERE k.id = media_folders.id)
+		  AND id NOT IN (SELECT DISTINCT folder_id FROM media)`,
+		rootFolderID, rootFolderID); err != nil {
 		return err
+	}
+	return nil
+}
+
+// keepIDsChunked loads a keep-set into the given temp table in bounded batches so
+// a huge root never produces a single query with more bound variables than SQLite
+// permits.
+func (s *SQLite) keepIDsChunked(ctx context.Context, table string, ids map[int]bool) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	values := make([]int, 0, len(ids))
+	for id := range ids {
+		values = append(values, id)
+	}
+	sort.Ints(values)
+	const maxBatch = 500
+	for start := 0; start < len(values); start += maxBatch {
+		end := start + maxBatch
+		if end > len(values) {
+			end = len(values)
+		}
+		placeholders := strings.Repeat("(?),", end-start-1) + "(?)"
+		args := make([]any, end-start)
+		for i, id := range values[start:end] {
+			args[i] = id
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO `+table+`(id) VALUES `+placeholders, args...); err != nil {
+			return err
+		}
 	}
 	return nil
 }

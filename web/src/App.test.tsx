@@ -1,8 +1,20 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { App, resetFolderEntriesCache, setNativePlatformForTests, useBufferedFolderEntries } from "./App";
+import { readFileSync } from "node:fs";
+import { App, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
+
+// Parses a top-level CSS rule block for the given selector and returns its
+// declared z-index. Used to guard the stacking order that keeps the portaled
+// selection lists above the modal backdrop.
+function cssZIndex(selector:string):number {
+  const css = readFileSync("src/styles.css", "utf8");
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const block = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  const match = block.match(/z-index:\s*(-?\d+)/);
+  return match ? Number(match[1]) : NaN;
+}
 
 // The API client is mocked at the module boundary only, but the replacement is
 // a fully functional in-memory backend (see ./test-support/api-mock): stateful
@@ -36,6 +48,14 @@ afterEach(() => {
   // Restores prototype spies (getBoundingClientRect, media stubs, confirms).
   vi.restoreAllMocks();
 });
+
+// Custom comboboxes render their selection list inside a portal on document.body;
+// picking a value is one click to open the list, then one click on the option.
+function pickOption(combobox:HTMLElement, optionName:string) {
+  fireEvent.click(combobox);
+  const listbox = screen.getByRole("listbox");
+  fireEvent.click(within(listbox).getByRole("option", {name:optionName}));
+}
 
 test("shows login for an unauthenticated visitor", async () => {
   render(<MemoryRouter><App/></MemoryRouter>);
@@ -109,7 +129,7 @@ test("all backend settings have visible admin controls", async () => {
   expect(screen.getByLabelText("Remove inactive jobs after, minutes")).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", {name:"Logs"}));
-  expect(await screen.findByLabelText("Logging level")).toBeInTheDocument();
+  expect(await screen.findByRole("combobox", {name:"Logging level"})).toBeInTheDocument();
   expect(screen.getByLabelText("Rotate after, MB")).toBeInTheDocument();
   expect(screen.getByLabelText("Keep rotated files")).toBeInTheDocument();
   expect(screen.getByLabelText("Keep logs, days")).toBeInTheDocument();
@@ -141,14 +161,14 @@ test("settings navigation opens libraries section", async () => {
 
 test("library tile shows statistics inside its menu, not a dialog", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  let resolveStats:(value:{images:number; videos:number}) => void = () => {};
+  let resolveStats:(value:{images:number; videos:number; documents:number}) => void = () => {};
   mockApi.libraryStats.mockReturnValueOnce(new Promise(resolve => { resolveStats = resolve; }));
   render(<MemoryRouter><App/></MemoryRouter>);
   expect(await screen.findByRole("link", {name:"Open library Family"})).toBeInTheDocument();
   fireEvent.click(screen.getByLabelText("Library menu Family"));
   expect(await screen.findByText("Loading statistics…")).toBeInTheDocument();
-  resolveStats({images:10, videos:2});
-  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toHaveTextContent("Images: 10 · Videos: 2"));
+  resolveStats({images:10, videos:2, documents:0});
+  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toHaveTextContent("Images: 10 · Videos: 2 · Documents: 0"));
   expect(screen.queryByRole("dialog", {name:"Library statistics Family"})).not.toBeInTheDocument();
 });
 
@@ -191,7 +211,7 @@ test("library tile links into the library without a per-library map button", asy
 
 test("admin library list shows statistics in the row menu", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraryStats.mockResolvedValue({images:10, videos:2});
+  mockApi.libraryStats.mockResolvedValue({images:10, videos:2, documents:0});
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
   await screen.findByRole("heading", {name:"Libraries"});
   expect(await screen.findByText("Family")).toBeInTheDocument();
@@ -285,7 +305,7 @@ test("admin settings menu duplicates settings sections and opens selected sectio
     "Thumbnails",
     "Users",
     "Network",
-    "Map tiles",
+    "Map settings",
     "Mail",
     "Logs",
     "Jobs",
@@ -317,11 +337,11 @@ test("regular user has no settings menu and picks theme in user settings", async
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"dark"}});
+  pickOption(within(dialog).getByRole("combobox", {name:"Theme"}), "Dark");
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
@@ -340,10 +360,10 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Theme"}), {target:{value:"system"}});
+  pickOption(within(dialog).getByRole("combobox", {name:"Theme"}), "System — match device");
   expect(document.documentElement.dataset.theme).toBe("light");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
@@ -361,22 +381,52 @@ test("user settings lets each user pick CARTO map tiles per theme", async () => 
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   const light = within(dialog).getByRole("combobox", {name:"Tile source in light mode"});
   const dark = within(dialog).getByRole("combobox", {name:"Tile source in dark/forest mode"});
-  expect(light).toHaveValue("osm");
-  expect(within(dialog).getByRole("option", {name:"CARTO — Voyager"})).toBeInTheDocument();
-  expect(within(dialog).getByRole("option", {name:"CARTO — Native dark tiles"})).toBeInTheDocument();
-  fireEvent.change(light, {target:{value:"carto:voyager"}});
-  fireEvent.change(dark, {target:{value:"carto:dark"}});
+  expect(light).toHaveTextContent("OpenStreetMap");
+  expect(dark).toHaveTextContent("OpenStreetMap");
+  fireEvent.click(light);
+  const lightList = screen.getByRole("listbox");
+  expect(within(lightList).getByRole("option", {name:"CARTO — Voyager"})).toBeInTheDocument();
+  expect(within(lightList).getByRole("option", {name:"Esri — Satellite"})).toBeInTheDocument();
+  expect(within(lightList).getByRole("option", {name:"CARTO — Light"})).toBeInTheDocument();
+  expect(within(lightList).queryByRole("option", {name:"CARTO — Native dark tiles"})).not.toBeInTheDocument();
+  fireEvent.click(within(lightList).getByRole("option", {name:"CARTO — Voyager"}));
+  fireEvent.click(dark);
+  const darkList = screen.getByRole("listbox");
+  expect(within(darkList).getByRole("option", {name:"Esri — Satellite"})).toBeInTheDocument();
+  expect(within(darkList).getByRole("option", {name:"CARTO — Voyager (native dark)"})).toBeInTheDocument();
+  expect(within(darkList).getByRole("option", {name:"CARTO — Native dark tiles"})).toBeInTheDocument();
+  expect(within(darkList).queryByRole("option", {name:"CARTO — Light"})).not.toBeInTheDocument();
+  fireEvent.click(within(darkList).getByRole("option", {name:"CARTO — Native dark tiles"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
   await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({mapTileProviderLight:"carto:voyager", mapTileProviderDark:"carto:dark"})));
 });
 
-test("admin map tiles section saves the CARTO API key", async () => {
+test("changing the map tile source in user settings updates the open map immediately", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  mockApi.map.mockResolvedValue([]);
+  mockApi.userSettings.mockResolvedValue({theme:"light", language:"auto", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapTileProviders:{carto:{apiKey:""}}});
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  const tileSource = () => Array.from(document.querySelectorAll<HTMLImageElement>("img.leaflet-tile")).map(tile => tile.src);
+  await waitFor(() => expect(tileSource().some(src => src.includes("tile.openstreetmap.org"))).toBe(true));
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  pickOption(within(dialog).getByRole("combobox", {name:"Tile source in light mode"}), "CARTO — Voyager");
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(tileSource().some(src => src.includes("basemaps.cartocdn.com/rastertiles/voyager"))).toBe(true));
+});
+
+test("admin map settings section saves tile and POI provider keys", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin?section=map"]}><App/></MemoryRouter>);
-  expect(await screen.findByRole("heading", {name:"Map tiles"})).toBeInTheDocument();
+  expect(await screen.findByRole("heading", {name:"Map settings"})).toBeInTheDocument();
   await waitFor(() => expect(screen.getByLabelText("CARTO Basemaps API key")).toBeEnabled());
   fireEvent.change(screen.getByLabelText("CARTO Basemaps API key"), {target:{value:"carto-test-key"}});
-  await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({mapTileProviders:{carto:{apiKey:"carto-test-key"}}})));
+  fireEvent.change(screen.getByLabelText("Overpass endpoint"), {target:{value:"https://overpass.example.com/api/interpreter"}});
+  fireEvent.change(screen.getByLabelText("Geoapify API key"), {target:{value:"geoapify-test-key"}});
+  fireEvent.change(screen.getByLabelText("Mapbox token"), {target:{value:"mapbox-test-token"}});
+  await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({mapTileProviders:{carto:{apiKey:"carto-test-key"}},poiProviders:{overpass:{endpoint:"https://overpass.example.com/api/interpreter"},geoapify:{apiKey:"geoapify-test-key"},mapbox:{token:"mapbox-test-token"}}})));
 });
 
 test("user settings lists the full direct-play formats the browser supports", async () => {
@@ -407,7 +457,7 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await within(dialog).findByRole("option", {name:/VP9 \+ Opus → WebM/}));
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
 
   fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
   fireEvent.blur(within(dialog).getByLabelText("Email address"));
@@ -431,16 +481,17 @@ test("user settings modal changes zoom grade numerically", async () => {
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  expect(within(dialog).getByRole("combobox", {name:"Zoom"})).toHaveValue("100");
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Zoom"}), {target:{value:"120"}});
+  const zoom = within(dialog).getByRole("combobox", {name:"Zoom"});
+  expect(zoom).toHaveTextContent("100%");
+  pickOption(zoom, "120%");
   expect(document.documentElement.style.fontSize).toBe("120%");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Zoom"}), {target:{value:"80"}});
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  pickOption(within(dialog).getByRole("combobox", {name:"Zoom"}), "80%");
   expect(document.documentElement.style.fontSize).toBe("80%");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
 });
 
 test("user settings saves a configured date format", async () => {
@@ -450,9 +501,9 @@ test("user settings saves a configured date format", async () => {
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"dmy"}});
+  pickOption(within(dialog).getByRole("combobox", {name:"Date format"}), "16.08.2026 14:30");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
 });
 
 test("user settings saves the date format with seconds", async () => {
@@ -462,10 +513,12 @@ test("user settings saves the date format with seconds", async () => {
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  expect(within(dialog).getByRole("option", {name:"16.08.2026 14:30:15"})).toBeInTheDocument();
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"dmy-ss"}});
+  const dateFormat = within(dialog).getByRole("combobox", {name:"Date format"});
+  fireEvent.click(dateFormat);
+  expect(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"})).toBeInTheDocument();
+  fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
 });
 
 test("user settings saves the american date format with seconds", async () => {
@@ -475,10 +528,47 @@ test("user settings saves the american date format with seconds", async () => {
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
-  expect(within(dialog).getByRole("option", {name:"08/16/2026 2:30:15 PM"})).toBeInTheDocument();
-  fireEvent.change(within(dialog).getByRole("combobox", {name:"Date format"}), {target:{value:"mdy-ss"}});
+  const dateFormat = within(dialog).getByRole("combobox", {name:"Date format"});
+  fireEvent.click(dateFormat);
+  expect(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"})).toBeInTheDocument();
+  fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+});
+
+test("portal selection lists stack above the modal backdrop", () => {
+  // Regression: Combobox/BarSelect options are portaled into document.body. If
+  // their z-index drops below the modal backdrop's, the list renders behind the
+  // overlay and no option can be picked inside any modal dialog.
+  const backdrop = cssZIndex(".modal-backdrop");
+  const selectList = cssZIndex(".select-listbox");
+  const barList = cssZIndex(".bar-listbox.portal-fixed");
+  expect(backdrop).toBeGreaterThan(0);
+  expect(barList).toBeGreaterThan(backdrop);
+  // Non-portal listboxes live inside the modal card, so they only need to top
+  // the card content, not the backdrop itself.
+  expect(selectList).toBeGreaterThan(0);
+  expect(selectList).toBeLessThan(backdrop);
+});
+
+test("combobox listbox stays interactive above an open modal", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  // Open a combobox inside the modal: the options must be portaled to
+  // document.body (not clipped by the modal card) and receive the click.
+  fireEvent.click(within(dialog).getByRole("combobox", {name:"Theme"}));
+  const listbox = screen.getByRole("listbox");
+  expect(listbox.className).toContain("portal-fixed");
+  expect(listbox.parentElement).toBe(document.body);
+  fireEvent.click(within(listbox).getByRole("option", {name:"Dark"}));
+  // Draft is staged in the combobox immediately; the live theme follows Save.
+  expect(within(dialog).getByRole("combobox", {name:"Theme"})).toHaveTextContent("Dark");
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
 function pagedEntries(many:ReturnType<typeof makeMany>) {
@@ -554,7 +644,7 @@ test("user settings saves the media loading batch size", async () => {
   fireEvent.change(batchInput, {target:{value:"25"}});
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
 });
 
 test("login forgot password flow requests a reset link", async () => {
@@ -930,7 +1020,7 @@ test("favorite view skips expanded media fetch until timeline mode opens", async
   render(<MemoryRouter initialEntries={["/favorites/30"]}><App/></MemoryRouter>);
   expect(await screen.findByText("one.jpg")).toBeInTheDocument();
   expect(mockApi.favoriteViewMediaFull).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", {name:"Display mode"}));
+  fireEvent.click(screen.getByRole("combobox", {name:"Display mode"}));
   fireEvent.click(await screen.findByRole("option", {name:"Timeline"}));
   await waitFor(() => expect(mockApi.favoriteViewMediaFull).toHaveBeenCalledWith(30, true));
   await waitFor(() => expect(document.body.querySelector(".timeline-group-date")).toHaveTextContent("2024"));
@@ -972,6 +1062,108 @@ test("favorite add dialog can create a new favorite view first", async () => {
   fireEvent.click(screen.getByRole("button", {name:"Create and add"}));
   await waitFor(() => expect(mockApi.createFavoriteView).toHaveBeenCalledWith("New one"));
   await waitFor(() => expect(mockApi.favoriteMedia).toHaveBeenCalledWith(44, 100));
+});
+
+test("trajectory start and end markers can be toggled from the media card", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.entries.mockResolvedValue([
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ]);
+  mockApi.setTrajectoryStart.mockImplementation(async (_id:number, _folderId:number, start:boolean) => ({folderId:20, mediaId:100, start, trajectoryStart:start}));
+  mockApi.setTrajectoryEnd.mockImplementation(async (_id:number, _folderId:number, end:boolean) => ({folderId:20, mediaId:100, end, trajectoryEnd:end}));
+  mockApi.setTrajectoryName.mockResolvedValue({folderId:20, mediaId:100, name:"Test"});
+  mockApi.setTrajectoryStart.mockClear();
+  mockApi.setTrajectoryEnd.mockClear();
+  mockApi.setTrajectoryName.mockClear();
+  // Re-apply implementations after clear (clear removes implementation, so re-set)
+  mockApi.setTrajectoryStart.mockImplementation(async (_id:number, _folderId:number, start:boolean) => ({folderId:20, mediaId:100, start, trajectoryStart:start}));
+  mockApi.setTrajectoryEnd.mockImplementation(async (_id:number, _folderId:number, end:boolean) => ({folderId:20, mediaId:100, end, trajectoryEnd:end}));
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+
+  fireEvent.click(await screen.findByRole("button", {name:"Set trajectory start"}));
+  const dialog = await screen.findByRole("dialog", {name:/Name trajectory/});
+  fireEvent.change(within(dialog).getByLabelText("Trajectory name"), {target:{value:"Test"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(mockApi.setTrajectoryStart).toHaveBeenCalledWith(100, 20, true));
+  await waitFor(() => expect(mockApi.setTrajectoryName).toHaveBeenCalledWith(100, 20, "Test"));
+  await waitFor(() => expect(screen.queryByRole("dialog", {name:/Name trajectory/})).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("button", {name:"Unset trajectory start"})).toHaveAttribute("aria-pressed", "true"));
+  fireEvent.click(screen.getByRole("button", {name:"Unset trajectory start"}));
+  const confirmStart = await screen.findByRole("dialog", {name:/Remove trajectory start/});
+  fireEvent.click(within(confirmStart).getByRole("button", {name:"Remove"}));
+  await waitFor(() => expect(mockApi.setTrajectoryStart).toHaveBeenCalledWith(100, 20, false));
+
+  fireEvent.click(screen.getByRole("button", {name:"Set trajectory end"}));
+  await waitFor(() => expect(mockApi.setTrajectoryEnd).toHaveBeenCalledWith(100, 20, true));
+  await waitFor(() => expect(screen.getByRole("button", {name:"Unset trajectory end"})).toHaveAttribute("aria-pressed", "true"));
+  fireEvent.click(screen.getByRole("button", {name:"Unset trajectory end"}));
+  const confirmEnd = await screen.findByRole("dialog", {name:/Remove trajectory end/});
+  fireEvent.click(within(confirmEnd).getByRole("button", {name:"Remove"}));
+  await waitFor(() => expect(mockApi.setTrajectoryEnd).toHaveBeenCalledWith(100, 20, false));
+});
+
+test("trajectory name can be set from the media card", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.entries.mockResolvedValue([
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", trajectoryStart:false, trajectoryName:""}}
+  ]);
+  mockApi.setTrajectoryStart.mockResolvedValue({folderId:20, mediaId:100, start:true, trajectoryStart:true});
+  mockApi.setTrajectoryName.mockResolvedValue({folderId:20, mediaId:100, name:"Morning loop"});
+  mockApi.setTrajectoryName.mockClear();
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+
+  fireEvent.click(await screen.findByRole("button", {name:"Set trajectory start"}));
+  const dialog = await screen.findByRole("dialog", {name:/Name trajectory/});
+  const input = within(dialog).getByLabelText("Trajectory name");
+  fireEvent.change(input, {target:{value:"Morning loop"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(mockApi.setTrajectoryStart).toHaveBeenCalledWith(100, 20, true));
+  await waitFor(() => expect(mockApi.setTrajectoryName).toHaveBeenCalledWith(100, 20, "Morning loop"));
+  await waitFor(() => expect(screen.queryByRole("dialog", {name:/Name trajectory/})).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("button", {name:"Unset trajectory start"})).toBeInTheDocument());
+});
+
+test("trajectory start popup names the segment and saves it", async () => {
+  const onSetName = vi.fn(async () => {});
+  const item = {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image" as const, mimeType:"image/jpeg", size:1, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:00:00Z", trajectoryStart:true, trajectoryName:""};
+  const {unmount} = render(<TrajectoryPopup item={item} onSetStart={vi.fn(async () => {})} onSetEnd={vi.fn(async () => {})} onSetName={onSetName}/>);
+  const input = screen.getByLabelText("Trajectory name");
+  fireEvent.change(input, {target:{value:"  Morning loop  "}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(onSetName).toHaveBeenCalledWith(expect.objectContaining({id:100, folderId:20}), "Morning loop"));
+  onSetName.mockClear();
+  fireEvent.change(input, {target:{value:"Evening walk"}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(onSetName).toHaveBeenCalledWith(expect.objectContaining({id:100, folderId:20}), "Evening walk"));
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  unmount();
+});
+
+test("trajectory name dialog trims and saves via big dialog", async () => {
+  const onSave = vi.fn(async () => {});
+  const onClose = vi.fn();
+  const item = {id:100, folderId:20, name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:1, metadata:{}, gps:"", takenAt:"", trajectoryName:"old"} as any;
+  const {unmount} = render(<TrajectoryNameDialog item={item} onClose={onClose} onSave={onSave}/>);
+  const input = screen.getByLabelText("Trajectory name") as HTMLInputElement;
+  expect(input.value).toBe("old");
+  fireEvent.change(input, {target:{value:"  New loop  "}});
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(onSave).toHaveBeenCalledWith("New loop"));
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  expect(onClose).toHaveBeenCalled();
+  unmount();
+});
+
+test("trajectory name dialog can be cancelled without saving", async () => {
+  const onSave = vi.fn(async () => {});
+  const onClose = vi.fn();
+  const item = {id:100, folderId:20, name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:1, metadata:{}, gps:"", takenAt:"", trajectoryName:""} as any;
+  const {unmount} = render(<TrajectoryNameDialog item={item} onClose={onClose} onSave={onSave}/>);
+  fireEvent.change(screen.getByLabelText("Trajectory name"), {target:{value:"temp"}});
+  fireEvent.click(screen.getByRole("button", {name:"Close"}));
+  expect(onClose).toHaveBeenCalled();
+  expect(onSave).not.toHaveBeenCalled();
+  unmount();
 });
 
 test("selected media items can be downloaded as a zip archive", async () => {
@@ -1017,7 +1209,7 @@ test("folder timeline loads media for that folder and links back to it", async (
   await waitFor(() => expect(mockApi.folderMedia).toHaveBeenCalledWith(1, 20));
   expect(await screen.findByText("two.jpg")).toBeInTheDocument();
   expect(await screen.findByText("one.jpg")).toBeInTheDocument();
-  const viewButton = screen.getAllByRole("button", {name:/^Timeline/})[0];
+  const viewButton = screen.getAllByRole("combobox", {name:/^Timeline/})[0];
   fireEvent.click(viewButton);
   const foldersOption = await screen.findByRole("option", {name:"Folders"});
   expect(foldersOption).toHaveAttribute("aria-selected", "false");
@@ -1146,7 +1338,7 @@ test("library timeline groups media by date along a vertical ruler", async () =>
       expect.stringContaining("2020")
     ]);
   }
-  fireEvent.click(screen.getByRole("button", {name:/^All$/}));
+  fireEvent.click(screen.getByRole("combobox", {name:/^All$/}));
   fireEvent.click(await screen.findByRole("option", {name:"Images"}));
   expect(screen.queryByText("two.mp4")).not.toBeInTheDocument();
   fireEvent.click(screen.getByText("one.jpg"));
@@ -1251,6 +1443,31 @@ test("media info shows and parses the date format with seconds", async () => {
   await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:pasted.toISOString()}));
 });
 
+test("the date picker opens a themed calendar right-aligned to the pick button and writes the new date back into the text input", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.userSettings.mockResolvedValue({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", language:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"osm", mapTileProviderDark:"osm", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2024-03-15T09:30:00Z"}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  const pickButton = screen.getByRole("button", {name:"Pick date and time"});
+  // Calendar icon button should be the rightmost cell of the row.
+  const editor = pickButton.closest(".media-date-editor")!;
+  expect(editor.children[editor.children.length - 1]).toBe(pickButton);
+  fireEvent.click(pickButton);
+  const dialog = await screen.findByRole("dialog", {name:"Pick date"});
+  expect(dialog).toHaveClass("media-date-calendar");
+  expect(dialog.style.top).not.toBe("");
+  expect(dialog.style.right).not.toBe("");
+  // Pick the 22nd day of the displayed month — keeps the existing time-of-day.
+  const day22 = within(dialog).getByRole("button", {name:"22"});
+  fireEvent.click(day22);
+  expect(screen.queryByRole("dialog", {name:"Pick date"})).not.toBeInTheDocument();
+  const dateInput = screen.getByLabelText("Date") as HTMLInputElement;
+  expect(dateInput.value).toMatch(/^22\.03\.2024 /);
+});
+
 test("clearing gps in the info panel sends an empty string so the backend can NULL it", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[
@@ -1266,20 +1483,28 @@ test("clearing gps in the info panel sends an empty string so the backend can NU
   await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:""}));
 });
 
-test("media info shows full stored metadata as JSON under root nodes", async () => {
+test("media info groups metadata into one subtab per source (exif, ffprobe)", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
   mockApi.folderEntries.mockResolvedValue({entries:[{id:100, name:"DSC_5743.jpg", relativePath:"DSC_5743.jpg", type:"media", media:{id:100, folderId:20, relativePath:"DSC_5743.jpg", name:"DSC_5743.jpg", kind:"image", mimeType:"image/jpeg", size:10, gps:"", takenAt:"2010-08-23T17:54:08Z", metadata:{exif:{Make:"NIKON CORPORATION", Model:"NIKON D50", DateTimeOriginal:"2010:08:23 17:54:08", FNumber:3.5, ExposureTime:0.03333333333, ISO:"0 1600", FocalLength:18, HistoryParams:"darktable-noise", BlueTRC:"(Binary data)", FileModifyDate:"2026:07:29 06:12:16+00:00", MIMEType:"image/jpeg"}, ffprobe:{streams:[{codec_type:"video", codec_name:"mjpeg"}]}}}}], chain: []});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Show info panel"));
-  expect(await screen.findByText("Metadata")).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("tab", {name:"Metadata"}));
+  const subtabs = screen.getAllByRole("tab", {hidden:false}).filter(tab => tab.id?.startsWith("metadata-tab-"));
+  expect(subtabs).toHaveLength(2);
+  expect(subtabs.map(tab => tab.textContent).sort()).toEqual(["exif","ffprobe"]);
+  // exif is the alphabetically first source and starts active.
   expect(screen.getByRole("heading", {name:"exif"})).toBeInTheDocument();
-  expect(screen.getByRole("heading", {name:"ffprobe"})).toBeInTheDocument();
   expect(screen.getByText(/"Make": "NIKON CORPORATION"/)).toBeInTheDocument();
   expect(screen.getByText(/"HistoryParams": "darktable-noise"/)).toBeInTheDocument();
   expect(screen.getByText(new RegExp('"BlueTRC": "\\(Binary data\\)"'))).toBeInTheDocument();
   expect(screen.getByText(new RegExp('"FileModifyDate": "2026:07:29 06:12:16\\+00:00"'))).toBeInTheDocument();
   expect(screen.getByText(new RegExp('"MIMEType": "image/jpeg"'))).toBeInTheDocument();
+  // ffprobe content should not be visible until the user switches to it.
+  expect(screen.queryByText(/"codec_name": "mjpeg"/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", {name:"ffprobe"}));
+  expect(screen.getByRole("heading", {name:"ffprobe"})).toBeInTheDocument();
   expect(screen.getByText(/"codec_name": "mjpeg"/)).toBeInTheDocument();
+  expect(screen.queryByText(/"Make"/)).not.toBeInTheDocument();
 });
 
 test("media viewer uses side arrows and keyboard shortcuts for previous and next", async () => {
@@ -1305,7 +1530,7 @@ test("media viewer uses side arrows and keyboard shortcuts for previous and next
   expect(image).toHaveClass("zoomed-image");
   fireEvent.click(screen.getByRole("button", {name:"Reset zoom"}));
   expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("100%");
-  expect(image).toHaveStyle({transform:"translate(0px, 0px) scale(1)"});
+  expect(image).toHaveStyle({transform:"translate(0px, 0px) rotate(0deg) scale(1)"});
   fireEvent.click(screen.getByRole("button", {name:"Next media"}));
   expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("100%");
@@ -1313,6 +1538,20 @@ test("media viewer uses side arrows and keyboard shortcuts for previous and next
   expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
   fireEvent.keyDown(document.body, {key:"ArrowRight"});
   expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
+});
+
+test("media viewer renders documents in an iframe without zoom controls", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"notes.txt", relativePath:"notes.txt", type:"media", media:{id:100, folderId:20, relativePath:"notes.txt", name:"notes.txt", kind:"document", mimeType:"text/plain", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: [{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const frame = await screen.findByTitle("notes.txt");
+  expect(frame).toHaveClass("viewer-document");
+  await waitFor(() => expect(mockApi.documentContent).toHaveBeenCalledWith(100));
+  expect(frame).not.toHaveAttribute("hidden");
+  expect(screen.queryByRole("button", {name:"Zoom in"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("img", {name:"notes.txt"})).not.toBeInTheDocument();
 });
 
 test("media viewer does not refetch items already present in folder entries", async () => {
@@ -1424,7 +1663,7 @@ test("browser map button scopes to the library or current folder", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.entries.mockResolvedValue([]);
   const first = render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
-  await waitFor(() => { fireEvent.click(screen.getAllByRole("button", {name:/^Folders/})[0]); });
+  await waitFor(() => { fireEvent.click(screen.getAllByRole("combobox", {name:/^Folders/})[0]); });
   fireEvent.click(await screen.findByRole("option", {name:"Map"}));
   const firstBar = await screen.findByLabelText("Breadcrumb");
   await waitFor(() => expect(firstBar).toHaveTextContent("Map of Family"));
@@ -1433,7 +1672,7 @@ test("browser map button scopes to the library or current folder", async () => {
     {id:20, parentId:-1, relativePath:"Photos", name:"Photos"}
   ]});
   render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
-  await waitFor(() => { fireEvent.click(screen.getAllByRole("button", {name:/^Folders/})[0]); });
+  await waitFor(() => { fireEvent.click(screen.getAllByRole("combobox", {name:/^Folders/})[0]); });
   fireEvent.click(await screen.findByRole("option", {name:"Map"}));
   const secondBar = await screen.findByLabelText("Breadcrumb");
   await waitFor(() => expect(secondBar).toHaveTextContent("Map of Family / Photos"));
@@ -1553,10 +1792,12 @@ test("media info remounts metadata when navigating between neighboring files", a
   ], chain: []});
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByLabelText("Show info panel"));
+  fireEvent.click(await screen.findByRole("tab", {name:"Metadata"}));
   expect(await screen.findByRole("heading", {name:"DSC06360.JPG"})).toBeInTheDocument();
   expect(screen.getByText(/"FileName": "DSC06360.JPG"/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Next media"}));
   expect(await screen.findByRole("heading", {name:"DSC06361.JPG"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", {name:"Metadata"}));
   expect(screen.queryByText(/"FileName": "DSC06360.JPG"/)).not.toBeInTheDocument();
   expect(screen.getByText(/"FileName": "DSC06361.JPG"/)).toBeInTheDocument();
 });
@@ -1710,8 +1951,11 @@ test("map panel item links carry the exact selection for the viewer range", asyn
   expect(links.length).toBe(2);
   const href = links[0].getAttribute("href") ?? "";
   expect(href).toContain("/library/1/view/20?");
-  expect(href).toContain("list=media-library-map-selection");
-  const stored = JSON.parse(sessionStorage.getItem("media-library-map-selection") ?? "[]") as Array<{id:number}>;
+  // The `list` param carries the exact ordered selection as comma-separated ids,
+  // and the full objects are cached in sessionStorage under that same key.
+  const listVal = new URL(href, "http://x").searchParams.get("list") ?? "";
+  expect(listVal.split(",").map(Number).sort()).toEqual([100, 101]);
+  const stored = JSON.parse(sessionStorage.getItem(listVal) ?? "[]") as Array<{id:number}>;
   expect(stored.map(entry => entry.id).sort()).toEqual([100, 101]);
 });
 
@@ -1785,6 +2029,142 @@ test("clicking a map cluster opens the same timeline panel instead of a popup", 
   expect(document.querySelectorAll(".map-timeline-panel .timeline-group-date").length).toBe(1);
   fireEvent.click(screen.getByRole("button", {name:"Clear"}));
   expect(screen.queryByRole("complementary", {name:"Selected area"})).not.toBeInTheDocument();
+});
+
+test("map selection panel sorts items by time within a date and is resizable", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T13:00:00Z"},
+    {id:101, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:00:00Z"}
+  ]);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  await screen.findByText("2");
+  await waitFor(() => {
+    const cluster = document.querySelector(".cluster-marker");
+    if (!cluster) throw new Error("cluster marker not rendered");
+    fireEvent.click(cluster);
+    expect(screen.getByRole("complementary", {name:"Selected area"})).toBeInTheDocument();
+  });
+  const panel = screen.getByRole("complementary", {name:"Selected area"});
+  const itemNames = () => Array.from(panel.querySelectorAll(".map-area-item")).map(node => node.textContent ?? "");
+  // Newest first (default): the later 13:00 item precedes the 12:00 item.
+  expect(itemNames()[0]).toContain("b.jpg");
+  expect(itemNames()[1]).toContain("a.jpg");
+  // Oldest first: chronological order flips within the same date.
+  fireEvent.click(screen.getByRole("button", {name:"Newest first"}));
+  expect(itemNames()[0]).toContain("a.jpg");
+  expect(itemNames()[1]).toContain("b.jpg");
+  // Dragging the left-edge resize handle changes the panel width.
+  const handle = panel.querySelector(".map-resize-handle") as HTMLElement;
+  await act(async () => {
+    handle.dispatchEvent(new MouseEvent("pointerdown", {clientX: 400, bubbles: true}));
+    window.dispatchEvent(new MouseEvent("pointermove", {clientX: 200, bubbles: true}));
+    window.dispatchEvent(new MouseEvent("pointerup", {bubbles: true}));
+  });
+  await waitFor(() => expect(panel.getAttribute("style")).toContain("width:"));
+});
+
+test("POI overlay uses a checkbox dropdown to pick categories and renders POIs near the screen centre", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.map.mockResolvedValue([]);
+  // Place one POI inside the focus area around the default GeoMap centre
+  // [20, 0] zoom 2 (cap is ~0.5°) and another far outside so the focus filter
+  // can show it keeps distant markers off-screen.
+  mockApi.poi.mockResolvedValue([
+    {id:"node/1", name:"Test Cafe", category:"food", lat:20.01, lon:0.01},
+    {id:"node/2", name:"Test Fuel", category:"fuel_parking", lat:20.02, lon:0.02},
+    {id:"node/far", name:"Far Away", category:"food", lat:55.5, lon:-25.0}
+  ]);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  await screen.findByRole("button", {name:"Select area"});
+  expect(document.querySelectorAll(".poi-icon").length).toBe(0);
+  fireEvent.click(screen.getByLabelText("POI"));
+  const trigger = await screen.findByRole("button", {name: /^Categories/});
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(trigger);
+  const panel = await screen.findByRole("dialog", {name:"POI categories"});
+  expect(panel).toHaveClass("poi-cat-panel");
+  expect(panel.style.top).not.toBe("");
+  expect(panel.style.right).not.toBe("");
+  expect(panel.querySelectorAll('input[type="checkbox"]').length).toBe(6);
+  // Select all categories so we get every food/fuel_parking marker back; the
+  // focus-area filter should still keep the 55.5/-25.0 marker off-screen.
+  fireEvent.click(panel.querySelector('.poi-cat-actions button')!);
+  expect(trigger).toHaveTextContent("all");
+  // Render two near-centre markers (Test Cafe at 20.01/0.01, Test Fuel at
+  // 20.02/0.02); the 55.5/-25.0 marker is excluded by the focus filter.
+  await waitFor(() => expect(document.querySelectorAll(".poi-icon").length).toBe(2), {timeout:3000});
+  // Dropping every category clears the markers.
+  fireEvent.click(panel.querySelectorAll('.poi-cat-actions button')[1]!);
+  expect(trigger).toHaveTextContent("none");
+  await waitFor(() => expect(document.querySelectorAll(".poi-icon").length).toBe(0), {timeout:3000});
+  // Toggling the master POI switch off hides the dropdown control too.
+  fireEvent.click(screen.getByLabelText("POI"));
+  await waitFor(() => expect(screen.queryByRole("button", {name: /^Categories/})).not.toBeInTheDocument());
+});
+
+test("POI popup loads Wikipedia/Wikidata photos for the active marker (stubbed helpers)", async () => {
+  // The full Leaflet popup click path can't be reproduced reliably in jsdom,
+  // so exercise the underlying helpers directly to verify the popup branches.
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.poi.mockResolvedValue([
+    {id:"node/7", name:"Famous Cafe", category:"attraction", lat:10.1, lon:20.1, wikipediaTitle:"Famous_Cafe", website:"https://example.com"}
+  ]);
+  const fetchStub = vi.fn(async (url:string) => {
+    if (url.startsWith("https://en.wikipedia.org")) {
+      return {ok:true, json: async () => ({thumbnail:{source:"https://example.com/thumb.jpg"}, extract:"A very famous cafe.", content_urls:{desktop:{page:"https://en.wikipedia.org/wiki/Famous_Cafe"}}})};
+    }
+    return {ok:false, json: async () => ({})};
+  });
+  vi.stubGlobal("fetch", fetchStub);
+  try {
+    const result = await (await import("./App")).wikipediaSummary("Famous_Cafe");
+    expect(result.thumbnail).toBe("https://example.com/thumb.jpg");
+    expect(result.url).toBe("https://en.wikipedia.org/wiki/Famous_Cafe");
+    expect(result.extract).toContain("A very famous cafe");
+    expect(fetchStub).toHaveBeenCalledWith("https://en.wikipedia.org/api/rest_v1/page/summary/Famous%20Cafe");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("folder-scoped map isolates a named trajectory and can show only the map", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:00:00Z", trajectoryStart:true, trajectoryName:"Morning loop"},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"40,50", takenAt:"2020-08-21T12:05:00Z"},
+    {id:102, libraryId:1, folderId:20, relativePath:"c.jpg", name:"c.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"60,70", takenAt:"2020-08-21T13:00:00Z", trajectoryStart:true}
+  ]);
+  render(<MemoryRouter initialEntries={["/map?library=1&folder=20"]}><App/></MemoryRouter>);
+  expect(screen.queryByRole("combobox", {name:"Filter by trajectory"})).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("checkbox", {name:"Trajectories"}));
+  const filter = await screen.findByRole("combobox", {name:"Filter by trajectory"});
+  fireEvent.click(filter);
+  const filterList = screen.getByRole("listbox", {name:"Filter by trajectory"});
+  expect(within(filterList).getByRole("option", {name:"All trajectories"})).toBeInTheDocument();
+  expect(within(filterList).getByRole("option", {name:"Morning loop"})).toBeInTheDocument();
+  await waitFor(() => expect(document.querySelectorAll(".media-point-marker").length).toBe(3));
+  // Travel-order numbers are hidden by default; they must be switched on.
+  expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(0);
+  fireEvent.click(await screen.findByRole("checkbox", {name:"Numbers"}));
+  // "All trajectories" shows every segment; numbers sit on the edges (steps),
+  // so (100,101) has one edge and the single-point (102) has none => 1 number.
+  await waitFor(() => expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(1));
+  fireEvent.click(screen.getByRole("option", {name:"Morning loop"}));
+  await waitFor(() => expect(document.querySelectorAll(".media-point-marker").length).toBe(2));
+  // Segment 0 spans (100,101) => a single edge => 1 number.
+  await waitFor(() => expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(1));
+  fireEvent.click(screen.getByRole("checkbox", {name:"Map only"}));
+  await waitFor(() => expect(document.querySelectorAll(".media-point-marker, .cluster-marker").length).toBe(0));
+  expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(1);
+  fireEvent.click(screen.getByRole("checkbox", {name:"Map only"}));
+  await waitFor(() => expect(document.querySelectorAll(".media-point-marker").length).toBe(2));
 });
 
 test("opening a media from a map cluster crosses only the clustered items", async () => {
@@ -1975,7 +2355,8 @@ test("video viewer exposes pause stop and replay transport controls", async () =
   expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Stop"}));
   expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"Replay"}));
+  // Stopped video: tapping the play pictogram acts as replay and resumes.
+  fireEvent.click(screen.getByRole("button", {name:"Play"}));
   expect(screen.getByRole("button", {name:"Pause"})).toBeInTheDocument();
 });
 
@@ -2055,6 +2436,38 @@ test("swipes navigate the viewer in both axes", async () => {
   fireEvent.touchStart(stage, {touches:[{clientX:150, clientY:150}]});
   fireEvent.touchEnd(stage, {changedTouches:[{clientX:170, clientY:150}]});
   expect(screen.getByLabelText("one.jpg")).toBeInTheDocument();
+});
+
+test("two-finger pinch zooms the image and never navigates", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("one.jpg");
+  const stage = document.querySelector(".viewer-media") as HTMLElement;
+  const resetZoom = screen.getByLabelText("Reset zoom");
+  // Two-finger start never counts as a swipe.
+  fireEvent.touchStart(stage, {touches:[{clientX:100, clientY:100}, {clientX:180, clientY:140}]});
+  // First move only records the pinch baseline; zoom stays at 100%.
+  fireEvent.touchMove(stage, {touches:[{clientX:100, clientY:100}, {clientX:180, clientY:140}]});
+  expect(resetZoom.textContent).toBe("100%");
+  // Doubling the finger spread doubles the zoom.
+  fireEvent.touchMove(stage, {touches:[{clientX:80, clientY:80}, {clientX:240, clientY:160}]});
+  expect(resetZoom.textContent).toBe("200%");
+  // Lifting one finger ends the pinch without falling through to prev/next.
+  fireEvent.touchMove(stage, {touches:[{clientX:80, clientY:80}]});
+  fireEvent.touchEnd(stage, {changedTouches:[{clientX:10, clientY:10}]});
+  expect(screen.getByLabelText("one.jpg")).toBeInTheDocument();
+  expect(screen.queryByLabelText("two.jpg")).not.toBeInTheDocument();
+  // Reset zoom restores 100%.
+  fireEvent.click(resetZoom);
+  expect(resetZoom.textContent).toBe("100%");
+  // A single finger still swipes between items once zoom is reset.
+  fireEvent.touchStart(stage, {touches:[{clientX:200, clientY:150}]});
+  fireEvent.touchEnd(stage, {changedTouches:[{clientX:100, clientY:150}]});
+  await waitFor(() => expect(screen.getByLabelText("two.jpg")).toBeInTheDocument());
 });
 
 test("double clicking the right half of the video seeks forward and the left half back ten seconds", async () => {
@@ -2301,7 +2714,7 @@ test("user settings modal persists the selected language on save", async () => {
   render(<MemoryRouter initialEntries={["/"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
-  fireEvent.change(await within(dialog).findByLabelText("Language"), {target:{value:"pt"}});
+  pickOption(within(dialog).getByRole("combobox", {name:"Language"}), "Português");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
   await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({language:"pt"})));
 });
@@ -2332,7 +2745,7 @@ test("transcoded viewer stop replay and jump controls drive the transport state"
   fireEvent.click(screen.getByLabelText("Full screen"));
   fireEvent.click(screen.getByRole("button", {name:"Stop"}));
   expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"Replay"}));
+  fireEvent.click(screen.getByRole("button", {name:"Play"}));
   expect(await screen.findByRole("button", {name:"Pause"})).toBeInTheDocument();
 });
 
@@ -2353,7 +2766,7 @@ test("map place search sorts geocode results and flies to the pick", async () =>
   await waitFor(() => expect(listbox).not.toBeInTheDocument());
 });
 
-test("clicking the map picks a point whose popup copies coordinates", async () => {
+test("clicking the map picks a point whose popup can set a new coordinate", async () => {
   const L = (await import("leaflet")).default;
   (L.Browser as Record<string, unknown>).svg = true;
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
@@ -2377,8 +2790,23 @@ test("clicking the map picks a point whose popup copies coordinates", async () =
   const markers = [...document.querySelectorAll(".leaflet-marker-icon")] as HTMLElement[];
   fireEvent.click(markers[markers.length - 1]);
   await waitFor(() => expect(document.querySelector(".picked-point-popup")).not.toBeNull(), {timeout:3000});
-  fireEvent.click(await screen.findByRole("button", {name:"Copy coordinates"}));
+  const popup = document.querySelector(".picked-point-popup") as HTMLElement;
+  fireEvent.click(within(popup).getByRole("button", {name:"Copy"}));
   await waitFor(() => expect(writeText).toHaveBeenCalled());
+  fireEvent.change(within(popup).getByLabelText("Picked GPS coordinates"), {target:{value:"60.1,30.2"}});
+  fireEvent.click(within(popup).getByRole("button", {name:"Set point"}));
+  await waitFor(() => expect(document.querySelector(".picked-point-popup")).not.toBeNull(), {timeout:3000});
+});
+
+test("map menu coordinate input drops a point marker at the entered lat/lng", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {value:() => ({left:0, top:0, width:800, height:600, x:0, y:0, right:800, bottom:600, toJSON:() => ({})}) as DOMRect});
+  render(<MemoryRouter initialEntries={["/map?library=1"]}><App/></MemoryRouter>);
+  await screen.findByRole("button", {name:"Select area"});
+  const input = screen.getByLabelText("Set point by coordinates");
+  fireEvent.change(input, {target:{value:"50.45,30.52"}});
+  fireEvent.click(screen.getByRole("button", {name:"Set point"}));
+  await waitFor(() => expect(document.querySelector(".picked-point-marker")).not.toBeNull(), {timeout:3000});
 });
 
 test("viewer keyboard navigation and info-panel editing persist details", async () => {
@@ -2531,7 +2959,7 @@ test("scheduled task dialog exposes every field for editing an existing task", a
   fireEvent.click(within(row).getByRole("button", {name:"Edit"}));
   const dialog = await screen.findByRole("dialog", {name:"Edit scheduled task"});
   fireEvent.change(within(dialog).getByLabelText("Name"), {target:{value:"Renamed task"}});
-  fireEvent.change(within(dialog).getByLabelText("Task type"), {target:{value:"vacuum"}});
+  pickOption(within(dialog).getByRole("combobox", {name:"Task type"}), "Vacuum database");
   fireEvent.change(within(dialog).getByLabelText("Cron expression"), {target:{value:"30 4 * * 1"}});
   fireEvent.click(within(dialog).getByLabelText("Enabled"));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save task"}));
@@ -2631,8 +3059,8 @@ test("user settings modal covers codec listbox thumbnail pickers and password ch
   }
 
   // Theme and zoom selects.
-  fireEvent.change(within(dialog).getByLabelText("Theme"), {target:{value:"system"}});
-  fireEvent.change(within(dialog).getByLabelText("Zoom"), {target:{value:"120"}});
+  pickOption(within(dialog).getByRole("combobox", {name:"Theme"}), "System — match device");
+  pickOption(within(dialog).getByRole("combobox", {name:"Zoom"}), "120%");
 
   // Change-password sub-dialog: failure then success.
   fireEvent.click(within(dialog).getByRole("button", {name:"Change password…"}));

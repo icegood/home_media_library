@@ -1,25 +1,13 @@
 # syntax=docker/dockerfile:1
+# The heavy web build (dependencies, lint, tests, dist) lives in the shared
+# deploy/Dockerfile.web-assets base image (built as media-library-web-assets:
+# VERSION by deploy/start.sh and referenced below). This file only wraps that
+# dist into an nginx image; source paths are adapted here, after reuse.
 ARG NODE_IMAGE=node:22-alpine
-FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
-ARG VERSION
-ARG VCS_REF
-ARG BUILD_DATE
-ENV APP_VERSION=$VERSION
-ENV VCS_REF=$VCS_REF
-ENV BUILD_DATE=$BUILD_DATE
-WORKDIR /src
+ARG WEB_ASSETS_IMAGE
 
-COPY package.json package-lock.json* ./
-# Keep npm's tarball cache in a BuildKit cache mount so `npm ci` reuses already
-# downloaded packages when the dependency set changes.
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci
+FROM ${WEB_ASSETS_IMAGE} AS build
 
-COPY . .
-RUN npm run lint && npm test && npm run build
-
-# Dev toolchain stage: same base image as `build`, so the Dev Containers
-# configuration (which builds this target) always matches the build version.
 FROM ${NODE_IMAGE} AS dev
 RUN apk add --no-cache git bash
 

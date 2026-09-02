@@ -61,6 +61,13 @@ type ServerSettings struct {
 	// URLs. The key is a public client-side key by nature (the browser sends
 	// it to the tile server), so it ships in the settings payloads.
 	MapTileProviders map[string]map[string]string `json:"mapTileProviders,omitempty"`
+
+	// POIProviders carries per-provider configuration options for the points
+	// of interest overlay on the media map. Fixed providers: overpass (no key,
+	// optional "endpoint" override), geoapify ({"apiKey":"..."}), mapbox
+	// ({"token":"..."}). Keys ship to the client so it may build provider URLs
+	// directly where the provider allows it.
+	POIProviders map[string]map[string]string `json:"poiProviders,omitempty"`
 }
 
 // SMTP returns the configured outbound mail settings.
@@ -120,11 +127,19 @@ type UserSettings struct {
 	// MapTileProviderLight/Dark pick the tile source shown on the media map,
 	// independently for light and dark themes. A source is either a bare
 	// provider ("osm", "esri") or a provider with a sub-provider style
-	// ("carto:voyager", "carto:light", "carto:dark"). "carto" is accepted and
-	// normalized to "carto:voyager". The provider list is fixed; per-provider
-	// options (like the carto API key) live in ServerSettings.MapTileProviders.
+	// ("carto:voyager", "carto:light", "carto:dark") or the satellite imagery
+	// style ("esri:satellite"). "carto" is accepted and normalized to
+	// "carto:voyager". The provider list is fixed; per-provider options (like
+	// the carto API key) live in ServerSettings.MapTileProviders.
 	MapTileProviderLight string `json:"mapTileProviderLight"`
 	MapTileProviderDark  string `json:"mapTileProviderDark"`
+
+	// POIProviderLight/Dark pick the points-of-interest source shown on the
+	// media map, independently for light and dark themes. A source is a bare
+	// provider id ("overpass", "geoapify", "mapbox"). Per-provider config
+	// (keys, custom endpoint) lives in ServerSettings.POIProviders.
+	POIProviderLight string `json:"poiProviderLight"`
+	POIProviderDark  string `json:"poiProviderDark"`
 }
 
 func DefaultUserSettings() UserSettings {
@@ -209,10 +224,11 @@ type FavoriteViewMembership struct {
 }
 
 // KindStats is the statistics shape used everywhere (library listings,
-// per-library endpoint, folder and favorite-view menus): image/video counts.
+// per-library endpoint, folder and favorite-view menus): image/video/document counts.
 type KindStats struct {
-	Images int `json:"images"`
-	Videos int `json:"videos"`
+	Images    int `json:"images"`
+	Videos    int `json:"videos"`
+	Documents int `json:"documents"`
 }
 
 type LibraryRoot struct {
@@ -233,37 +249,47 @@ type WatchedRoot struct {
 type Kind string
 
 const (
-	KindImage Kind = "image"
-	KindVideo Kind = "video"
+	KindImage   Kind = "image"
+	KindVideo   Kind = "video"
+	KindDocument Kind = "document"
 )
 
 func KindFromMIME(mimeType string) Kind {
 	if len(mimeType) >= len("video/") && mimeType[:len("video/")] == "video/" {
 		return KindVideo
 	}
+	if len(mimeType) >= len("text/") && mimeType[:len("text/")] == "text/" || mimeType == "application/pdf" {
+		return KindDocument
+	}
 	return KindImage
 }
 
 type Media struct {
-	ID             int            `json:"id"`
-	FolderID       int            `json:"folderId"`
-	Path           string         `json:"-"`
-	RelativePath   string         `json:"relativePath"`
-	Name           string         `json:"name"`
-	Kind           Kind           `json:"kind"`
-	MIMEType       string         `json:"mimeType"`
-	Size           int64          `json:"size"`
-	Metadata       map[string]any `json:"metadata"`
-	GPS            string         `json:"gps"`
-	TakenAt        string         `json:"takenAt"`
-	MetadataError  string         `json:"metadataError,omitempty"`
-	ThumbnailError string         `json:"thumbnailError,omitempty"`
-	Favorite       bool           `json:"favorite,omitempty"`
+	ID              int            `json:"id"`
+	FolderID        int            `json:"folderId"`
+	Path            string         `json:"-"`
+	RelativePath    string         `json:"relativePath"`
+	Name            string         `json:"name"`
+	Kind            Kind           `json:"kind"`
+	MIMEType        string         `json:"mimeType"`
+	Size            int64          `json:"size"`
+	Metadata        map[string]any `json:"metadata"`
+	GPS             string         `json:"gps"`
+	TakenAt         string         `json:"takenAt"`
+	MetadataError   string         `json:"metadataError,omitempty"`
+	ThumbnailError  string         `json:"thumbnailError,omitempty"`
+	Favorite        bool           `json:"favorite,omitempty"`
+	TrajectoryStart bool           `json:"trajectoryStart,omitempty"`
+	TrajectoryEnd   bool           `json:"trajectoryEnd,omitempty"`
+	TrajectoryName  string         `json:"trajectoryName,omitempty"`
 }
 
 type MapMedia struct {
 	Media
-	LibraryID int `json:"libraryId"`
+	LibraryID       int    `json:"libraryId"`
+	TrajectoryStart bool   `json:"trajectoryStart,omitempty"`
+	TrajectoryEnd   bool   `json:"trajectoryEnd,omitempty"`
+	TrajectoryName  string `json:"trajectoryName,omitempty"`
 }
 
 type MediaFolder struct {

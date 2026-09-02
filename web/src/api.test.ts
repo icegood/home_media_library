@@ -82,7 +82,7 @@ test("setup posts the initial admin credentials", async () => {
 test("settings PUT round-trips the payload", async () => {
   const fetchMock = vi.fn().mockResolvedValue(jsonResponse({zoom:110}));
   vi.stubGlobal("fetch", fetchMock);
-  await api.updateUserSettings({theme:"dark", language:"de", codec:"h264-aac-mp4", zoom:110, dateFormat:"iso", streamChunkSize:25, defaultThumbImage:"m", defaultThumbVideo:"m", defaultThumbFolder:"m", mapTileProviderLight:"osm", mapTileProviderDark:"carto"});
+  await api.updateUserSettings({theme:"dark", language:"de", codec:"h264-aac-mp4", zoom:110, dateFormat:"iso", streamChunkSize:25, defaultThumbImage:"m", defaultThumbVideo:"m", defaultThumbFolder:"m", mapTileProviderLight:"osm", mapTileProviderDark:"carto", poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{}}});
   expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/settings");
   expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({theme:"dark", zoom:110});
 });
