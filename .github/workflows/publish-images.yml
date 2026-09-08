@@ -67,12 +67,14 @@ jobs:
 
           api_image="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}-api"
           web_image="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}-web"
+          web_assets_image="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}-web-assets"
 
           {
             printf 'build_date=%s\n' "$build_date"
             printf 'platforms=%s\n' "$platforms"
             printf 'api_image=%s\n' "$api_image"
             printf 'web_image=%s\n' "$web_image"
+            printf 'web_assets_image=%s\n' "$web_assets_image"
             printf 'api_tags<<EOF\n'
             printf '%s:%s\n' "$api_image" "$version"
             if [ "$push_latest" != "false" ]; then
@@ -83,6 +85,12 @@ jobs:
             printf '%s:%s\n' "$web_image" "$version"
             if [ "$push_latest" != "false" ]; then
               printf '%s:latest\n' "$web_image"
+            fi
+            printf 'EOF\n'
+            printf 'web_assets_tags<<EOF\n'
+            printf '%s:%s\n' "$web_assets_image" "$version"
+            if [ "$push_latest" != "false" ]; then
+              printf '%s:latest\n' "$web_assets_image"
             fi
             printf 'EOF\n'
           } >> "$GITHUB_OUTPUT"
@@ -162,6 +170,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build and publish web-assets base image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          file: ${{ github.workspace }}/deploy/Dockerfile.web-assets
+          platforms: ${{ steps.meta.outputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.web_assets_tags }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+
       - name: Build and publish API image
         uses: docker/build-push-action@v6
         with:
@@ -187,6 +208,7 @@ jobs:
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.meta.outputs.build_date }}
             SOURCE_URL=https://github.com/${{ github.repository }}
+            WEB_ASSETS_IMAGE=${{ steps.meta.outputs.web_assets_image }}:${{ steps.version.outputs.version }}
 
       - name: Check release tag exists
         id: tagcheck

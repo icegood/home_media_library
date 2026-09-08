@@ -77,9 +77,10 @@ export const api = {
   updateLibrary: (id:ID, input:{name:string; roots:{path:string; watch?:boolean}[]}) =>
     call<Library>(`/admin/libraries/${id}`, {method:"PUT", body:JSON.stringify(input)}),
   deleteLibrary: (id:ID) => call<void>(`/admin/libraries/${id}`, {method:"DELETE"}),
-  scanLibrary: (id:ID) => call<JobStatus>(`/admin/libraries/${id}/scan`, {method:"POST"}),
-  createThumbnails: (id:ID, input:{recreateExisting?:boolean} = {}) =>
-    call<JobStatus>(`/admin/libraries/${id}/thumbnails`, {method:"POST", body:JSON.stringify(input)}),
+  scanLibrary: (id:ID, options:{rootId?:ID} = {}) =>
+    call<JobStatus>(`/admin/libraries/${id}/scan${options.rootId ? `?root=${options.rootId}` : ""}`, {method:"POST"}),
+  createThumbnails: (id:ID, input:{recreateExisting?:boolean; rootId?:ID} = {}) =>
+    call<JobStatus>(`/admin/libraries/${id}/thumbnails${input.rootId ? `?root=${input.rootId}` : ""}`, {method:"POST", body:JSON.stringify({recreateExisting:input.recreateExisting})}),
   cleanupOrphanThumbnails: () => call<JobStatus>("/admin/thumbnails/orphans", {method:"POST"}),
   vacuumDatabase: () => call<JobStatus>("/admin/db/vacuum", {method:"POST"}),
   users: () => call<User[]>("/admin/users"),
@@ -153,8 +154,8 @@ export const api = {
     call<{folderId:ID; mediaId:ID; name:string}>(`/media/${id}/trajectory-name`, {method:"PATCH", body:JSON.stringify({folderId, name})}),
   bulkUpdateMedia: (input:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string|null; takenAt?:string|null; shiftMinutes?:number|null}) =>
     call<{id:ID; takenAt?:string; gps?:string}[]>(`/media/bulk`, {method:"PATCH", body:JSON.stringify(input)}),
-  metadataRenew: (libraryId:ID, input:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean}) =>
-    call<JobStatus>(`/admin/libraries/${libraryId}/metadata/renew`, {method:"POST", body:JSON.stringify(input)}),
+  metadataRenew: (libraryId:ID, input:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean; rootId?:ID}) =>
+    call<JobStatus>(`/admin/libraries/${libraryId}/metadata/renew${input.rootId ? `?root=${input.rootId}` : ""}`, {method:"POST", body:JSON.stringify({recreateExisting:input.recreateExisting, updateGps:input.updateGps, updateTakenAt:input.updateTakenAt})}),
   settings: () => call<AdminSettings>("/admin/settings"),
   updateSettings: (settings:AdminSettings) =>
     call<AdminSettings>("/admin/settings", {method:"PUT", body:JSON.stringify(settings)}),

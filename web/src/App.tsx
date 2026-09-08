@@ -63,6 +63,11 @@ export function App() {
   // WebView at the self-hosted server (see useNativeServerGate).
   const serverGate = useNativeServerGate();
   useEffect(() => {
+    // On the bundled Capacitor origin the relative /api/v1/setup would resolve
+    // to https://localhost and fetch HTML, not JSON; the native server gate
+    // probes the real server by absolute URL instead, and the app only boots
+    // here once it is same-origin with the API.
+    if (isNativeApp() && isBundledOrigin()) return;
     api.setupStatus()
       .then(async status => {
         setSetupRequired(status.required);
@@ -535,6 +540,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   const [notice, setNotice] = useState("");
   const [deleting, setDeleting] = useState<Library|null>(null);
   const [refreshingThumbnails, setRefreshingThumbnails] = useState<{id:ID; name:string}|null>(null);
+  const [refreshingMetadata, setRefreshingMetadata] = useState<{id:ID; name:string}|null>(null);
   useEffect(() => { loadLibraries(); }, []);
   async function loadLibraries() {
     const items = await api.libraries();
@@ -582,14 +588,21 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     updateRoot(pickingRoot, path);
     closePicker();
   }
-  async function libraryAction(action:"refresh"|"thumbs", library:Library, options:{recreateExisting?:boolean} = {}) {
+  async function libraryAction(action:"refresh"|"thumbs"|"metadata", library:Library, options:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean} = {}) {
     setBusy(true); setError(""); setNotice("");
     try {
       if (action === "refresh") await api.scanLibrary(library.id);
       else if (action === "thumbs") await api.createThumbnails(library.id, {recreateExisting: !!options.recreateExisting});
+      else if (action === "metadata") await api.metadataRenew(library.id, {
+        recreateExisting: !!options.recreateExisting,
+        updateGps: !!options.updateGps,
+        updateTakenAt: !!options.updateTakenAt,
+      });
       setNotice(action === "refresh" ? "Scan started in background. Thumbnails will start after scan." :
-        options.recreateExisting ? "Thumbnail recreation started in background." : "Thumbnail creation for missing thumbnails started in background.");
+        action === "thumbs" ? (options.recreateExisting ? "Thumbnail recreation started in background." : "Thumbnail creation for missing thumbnails started in background.") :
+        "Metadata renewal started in background.");
       setRefreshingThumbnails(null);
+      setRefreshingMetadata(null);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -637,13 +650,14 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
           <button className="library-glyph" aria-label={`Open library ${library.name}`} onClick={() => navigate(`/library/${library.id}`)}><span className="folder">▰</span></button>
           <button type="button" className="library-name-button" onClick={() => navigate(`/library/${library.id}`)}>
             <strong>{library.name}</strong>
-            <small>{(library.roots ?? []).map(root => rootLabel(root.path)).join(", ") || "No roots"}{(library.roots ?? []).some(root => root.watch) ? " · Auto-refresh on" : ""}</small>
+            <small>{(library.roots ?? []).some(root => root.watch) ? "Auto-refresh on" : "Click to open"}</small>
           </button>
           <CardMenu ariaLabel={`Library menu ${library.name}`}>
             <InlineStatsLine load={() => api.libraryStats(library.id)}/>
             <button type="button" role="menuitem" disabled={busy} onClick={() => startEdit(library)}>Edit</button>
             <button type="button" role="menuitem" disabled={busy} onClick={() => libraryAction("refresh", library)}>Refresh content</button>
             <button type="button" role="menuitem" disabled={busy} onClick={() => setRefreshingThumbnails({id:library.id, name:library.name})}>Refresh thumbnails…</button>
+            <button type="button" role="menuitem" disabled={busy} onClick={() => setRefreshingMetadata({id:library.id, name:library.name})}>Refresh metadata…</button>
             <button type="button" role="menuitem" className="danger" disabled={busy} onClick={() => startDelete(library)}>Delete</button>
           </CardMenu>
         </div>)}
@@ -653,6 +667,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     {activeSection === "users" && <><LoginTimeoutField/><UserManagement/></>}
     {activeSection === "logs" && <><AdminSettings section="logs"/><LogViewer/></>} 
     {refreshingThumbnails && <ThumbnailRefreshModal title={refreshingThumbnails.name} busy={busy} error={error} onClose={() => setRefreshingThumbnails(null)} onRefresh={recreateExisting => libraryAction("thumbs", {id:refreshingThumbnails.id, name:refreshingThumbnails.name, roots:[]}, {recreateExisting})}/>}
+    {refreshingMetadata && <MetadataRefreshModal title={refreshingMetadata.name} busy={busy} error={error} onClose={() => setRefreshingMetadata(null)} onRefresh={(recreateExisting, updateGps, updateTakenAt) => libraryAction("metadata", {id:refreshingMetadata.id, name:refreshingMetadata.name, roots:[]}, {recreateExisting, updateGps, updateTakenAt})}/>}
     {deleting && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Delete library ${deleting.name}`}>
       <div className="card settings modal">
         <div className="panel-title"><h2>Delete library</h2><button type="button" className="secondary" onClick={() => setDeleting(null)}>Close</button></div>
@@ -668,22 +683,20 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     {(adding || editing) && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editing ? "Edit library details" : "Add library"} onClick={event => closeOnBackdropClick(event, closeModal)}>
       <form className="card settings modal" onSubmit={submit}>
         <div className="panel-title"><h2>{editing ? "Edit details" : "Add library"}</h2><button type="button" className="secondary" onClick={closeModal}>Close</button></div>
-        <label>Library name<input value={name} onChange={event => setName(event.target.value)} placeholder="Family photos" required/></label>
+        <div className="form-row">
+          <label>Library name<input value={name} onChange={event => setName(event.target.value)} placeholder="Family photos" required/></label>
+          <label className="check"><input type="checkbox" checked={scanNow} onChange={event => setScanNow(event.target.checked)}/> Scan after saving</label>
+        </div>
         <div className="root-list">{roots.map((root, index) =>
           <div className="root-row" key={index}>
             <label>Root path<input value={root.path} onChange={event => updateRoot(index, event.target.value)} placeholder="family/photos" required/></label>
+            <label className="check"><input type="checkbox" checked={root.watch} onChange={event => updateRootWatch(index, event.target.checked)}/> Watch for changes</label>
             <div className="root-row-actions">
               <button type="button" className="secondary" onClick={() => openPicker(index)}>Browse</button>
-              <label className="check"><input type="checkbox" checked={root.watch} onChange={event => updateRootWatch(index, event.target.checked)}/> Watch for changes</label>
+              <button type="button" className="secondary" disabled={roots.length <= 1} onClick={() => removeRoot(index)}>Remove</button>
             </div>
-            {roots.length > 1 && <button type="button" className="secondary" onClick={() => removeRoot(index)}>Remove</button>}
           </div>)}</div>
         <button type="button" className="secondary" onClick={addRoot}>Add root folder</button>
-        <label className="check"><input type="checkbox" checked={scanNow} onChange={event => setScanNow(event.target.checked)}/> Scan after saving</label>
-        {editing && <div className="action-row">
-          <button type="button" className="secondary" disabled={busy} onClick={() => libraryAction("refresh", editing)}>Refresh content</button>
-          <button type="button" className="secondary" disabled={busy} onClick={() => setRefreshingThumbnails({id:editing.id, name:editing.name})}>Refresh thumbnails…</button>
-        </div>}
         {editing && <LibraryAccessEditor library={editing}/>}
         {error && <p className="error">{error}</p>}
         <button disabled={busy}>{busy ? "Saving…" : editing ? "Save details" : "Create library"}</button>
@@ -1169,12 +1182,6 @@ function EmbyImportPanel({onImported}:{onImported:()=>Promise<void>}) {
   </form>;
 }
 
-function rootLabel(value = "") {
-  const cleaned = value.replace(/\/+$/, "");
-  if (!cleaned || cleaned === ".") return "root";
-  return cleaned.split("/").pop() ?? cleaned;
-}
-
 function DatabaseMaintenanceSection() {
   const loadLibraries = async () => {};
   return <div className="card settings">
@@ -1369,8 +1376,14 @@ function Login({onLogin}:{onLogin:(user:User)=>void}) {
   const [forgotBusy, setForgotBusy] = useState(false);
   async function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
-    try { onLogin(await api.login(String(data.get("login")), String(data.get("password")))); }
-    catch (e) { setError(loginErrorMessage(e)); }
+    const login = String(data.get("login"));
+    try {
+      console.log(`ML login: attempting login as ${login}`);
+      const user = await api.login(login, String(data.get("password")));
+      console.log(`ML login: success (${user.login}, id ${user.id})`);
+      onLogin(user);
+    }
+    catch (e) { console.error(`ML login: failed — ${loginErrorMessage(e)}`, e); setError(loginErrorMessage(e)); }
   }
   async function requestReset(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2801,7 +2814,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
   async function refreshFolder() {
     setRefreshing(true);
     try {
-      await api.scanLibrary(libraryId);
+      await api.scanLibrary(libraryId, {rootId:entry.id});
     } finally {
       setRefreshing(false);
     }
@@ -2809,7 +2822,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
   async function refreshFolderThumbnails(recreateExisting:boolean) {
     setRefreshing(true); setThumbnailError("");
     try {
-      await api.createThumbnails(libraryId, {recreateExisting});
+      await api.createThumbnails(libraryId, {recreateExisting, rootId:entry.id});
       setThumbnailOptionsOpen(false);
     } catch (cause) {
       setThumbnailError((cause as Error).message);
@@ -2820,7 +2833,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
   async function refreshMetadata(recreateExisting:boolean, updateGps:boolean, updateTakenAt:boolean) {
     setRefreshing(true); setMetadataError("");
     try {
-      await api.metadataRenew(libraryId, {recreateExisting, updateGps, updateTakenAt});
+      await api.metadataRenew(libraryId, {recreateExisting, updateGps, updateTakenAt, rootId:entry.id});
       setMetadataOptionsOpen(false);
     } catch (cause) {
       setMetadataError((cause as Error).message);
@@ -2981,6 +2994,11 @@ function TrajectoryControls({item}:{item:Media}) {
       return;
     }
     if (!value) {
+      if (kind === "end") {
+        setBusy(true);
+        api.setTrajectoryEnd(item.id, item.folderId, false).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(() => setBusy(false));
+        return;
+      }
       setConfirmUnset(kind);
       return;
     }
@@ -4915,12 +4933,11 @@ export function TrajectoryNameDialog({item,onClose,onSave}:{item:Media; onClose:
   }
   return <ModalBackdrop ariaLabel={`Name trajectory for ${item.name}`} onClick={event => closeOnBackdropClick(event as unknown as React.MouseEvent<HTMLDivElement>, onClose)}>
     <div className="card settings modal" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
-      <div className="panel-title"><h2>Name trajectory</h2><button type="button" className="secondary" disabled={busy} onClick={onClose}>Close</button></div>
-      <p className="muted"><strong>{item.name}</strong></p>
+      <div className="panel-title"><h2>New trajectory for {item.name}</h2><button type="button" className="secondary" disabled={busy} onClick={onClose}>Close</button></div>
       {error && <p className="error">{error}</p>}
       <form onSubmit={submit}>
-        <label>Trajectory name<input aria-label="Trajectory name" placeholder="Trajectory name" value={value} disabled={busy} onChange={event => { setValue(event.target.value); setSaved(false); }} autoFocus /></label>
-        <div className="action-row">
+        <div className="form-row">
+          <label>Trajectory name<input aria-label="Trajectory name" placeholder="Trajectory name" value={value} disabled={busy} onChange={event => { setValue(event.target.value); setSaved(false); }} autoFocus /></label>
           <button type="submit" disabled={busy}>Save</button>
         </div>
         {saved && <small className="success">Saved.</small>}
@@ -5084,13 +5101,29 @@ function normalizeServerUrl(raw:string):string|null {
 let nativeOverrideForTests:boolean|null = null;
 export function setNativePlatformForTests(value:boolean|null) { nativeOverrideForTests = value; }
 
+const isNativeApp = () => nativeOverrideForTests ?? Capacitor.isNativePlatform();
+
+// The Capacitor WebView boots from a bundled https://localhost (Android) or
+// capacitor://localhost (iOS) origin. Once it has navigated to the self-hosted
+// server the location is that server's own origin and this is false.
+function isBundledOrigin():boolean {
+  let origin = "";
+  try { origin = window.location.origin || `${window.location.protocol}//${window.location.hostname}`; } catch { /* no location */ }
+  return /^(https?:\/\/|capacitor:\/\/)localhost($|[:/])/.test(origin);
+}
+
 function useNativeServerGate():ReactNode|null {
-  const native = nativeOverrideForTests ?? Capacitor.isNativePlatform();
+  const native = isNativeApp();
   const [mode, setMode] = useState<"idle"|"form"|"connecting">("idle");
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  // The gate only belongs on the bundled Capacitor origin. Once the WebView has
+  // navigated to the self-hosted server, the page is same-origin with the API
+  // and the app must render directly — otherwise the gate would re-arm on that
+  // origin and loop reloading into the server-address form.
+  const bundledOrigin = isBundledOrigin();
   useEffect(() => {
-    if (!native) return;
+    if (!native || !bundledOrigin) return;
     const saved = localStorage.getItem(SERVER_URL_KEY) ?? "";
     if (!saved) {
       setMode("form");
@@ -5110,14 +5143,18 @@ function useNativeServerGate():ReactNode|null {
     }
     setMode("connecting");
     setError("");
+    console.log(`ML connect: probing ${base}/api/v1/setup`);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     try {
       const response = await fetch(`${base}/api/v1/setup`, {signal:controller.signal});
+      console.log(`ML connect: setup responded ${response.status}`);
       if (!response.ok) throw new Error(`server responded ${response.status}`);
       localStorage.setItem(SERVER_URL_KEY, base);
+      console.log(`ML connect: navigating to ${base}`);
       window.location.replace(base);
     } catch (cause) {
+      console.error(`ML connect: failed — ${(cause as Error).message}`, cause);
       setError(cause instanceof DOMException && cause.name === "AbortError"
         ? "No answer from the server (timeout)"
         : `Cannot reach server: ${(cause as Error).message}`);
@@ -5126,7 +5163,7 @@ function useNativeServerGate():ReactNode|null {
       window.clearTimeout(timeout);
     }
   }
-  if (!native || mode === "idle") return null;
+  if (!native || !bundledOrigin || mode === "idle") return null;
   if (mode === "connecting") {
     let host = url;
     try { host = new URL(url).host; } catch { /* keep raw */ }

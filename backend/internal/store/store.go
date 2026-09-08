@@ -76,7 +76,10 @@ type Store interface {
 	MediaInFolders(ctx context.Context, folderIDs []int) ([]domain.Media, error)
 	WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, error)
 	MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error)
+	MediaForSubtree(ctx context.Context, folderID int) ([]domain.Media, error)
 	FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error)
+	FoldersForSubtree(ctx context.Context, folderID int) ([]domain.MediaFolder, error)
+	RootPathForFolder(ctx context.Context, folderID int) string
 	ThumbnailCleanupRefsForLibrary(ctx context.Context, libraryID int) (domain.ThumbnailCleanupRefs, error)
 	UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error
 	SetMediaActionError(ctx context.Context, id int, action, message string) error

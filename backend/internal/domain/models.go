@@ -178,6 +178,7 @@ type BackgroundJob struct {
 	StartedAt   time.Time      `json:"startedAt"`
 	FinishedAt  *time.Time     `json:"finishedAt,omitempty"`
 	Options     map[string]any `json:"options,omitempty"`
+	ScopeFolderID int          `json:"scopeFolderId,omitempty"`
 }
 
 type ImportedUser struct {

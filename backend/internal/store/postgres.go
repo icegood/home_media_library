@@ -2049,6 +2049,34 @@ func (s *Postgres) MediaForFolder(ctx context.Context, userID, libraryID, folder
 	return out, rows.Err()
 }
 
+func (s *Postgres) MediaForSubtree(ctx context.Context, folderID int) ([]domain.Media, error) {
+	rel := relativePathExpr("m.path", "covers.root_path")
+	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
+		SELECT f.id, f.path FROM media_folders f WHERE f.id = $1
+		UNION ALL
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	ORDER BY relative_path`
+	rows, err := s.db.QueryContext(ctx, query, folderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Media{}
+	for rows.Next() {
+		var relativePath string
+		var favorite bool
+		item, err := scanMedia(rows, &relativePath, &favorite)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = relativePath
+		out = append(out, item)
+	}
+	_ = s.enrichMediaTrajectory(ctx, out)
+	return out, rows.Err()
+}
+
 func (s *Postgres) FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error) {
 	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
 		return nil, err
@@ -2059,6 +2087,29 @@ func (s *Postgres) FoldersForLibrary(ctx context.Context, libraryID int) ([]doma
 		UNION
 		SELECT f.id, COALESCE(f.parent_id, -1), f.path, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.id)
 		SELECT DISTINCT id, parent_id, path, `+rel+` AS relative_path FROM covers ORDER BY path`, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MediaFolder{}
+	for rows.Next() {
+		var folder domain.MediaFolder
+		if err := rows.Scan(&folder.ID, &folder.ParentID, &folder.Path, &folder.RelativePath); err != nil {
+			return nil, err
+		}
+		out = append(out, folder)
+	}
+	return out, rows.Err()
+}
+
+func (s *Postgres) FoldersForSubtree(ctx context.Context, folderID int) ([]domain.MediaFolder, error) {
+	rel := relativePathExpr("path", "root_path")
+	rows, err := s.db.QueryContext(ctx, `WITH RECURSIVE covers(id, parent_id, path, root_path) AS (
+		SELECT f.id, COALESCE(f.parent_id, -1), f.path, f.path FROM media_folders f WHERE f.id = $1
+		UNION ALL
+		SELECT f.id, COALESCE(f.parent_id, -1), f.path, covers.root_path
+		FROM media_folders f JOIN covers ON f.parent_id = covers.id)
+		SELECT DISTINCT id, parent_id, path, `+rel+` AS relative_path FROM covers ORDER BY path`, folderID)
 	if err != nil {
 		return nil, err
 	}
@@ -2706,6 +2757,10 @@ func (s *Postgres) jobsWhere(ctx context.Context, where string) ([]domain.Backgr
 // paths are canonical absolute paths built from the resolved root, so the
 // nearest root is simply the library root whose path is the longest prefix of
 // the folder's own path; no ancestor walk is needed.
+func (s *Postgres) RootPathForFolder(ctx context.Context, folderID int) string {
+	return s.rootPathForFolder(ctx, folderID)
+}
+
 func (s *Postgres) rootPathForFolder(ctx context.Context, folderID int) string {
 	query := `SELECT root.path
 		FROM library_roots lr

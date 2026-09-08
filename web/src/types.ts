@@ -57,7 +57,7 @@ export interface EmbyImportedUser { user:User; temporaryPassword?:string; existe
 export interface EmbyImportResult { users:EmbyImportedUser[]; libraries:Library[]; access:{libraryId:ID; userId:ID}[] }
 export interface JobStatus {
   id:string; category:"scan"|"thumbnail-create"|string; type?:string; libraryId:ID; libraryName:string; rootPath:string;
-  status:"running"|"paused"|"cancelling"|"cancelled"|"done"|"failed"|string; paused:boolean; cancelable:boolean;
+  scopeFolderId?:ID; status:"running"|"paused"|"cancelling"|"cancelled"|"done"|"failed"|string; paused:boolean; cancelable:boolean;
   currentPath:string; processed:number; total:number;
   error:string; startedAt:string; finishedAt?:string;
 }

@@ -367,6 +367,10 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .file-picker { width: min(860px, 100%); }
 .root-list { display: grid; gap: 14px; }
 .root-row { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: end; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
+.root-row-actions { display: flex; gap: 8px; align-items: center; }
+.form-row { display: flex; gap: 16px; align-items: end; }
+.form-row > label { flex: 1; }
+.form-row .check { flex: 0 0 auto; }
 .picker-path { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
 .picker-path span { overflow-wrap: anywhere; color: var(--crumbs-text); }
 .file-list { display: grid; gap: 8px; }

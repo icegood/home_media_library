@@ -962,12 +962,12 @@ test("library browser renders folder entries", async () => {
   expect(await screen.findByRole("button", {name:"Open folder Photos"})).toBeInTheDocument();
   fireEvent.click(await screen.findByLabelText("Folder menu Photos"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"Refresh items"}));
-  await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(1));
+  await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(1, {rootId:20}));
   fireEvent.click(await screen.findByLabelText("Folder menu Photos"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"Refresh thumbnails…"}));
   expect(await screen.findByRole("dialog", {name:"Refresh thumbnails Photos"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Missing only"}));
-  await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:false}));
+  await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:false, rootId:20}));
   fireEvent.click(screen.getByLabelText("Folder menu Photos"));
   await waitFor(() => expect(mockApi.folderStats).toHaveBeenCalledWith(1, 20));
   await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toBeInTheDocument());
@@ -1097,9 +1097,9 @@ test("trajectory start and end markers can be toggled from the media card", asyn
   await waitFor(() => expect(mockApi.setTrajectoryEnd).toHaveBeenCalledWith(100, 20, true));
   await waitFor(() => expect(screen.getByRole("button", {name:"Unset trajectory end"})).toHaveAttribute("aria-pressed", "true"));
   fireEvent.click(screen.getByRole("button", {name:"Unset trajectory end"}));
-  const confirmEnd = await screen.findByRole("dialog", {name:/Remove trajectory end/});
-  fireEvent.click(within(confirmEnd).getByRole("button", {name:"Remove"}));
   await waitFor(() => expect(mockApi.setTrajectoryEnd).toHaveBeenCalledWith(100, 20, false));
+  await waitFor(() => expect(screen.getByRole("button", {name:"Set trajectory end"})).toHaveAttribute("aria-pressed", "false"));
+  expect(screen.queryByRole("dialog", {name:/Remove trajectory end/})).not.toBeInTheDocument();
 });
 
 test("trajectory name can be set from the media card", async () => {
@@ -2263,7 +2263,7 @@ test("folder card menu opens metadata renewal with option checkboxes", async () 
   const dialog = await screen.findByRole("dialog", {name:"Refresh metadata Photos"});
   fireEvent.click(within(dialog).getByLabelText("Update GPS coordinates"));
   fireEvent.click(within(dialog).getByRole("button", {name:"Refresh"}));
-  await waitFor(() => expect(mockApi.metadataRenew).toHaveBeenCalledWith(1, {recreateExisting:false, updateGps:true, updateTakenAt:false}));
+  await waitFor(() => expect(mockApi.metadataRenew).toHaveBeenCalledWith(1, {recreateExisting:false, updateGps:true, updateTakenAt:false, rootId:20}));
 });
 
 test("bulk time shift validates input and applies the offset to selected items", async () => {
@@ -3130,7 +3130,7 @@ test("native server gate reconnects to the remembered server", async () => {
   localStorage.setItem("ml.server.url", "https://media.example.com");
   const replace = vi.fn();
   const originalLocation = window.location;
-  Object.defineProperty(window, "location", {value:{...originalLocation, replace}, configurable:true});
+  Object.defineProperty(window, "location", {value:{...originalLocation, origin: originalLocation.origin, replace}, configurable:true});
   // Hold the reachability probe open so the connecting screen stays visible.
   vi.stubGlobal("fetch", vi.fn(() => new Promise<void>(() => {})));
   setNativePlatformForTests(true);

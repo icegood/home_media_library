@@ -1,0 +1,144 @@
+# Builds a signed Android release APK and attaches it to the GitHub Release
+# for the version in the VERSION file. This follows the SAME release rule as
+# the web/docker images (see publish-images.yml): editing VERSION and pushing
+# it to `main` releases. Nothing runs before the commit — no pre-commit hooks,
+# no tag-push requirement; the tag/release is (re)created from the VERSION
+# change itself.
+#
+# The APK is produced by `sh deploy/start.sh android`, which reads KEYSTORE_*
+# from the environment — this workflow wires those values from repository
+# secrets, so no debug-key fallback is ever exercised.
+name: Release signed Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [VERSION]
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  android:
+    name: Build & sign APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n '1p' VERSION 2>/dev/null || printf '0.1.0')"
+          if [ -z "$version" ]; then
+            echo "ERROR: cannot read version from VERSION" >&2; exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_JKS_BASE64: ${{ secrets.ANDROID_KEYSTORE_JKS_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.ANDROID_KEYSTORE_KEY_ALIAS }}
+          # Optional: for PKCS12 stores (the common case, and the type of
+          # fmiw-release.jks) the private-key password == store password, so
+          # start.sh falls back to it when this secret is unset.
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_JKS_BASE64:?ANDROID_KEYSTORE_JKS_BASE64 secret is not set}"
+          : "${KEYSTORE_PASSWORD:?ANDROID_KEYSTORE_PASSWORD secret is not set}"
+          : "${KEYSTORE_KEY_ALIAS:?ANDROID_KEYSTORE_KEY_ALIAS secret is not set}"
+          # Stage the decoded JKS into build/keystore so `start.sh android`
+          # can mount its parent dir read-only into the gradle container as
+          # /keystrokes. build/ is gitignored, so the file never escapes
+          # the runner.
+          mkdir -p build/keystore
+          printf '%s' "$KEYSTORE_JKS_BASE64" | base64 -d > build/keystore/release.jks
+          chmod 600 build/keystore/release.jks
+          printf 'KEYSTORE_FILE=%s\n' "${GITHUB_WORKSPACE}/build/keystore/release.jks" >> "$GITHUB_ENV"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build signed release APK
+        env:
+          KEYSTORE_FILE: ${{ env.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.ANDROID_KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_KEY_PASSWORD }}
+          # Reuse the web-assets base image published by publish-images.yml
+          # (same VERSION push) instead of re-running npm ci / vite build.
+          # start.sh pulls it; if the publish job hasn't landed yet it falls
+          # back to a local build — either way the Dockerfile.android stages
+          # cannot go stale.
+          WEB_ASSETS_IMAGE: ghcr.io/${{ vars.IMAGE_NAMESPACE || format('{0}/home-media-library', github.repository_owner) }}-web-assets:${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh deploy/start.sh android
+
+      - name: Verify APK signature (META-INF/MANIFEST.MF + v2/v3 blocks)
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="build/android/app-release.apk"
+          if [ ! -f "$apk" ]; then
+            echo "ERROR: $apk not produced" >&2; exit 1
+          fi
+          # Locate apksigner (PATH on GH-hosted runners usually does not
+          # include Android build-tools; fall back to $ANDROID_HOME).
+          if command -v apksigner >/dev/null 2>&1; then
+            apksigner_bin="apksigner"
+          else
+            sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+            apksigner_bin="$(find "$sdk/build-tools" -maxdepth 2 -name apksigner -type f | sort -V | tail -1)"
+          fi
+          if [ -z "${apksigner_bin:-}" ] || [ ! -e "$apksigner_bin" ]; then
+            echo "ERROR: apksigner not found" >&2; exit 1
+          fi
+          # apksigner verify exits non-zero on a bad signature (e.g.
+          # missing META-INF/MANIFEST.MF or v2/v3 blocks). --verbose prints
+          # the certificate so we can see WHICH keystore signed it.
+          "$apksigner_bin" verify --verbose --print-certs "$apk"
+
+      - name: Attach APK to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          tag="v${version}"
+          apk="build/android/app-release.apk"
+          upload="media-library-${version}.apk"
+          cp "$apk" "$upload"
+          # publish-images.yml fires on the same VERSION push and also creates
+          # the v$version tag+release (but later, after its docker builds), so
+          # create it here when missing. A concurrent create from the other
+          # workflow is fine — `|| true` tolerates it, and --clobber replaces
+          # the previous asset when re-running for the same version so the
+          # latest signed APK always wins.
+          if ! gh release view "${tag}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "${tag}" --title "Media Library ${version}" \
+              --generate-notes --repo "${{ github.repository }}" 2>/dev/null || true
+          fi
+          gh release upload "${tag}" "$upload" --clobber \
+            --repo "${{ github.repository }}"
+
+      - name: Upload APK as workflow artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-library-${{ steps.version.outputs.version }}-signed
+          path: build/android/app-release.apk
+          if-no-files-found: error

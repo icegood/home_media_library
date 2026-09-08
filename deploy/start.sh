@@ -144,10 +144,16 @@ case "$mode" in
     ;;
 
   android)
-    ensure_env .env .env.default
-    set -a
-    . ./.env
-    set +a
+    # `deploy/.env` is OPTIONAL here. In CI the KeyStore credentials arrive
+    # as env vars (e.g. GitHub Actions secrets / `secrets.* → env`), so we
+    # must not call `ensure_env` and abort when the gitignored dotenv is
+    # absent. For local runs we still pick KEYSTORE_* up from .env when it
+    # is present.
+    if [ -f .env ]; then
+      set -a
+      . ./.env
+      set +a
+    fi
     if [ ! -f ../VERSION ]; then
       echo "VERSION is required for android." >&2
       exit 1
@@ -160,6 +166,11 @@ case "$mode" in
     fi
     BUILD_DATE="${BUILD_DATE:-unknown}"
     WEB_ASSETS_IMAGE="${WEB_ASSETS_IMAGE:-media-library-web-assets:${PROJECT_VERSION}}"
+    build_type="${ANDROID_BUILD_TYPE:-release}"
+    case "$build_type" in
+      release | debug) ;;
+      *) echo "ANDROID_BUILD_TYPE must be release or debug (got: $build_type)." >&2; exit 1 ;;
+    esac
     # The android builder user only needs a deterministic, non-root identity
     # inside the build container; it does NOT have to match the host user
     # (that's what MEDIA_UID / MEDIA_GID are for, used by the api service).
@@ -169,71 +180,112 @@ case "$mode" in
     media_uid="${MEDIA_UID_OVERRIDE:-$(id -u)}"
     media_gid="${MEDIA_GID_OVERRIDE:-$(id -g)}"
     apk_out="$(pwd)/../build/android"
+
     # --- Release signing ----------------------------------------------------
-    # There is NO debug-key fallback: the APK must carry the JKS listed by
-    # KEYSTORE_FILE. Without real credentials, build aborts before producing
-    # any APK, so a failed run cannot silently ship an unsigned or
-    # mis-signed artefact.
-    keystore_file="${KEYSTORE_FILE:-}"
-    keystore_password="${KEYSTORE_PASSWORD:-}"
-    keystore_alias="${KEYSTORE_KEY_ALIAS:-}"
-    keystore_key_password="${KEYSTORE_KEY_PASSWORD:-}"
-    missing=0
-    for kv in "KEYSTORE_FILE:$keystore_file" "KEYSTORE_PASSWORD:$keystore_password" "KEYSTORE_KEY_ALIAS:$keystore_alias" "KEYSTORE_KEY_PASSWORD:$keystore_key_password"; do
-      k="${kv%%:*}"
-      v="${kv#*:}"
-      if [ -z "$v" ] || printf '%s' "$v" | grep -q CHANGE_ME; then
-        echo "$k is missing or still has the CHANGE_ME placeholder in deploy/.env." >&2
-        missing=1
+    # For `release` there is NO debug-key fallback: the APK must carry the JKS
+    # listed by KEYSTORE_FILE. Without real credentials the build aborts before
+    # producing any APK, so a failed run cannot silently ship an unsigned or
+    # mis-signed artefact. `debug` builds skip all of this — AGP signs the
+    # app-debug.apk with its own debug keystore — which is what CI uses for
+    # pull-request verification.
+    keystore_dir=""
+    keystore_props=""
+    if [ "$build_type" = "release" ]; then
+      keystore_file="${KEYSTORE_FILE:-}"
+      keystore_password="${KEYSTORE_PASSWORD:-}"
+      keystore_alias="${KEYSTORE_KEY_ALIAS:-}"
+      # PKCS12 keystores always use the store password for the private key
+      # too, so KEYSTORE_KEY_PASSWORD only matters for classic .jks stores.
+      # When unset (or left at the placeholder), fall back to the store
+      # password instead of requiring a separate upload.
+      keystore_key_password="${KEYSTORE_KEY_PASSWORD:-}"
+      if [ -z "$keystore_key_password" ] || printf '%s' "$keystore_key_password" | grep -q CHANGE_ME; then
+        keystore_key_password="$keystore_password"
       fi
-    done
-    if [ "$missing" -ne 0 ]; then
-      echo "Edit deploy/.env and replace the four KEYSTORE_* placeholders." >&2
-      exit 1
-    fi
-    case "$keystore_file" in
-      /*) ;;
-      *) echo "KEYSTORE_FILE must be an absolute path (got: $keystore_file)." >&2; exit 1 ;;
-    esac
-    if [ ! -f "$keystore_file" ]; then
-      echo "KEYSTORE_FILE does not exist on the host: $keystore_file" >&2
-      exit 1
-    fi
-    keystore_dir="$(dirname "$keystore_file")"
-    keystore_name="$(basename "$keystore_file")"
-    # Render web/android/keystore.properties for the gradle build; gradle reads
-    # it from android/keystore.properties (rootProject.file).
-    repo_root="$(cd .. && pwd)"
-    keystore_props="${repo_root}/web/android/keystore.properties"
-    mkdir -p "$(dirname "$keystore_props")"
-    cat > "$keystore_props" <<EOF
+      missing=0
+      for kv in "KEYSTORE_FILE:$keystore_file" "KEYSTORE_PASSWORD:$keystore_password" "KEYSTORE_KEY_ALIAS:$keystore_alias"; do
+        k="${kv%%:*}"
+        v="${kv#*:}"
+        if [ -z "$v" ] || printf '%s' "$v" | grep -q CHANGE_ME; then
+          echo "$k is missing or still has the CHANGE_ME placeholder in deploy/.env." >&2
+          missing=1
+        fi
+      done
+      if [ "$missing" -ne 0 ]; then
+        echo "Edit deploy/.env and replace the KEYSTORE_* placeholders (only KEYSTORE_FILE, KEYSTORE_PASSWORD, KEYSTORE_KEY_ALIAS are required; KEYSTORE_KEY_PASSWORD is optional)." >&2
+        exit 1
+      fi
+      case "$keystore_file" in
+        /*) ;;
+        *) echo "KEYSTORE_FILE must be an absolute path (got: $keystore_file)." >&2; exit 1 ;;
+      esac
+      if [ ! -f "$keystore_file" ]; then
+        echo "KEYSTORE_FILE does not exist on the host: $keystore_file" >&2
+        exit 1
+      fi
+      keystore_dir="$(dirname "$keystore_file")"
+      keystore_name="$(basename "$keystore_file")"
+      # Render web/android/keystore.properties for the gradle build; gradle
+      # reads it from android/keystore.properties (rootProject.file).
+      repo_root="$(cd .. && pwd)"
+      keystore_props="${repo_root}/web/android/keystore.properties"
+      mkdir -p "$(dirname "$keystore_props")"
+      cat > "$keystore_props" <<EOF
 storeFile=/keystrokes/${keystore_name}
 storePassword=${keystore_password}
 keyAlias=${keystore_alias}
 keyPassword=${keystore_key_password}
 EOF
-    chmod 600 "$keystore_props"
+      chmod 600 "$keystore_props"
+    fi
+
     # ---- Build ------------------------------------------------------------
     mkdir -p "$apk_out"
-    echo "Building signed Android release APK (uid=${media_uid} gid=${media_gid})..."
+    echo "Building ${build_type} Android APK (uid=${media_uid} gid=${media_gid})..."
     # The web-assets base image is the shared build root also produced by
-    # `local-build`. Building it first (cheap when cached) lets the Android
-    # image reuse the npm ci / vite build layers instead of reinstalling all
-    # dependencies.
-    docker build \
-      --build-arg VERSION="$PROJECT_VERSION" \
-      --build-arg VCS_REF="$VCS_REF" \
-      --build-arg BUILD_DATE="$BUILD_DATE" \
-      -f Dockerfile.web-assets -t "$WEB_ASSETS_IMAGE" ../web
+    # `local-build` and pushed by publish-images.yml as a registry ref
+    # (ghcr.io/.../web-assets:VERSION). When CI passes that ref, reuse it by
+    # pulling instead of re-running npm ci / vite build; fall back to a local
+    # build only if the publish workflow has not landed yet (we race it on the
+    # same VERSION push). A bare name (media-library-web-assets:VERSION) is
+    # always built locally, cheap when the layers are cached.
+    case "$WEB_ASSETS_IMAGE" in
+      */*)
+        if docker pull "$WEB_ASSETS_IMAGE" >/dev/null 2>&1; then
+          echo "Reusing published web-assets base: $WEB_ASSETS_IMAGE"
+        else
+          echo "web-assets base not published yet; building locally..."
+          docker build \
+            --build-arg VERSION="$PROJECT_VERSION" \
+            --build-arg VCS_REF="$VCS_REF" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            -f Dockerfile.web-assets -t "$WEB_ASSETS_IMAGE" ../web
+        fi
+        ;;
+      *)
+        docker build \
+          --build-arg VERSION="$PROJECT_VERSION" \
+          --build-arg VCS_REF="$VCS_REF" \
+          --build-arg BUILD_DATE="$BUILD_DATE" \
+          -f Dockerfile.web-assets -t "$WEB_ASSETS_IMAGE" ../web
+        ;;
+    esac
     docker build \
       --build-arg MEDIA_UID="$media_uid" \
       --build-arg MEDIA_GID="$media_gid" \
       --build-arg WEB_ASSETS_IMAGE="$WEB_ASSETS_IMAGE" \
       -f Dockerfile.android -t media-library-android:local ..
+    run_mounts="-v $apk_out:/output"
+    if [ -n "$keystore_dir" ]; then
+      run_mounts="$run_mounts -v $keystore_dir:/keystrokes:ro"
+    fi
+    if [ -n "$keystore_props" ]; then
+      run_mounts="$run_mounts -v $keystore_props:/src/android/keystore.properties:ro"
+    fi
+    # shellcheck disable=SC2086
     docker run --rm \
-      -v "$keystore_dir:/keystrokes:ro" \
-      -v "$keystore_props:/src/android/keystore.properties:ro" \
-      -v "$apk_out:/output" \
+      -e ANDROID_BUILD_TYPE="$build_type" \
+      $run_mounts \
       media-library-android:local
     echo ""
     echo "APKs:"

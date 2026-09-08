@@ -1,0 +1,82 @@
+# Verify the Android APK package builds on every PR / push and hand back a
+# testable debug APK as an artifact. This uses `ANDROID_BUILD_TYPE=debug`
+# (AGP's own debug key) — the release keystore is NEVER needed here, so
+# pull requests from forks can still exercise the build without secrets.
+name: Android CI (debug APK)
+
+on:
+  pull_request:
+    # Any change to the web app (which gets bundled into the APK), the
+    # android project, or the build tooling can break the package.
+    paths:
+      - 'web/src/**'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - 'web/android/**'
+      - 'web/capacitor.config.ts'
+      - 'deploy/Dockerfile.web-assets'
+      - 'deploy/Dockerfile.android'
+      - 'deploy/android-entrypoint.sh'
+      - 'deploy/start.sh'
+      - '.github/workflows/android-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'web/src/**'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - 'web/android/**'
+      - 'web/capacitor.config.ts'
+      - 'deploy/Dockerfile.web-assets'
+      - 'deploy/Dockerfile.android'
+      - 'deploy/android-entrypoint.sh'
+      - 'deploy/start.sh'
+      - '.github/workflows/android-ci.yml'
+
+# Cancel superseded runs of this workflow for the same ref/PR.
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  debug-apk:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANDROID_BUILD_TYPE=debug sh deploy/start.sh android
+
+      - name: Verify debug APK is signed
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="build/android/app-debug.apk"
+          if [ ! -f "$apk" ]; then
+            echo "ERROR: $apk not produced" >&2; exit 1
+          fi
+          if command -v apksigner >/dev/null 2>&1; then
+            apksigner_bin="apksigner"
+          else
+            sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+            apksigner_bin="$(find "$sdk/build-tools" -maxdepth 2 -name apksigner -type f | sort -V | tail -1)"
+          fi
+          [ -n "${apksigner_bin:-}" ] || { echo "ERROR: apksigner not found" >&2; exit 1; }
+          "$apksigner_bin" verify --verbose --print-certs "$apk"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-library-debug
+          path: build/android/app-debug.apk
+          if-no-files-found: error
+          # Artifacts expire by default; keep test APKs for a week.
+          retention-days: 7

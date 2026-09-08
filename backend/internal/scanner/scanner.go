@@ -56,6 +56,25 @@ func (s Scanner) Scan(ctx context.Context, library domain.Library) (err error) {
 	return nil
 }
 
+// ScanFolder rescans only the subtree beneath folderID. Relative paths stay
+// library-relative, and pruning is limited to that subtree (so sibling folders
+// and their media are left untouched).
+func (s Scanner) ScanFolder(ctx context.Context, library domain.Library, folderID int) error {
+	folder, err := s.Store.Folder(ctx, folderID)
+	if err != nil {
+		return err
+	}
+	rootPath := s.Store.RootPathForFolder(ctx, folderID)
+	if rootPath == "" {
+		return fmt.Errorf("folder %d is not beneath any library root", folderID)
+	}
+	root, err := s.resolve(rootPath)
+	if err != nil {
+		return err
+	}
+	return s.walk(ctx, root, folder.Path, folder.ID)
+}
+
 func (s Scanner) WithProgress(progress func(path string, media bool) error) Scanner {
 	s.Progress = progress
 	return s
@@ -72,18 +91,24 @@ func (s Scanner) scanRoot(ctx context.Context, _ domain.Library, mapping domain.
 	if err != nil {
 		return err
 	}
-	rootID := rootFolder.ID
-	seenFolders := map[int]bool{rootID: true}
+	return s.walk(ctx, root, root, rootFolder.ID)
+}
+
+// walk walks the tree beneath start, upserting folders and queueing media
+// imports. root is the library root used as the relative-path base; startID is
+// the folder that bounds the walk and the pruning.
+func (s Scanner) walk(ctx context.Context, root, start string, startID int) error {
+	seenFolders := map[int]bool{startID: true}
 	seenMedia := map[int]bool{}
 	var seenMediaMu sync.Mutex
-	folderIDs := map[string]int{filepath.Clean(root): rootID}
+	folderIDs := map[string]int{filepath.Clean(start): startID}
 	type mediaTask struct {
 		filePath string
 		mimeType string
 		parentID int
 	}
 	tasks := []mediaTask{}
-	if err := filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
+	if err := filepath.WalkDir(start, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -160,7 +185,7 @@ func (s Scanner) scanRoot(ctx context.Context, _ domain.Library, mapping domain.
 			if err := s.WorkerPool.Wait(ctx, s.JobID); err != nil {
 				return err
 			}
-			return s.Store.PruneFolder(ctx, rootID, seenFolders, seenMedia)
+			return s.Store.PruneFolder(ctx, startID, seenFolders, seenMedia)
 		}
 		for _, task := range tasks {
 			if err := ctx.Err(); err != nil {
@@ -175,7 +200,7 @@ func (s Scanner) scanRoot(ctx context.Context, _ domain.Library, mapping domain.
 			seenMediaMu.Unlock()
 		}
 	}
-	return s.Store.PruneFolder(ctx, rootID, seenFolders, seenMedia)
+	return s.Store.PruneFolder(ctx, startID, seenFolders, seenMedia)
 }
 
 func (s Scanner) importMedia(ctx context.Context, root, filePath string, mimeType string, parentID int) (int, error) {
