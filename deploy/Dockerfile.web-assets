@@ -8,12 +8,6 @@
 # lint / test / vite-build layers are never repeated by the Android build.
 ARG NODE_IMAGE=node:22-alpine
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
-ARG VERSION
-ARG VCS_REF
-ARG BUILD_DATE
-ENV APP_VERSION=$VERSION
-ENV VCS_REF=$VCS_REF
-ENV BUILD_DATE=$BUILD_DATE
 WORKDIR /src
 
 COPY package.json package-lock.json* ./
@@ -21,6 +15,19 @@ COPY package.json package-lock.json* ./
 # downloaded packages when the dependency set changes.
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
+
+# Metadata args are declared AFTER the dependency install on purpose: ARG/ENV
+# values are part of every downstream layer's cache key, and VERSION/VCS_REF/
+# BUILD_DATE change on most commits — keeping them above `npm ci` made every
+# version bump invalidate the dependency layer too. The lint/test/build layer
+# still re-runs on metadata changes (the values are embedded in the bundle),
+# but the heavy install layer now survives them.
+ARG VERSION
+ARG VCS_REF
+ARG BUILD_DATE
+ENV APP_VERSION=$VERSION
+ENV VCS_REF=$VCS_REF
+ENV BUILD_DATE=$BUILD_DATE
 
 COPY . .
 RUN npm run lint && npm test && npm run build

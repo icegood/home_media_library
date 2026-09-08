@@ -281,6 +281,11 @@ func TestPostgresMediaForLibraryComputesRelativePaths(t *testing.T) {
 	}
 }
 
+func TestPostgresMediaForSubtreeScansFullRowsAndStaysWithinSubtree(t *testing.T) {
+	repository := openPostgres(t, true)
+	verifyMediaForSubtree(t, repository)
+}
+
 func TestPostgresImportedEmbySHA1PasswordAuthenticatesAndUpgradesToBcrypt(t *testing.T) {
 	repository := openPostgres(t, true)
 	result, err := repository.ImportSnapshot(context.Background(), domain.ImportSnapshot{Users: []domain.User{{

@@ -31,6 +31,11 @@ Do not assume the UI is visually correct just because the code changed or the bu
 
 ## Extra rule for this repository
 
+Incremental builds must always work regardless of what changed: the Dockerfiles
+invalidate correctly on source changes, so NEVER run `docker builder prune`,
+`docker system prune`, or remove cached images to "force" a rebuild. Only purge
+Docker caches when the user explicitly asks for it.
+
 If the user asks for browser verification and the visible page still looks old after a rebuild, treat it as a deployment issue until proven otherwise. Check:
 - whether the new bundle files were copied into the running web container;
 - whether the browser page was reloaded with a hard refresh;

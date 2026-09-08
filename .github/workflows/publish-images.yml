@@ -61,7 +61,14 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Deterministic metadata: derive from the commit, not the wall clock, so
+          # republishing the same commit+VERSION yields byte-identical images
+          # (BUILD_DATE is baked into the Go ldflags, the web bundle, and the OCI
+          # image config; a per-run timestamp made every publish non-reproducible
+          # and — because it sits in early ENV/ARG state — busted every cached
+          # layer below it).
+          build_date="$(git show -s --format=%cI "${GITHUB_SHA}" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+          source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}" 2>/dev/null || printf '0')"
           push_latest="${{ github.event.inputs.push_latest || 'true' }}"
           platforms="${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}"
 
@@ -71,6 +78,7 @@ jobs:
 
           {
             printf 'build_date=%s\n' "$build_date"
+            printf 'source_date_epoch=%s\n' "$source_date_epoch"
             printf 'platforms=%s\n' "$platforms"
             printf 'api_image=%s\n' "$api_image"
             printf 'web_image=%s\n' "$web_image"
@@ -126,7 +134,16 @@ jobs:
           EOF
 
           chmod +x "artifacts/media-library-${version}/start.sh"
-          tar -C artifacts -czf "media-library-deploy-${version}.tar.gz" "media-library-${version}"
+          # Reproducible archive: fixed mtime, sorted order, and stripped uid/gid
+          # and gzip header timestamp, so the same commit always yields a
+          # byte-identical tarball (plain `tar -czf` embedded per-file mtimes and
+          # the runner's current wall clock).
+          export SOURCE_DATE_EPOCH="${{ steps.meta.outputs.source_date_epoch }}"
+          fixed_mtime="$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%d\ %H:%M:%S 2>/dev/null || printf '1970-01-01 00:00:00')"
+          tar -C artifacts --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="$fixed_mtime" \
+            -cf - "media-library-${version}" \
+            | gzip -n > "media-library-deploy-${version}.tar.gz"
 
       - name: Check deployment artifact has no local data
         shell: bash
@@ -178,6 +195,8 @@ jobs:
           platforms: ${{ steps.meta.outputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.web_assets_tags }}
+          cache-from: type=gha,scope=web-assets
+          cache-to: type=gha,scope=web-assets,mode=max
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             VCS_REF=${{ github.sha }}
@@ -190,6 +209,8 @@ jobs:
           platforms: ${{ steps.meta.outputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.api_tags }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             VCS_REF=${{ github.sha }}
@@ -203,6 +224,8 @@ jobs:
           platforms: ${{ steps.meta.outputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.web_tags }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             VCS_REF=${{ github.sha }}

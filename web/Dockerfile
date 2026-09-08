@@ -4,7 +4,10 @@
 # VERSION by deploy/start.sh and referenced below). This file only wraps that
 # dist into an nginx image; source paths are adapted here, after reuse.
 ARG NODE_IMAGE=node:22-alpine
-ARG WEB_ASSETS_IMAGE
+# Shared build root produced by deploy/start.sh (local-build/android) or pushed
+# by publish-images.yml. The default keeps plain `docker build` from emitting
+# InvalidDefaultArgInForm (FROM with an empty arg is not a valid build).
+ARG WEB_ASSETS_IMAGE=media-library-web-assets:local
 
 FROM ${WEB_ASSETS_IMAGE} AS build
 

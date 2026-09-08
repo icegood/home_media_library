@@ -70,6 +70,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Gradle runs inside a throwaway container; persist its caches via
+      # actions/cache and hand them to deploy/start.sh (see android-ci.yml).
+      # The release keystore is a stable secret, but a cached .android keeps the
+      # debug keystore consistent for debug installs from this workflow too.
+      - name: Restore Gradle/Android caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.android-cache/gradle
+            ${{ github.workspace }}/.android-cache/android
+          key: ${{ runner.os }}-android-${{ hashFiles('web/android/gradle/wrapper/gradle-wrapper.properties', 'web/android/build.gradle', 'web/android/app/build.gradle', 'web/android/variables.gradle', 'web/android/gradle.properties', 'web/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-android-
+
       - name: Build signed release APK
         env:
           KEYSTORE_FILE: ${{ env.KEYSTORE_FILE }}
@@ -82,6 +96,8 @@ jobs:
           # back to a local build — either way the Dockerfile.android stages
           # cannot go stale.
           WEB_ASSETS_IMAGE: ghcr.io/${{ vars.IMAGE_NAMESPACE || format('{0}/home-media-library', github.repository_owner) }}-web-assets:${{ steps.version.outputs.version }}
+          ANDROID_GRADLE_CACHE_DIR: ${{ github.workspace }}/.android-cache/gradle
+          ANDROID_ANDROID_HOME_DIR: ${{ github.workspace }}/.android-cache/android
         shell: bash
         run: |
           set -euo pipefail

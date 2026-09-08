@@ -60,7 +60,7 @@ function createMockApi() {
       ],
       mapPoints:[] as unknown[],
       poiPoints:[] as POIPoint[],
-      userSettings:{theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", language:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapTileProviders:{carto:{apiKey:""}}, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}},
+      userSettings:{theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", language:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, mapTileProviders:{carto:{apiKey:""}}, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}},
       adminSettings:{
         httpEnabled:true, httpsEnabled:false, publicDns:"", acmeEmail:"", httpsCertificateExpiresAt:"", httpsGatewayEnabled:true,
         thumbnailWidth:480, thumbnailHeight:360, videoThumbnailFirstSeconds:5, videoThumbnailMaxCount:100, videoThumbnailMinIntervalSeconds:120, workerPoolSize:4,

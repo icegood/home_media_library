@@ -177,11 +177,12 @@ export const api = {
   },
   contentUrl: (id:ID, download = false) => authUrl(`/media/${id}/content${download ? "?download=1" : ""}`),
   async documentContent(id:ID) {
-    // In Android Capacitor the WebView's built-in PDF viewer fires a separate
-    // request without sending the HttpOnly auth cookie and surfaces "401
-    // Authorization required". Proxy the file through the authenticated
-    // fetch helper and hand the iframe a blob URL so the auth state stays
-    // attached.
+    // Documents (PDFs, etc.) are handed to the desktop/iOS iframe as a blob
+    // URL so the request keeps the HttpOnly auth cookie attached (a plain
+    // <iframe src> navigation would drop it and surface "401 Authorization
+    // required"). Android skips this entirely: Viewer sends the content URL
+    // to MainActivity's MLSafeInsets.openDocument bridge, which downloads it
+    // with the WebView cookie and opens an external PDF viewer.
     const response = await fetch(authUrl(`/media/${id}/content`), {credentials:"same-origin"});
     if (!response.ok) throw new Error(`${response.status} ${response.statusText || "HTTP error"} from ${base}/media/${id}/content`);
     const blob = await response.blob();
@@ -271,6 +272,7 @@ export interface UserSettings {
   defaultThumbFolder:string;
   mapTileProviderLight:MapTileSource;
   mapTileProviderDark:MapTileSource;
+  mapMaxZoom:number;
   mapTileProviders?:Record<string, Record<string, string>>;
   poiProviderLight:POISource;
   poiProviderDark:POISource;

@@ -117,6 +117,64 @@ func TestExtractorFallsBackToNaiveUtcWhenMtimeDoesNotMatch(t *testing.T) {
 	}
 }
 
+func TestExtractorPrefersGPSTimeWhenDeviceClockShifted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test writes shell scripts")
+	}
+	// ASUS Z00AD capture: the phone's clock agreed with the file mtime for
+	// every photo in the burst (mtime 06:01:05Z matches EXIF 09:01:05), so the
+	// old mtime-based conversion stored 06:01:05Z. But the GPS receiver, which
+	// keeps true UTC, says this shot happened at 07:01:05Z — a full hour after
+	// the 09:03:xx photos. The GPS stamp must win.
+	exifJSON := `[{"DateTimeOriginal":"2016:05:07 09:01:05","FileModifyDate":"2016:05:07 06:01:05+00:00","GPSDateTime":"2016:05:07 07:01:05Z","FileName":"P_20160507_090106.jpg"}]`
+	bin := t.TempDir()
+	writeTool(t, filepath.Join(bin, "exiftool"), "#!/bin/sh\nprintf '%s\\n' '"+exifJSON+"'\n")
+	result, err := (metadata.Extractor{ExifTool: filepath.Join(bin, "exiftool"), Timeout: time.Second}).Extract(context.Background(), "P_20160507_090106.jpg", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TakenAt != "2016-05-07T07:01:05Z" {
+		t.Fatalf("takenAt = %q, want GPS-authoritative 2016-05-07T07:01:05Z", result.TakenAt)
+	}
+}
+
+func TestExtractorIgnoresZeroGPSTime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test writes shell scripts")
+	}
+	// Some cameras record the GPS tags as all zeros (no fix); that stamp must
+	// never become the taken-at, the device-clock conversion wins instead.
+	exifJSON := `[{"DateTimeOriginal":"2016:05:07 09:01:05","FileModifyDate":"2016:05:07 06:01:05+00:00","GPSDateTime":"0000:00:00 00:00:00Z","FileName":"P.jpg"}]`
+	bin := t.TempDir()
+	writeTool(t, filepath.Join(bin, "exiftool"), "#!/bin/sh\nprintf '%s\\n' '"+exifJSON+"'\n")
+	result, err := (metadata.Extractor{ExifTool: filepath.Join(bin, "exiftool"), Timeout: time.Second}).Extract(context.Background(), "P.jpg", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TakenAt != "2016-05-07T06:01:05Z" {
+		t.Fatalf("takenAt = %q, want device-clock 2016-05-07T06:01:05Z (GPS zeroes ignored)", result.TakenAt)
+	}
+}
+
+func TestExtractorTrustsNonZeroGPSTimeRegardlessOfDeviceClock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test writes shell scripts")
+	}
+	// A GPS stamp even days away from the device clock is still the recording
+	// made by the GPS receiver (satellite time); mtime can be mangled by
+	// copying files, the GPS tag cannot — so the GPS time always wins.
+	exifJSON := `[{"DateTimeOriginal":"2016:05:07 09:01:05","FileModifyDate":"2016:05:07 06:01:05+00:00","GPSDateTime":"2016:05:06 06:01:05Z","FileName":"P.jpg"}]`
+	bin := t.TempDir()
+	writeTool(t, filepath.Join(bin, "exiftool"), "#!/bin/sh\nprintf '%s\\n' '"+exifJSON+"'\n")
+	result, err := (metadata.Extractor{ExifTool: filepath.Join(bin, "exiftool"), Timeout: time.Second}).Extract(context.Background(), "P.jpg", "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TakenAt != "2016-05-06T06:01:05Z" {
+		t.Fatalf("takenAt = %q, want GPS 2016-05-06T06:01:05Z (non-zero GPS is authoritative)", result.TakenAt)
+	}
+}
+
 func writeTool(t *testing.T, path, script string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

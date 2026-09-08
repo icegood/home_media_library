@@ -1,7 +1,7 @@
 # Stage 1 – reuse the shared web-assets image (built by `start.sh local-build`
 # or ensured on demand by `start.sh android`) instead of re-running npm ci and
 # vite build. Only Capacitor sync runs here; paths are fitted after reuse.
-ARG WEB_ASSETS_IMAGE
+ARG WEB_ASSETS_IMAGE=media-library-web-assets:local
 FROM ${WEB_ASSETS_IMAGE} AS web
 RUN npx cap sync android
 
@@ -20,13 +20,17 @@ RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" && \
     mv /tmp/cmdline-tools/cmdline-tools "${ANDROID_HOME}/cmdline-tools/latest" && \
     rm -rf /tmp/cmdline-tools /tmp/cmdline-tools.zip && \
     yes | sdkmanager --licenses >/dev/null 2>&1 && \
-    sdkmanager "build-tools;35.0.0" "platforms;android-35"
+    sdkmanager "build-tools;35.0.0" "build-tools;34.0.0" "platform-tools" "platforms;android-35"
 
 ARG MEDIA_UID=1000
 ARG MEDIA_GID=1000
 RUN groupadd -g "${MEDIA_GID}" builder && \
     useradd -u "${MEDIA_UID}" -g "${MEDIA_GID}" -m builder && \
-    chown -R builder:builder "${ANDROID_HOME}"
+    chown -R builder:builder "${ANDROID_HOME}" && \
+    # Seed the Gradle/Android user homes so a named volume mounted over them is
+    # initialized with the right ownership (fresh volumes start as root).
+    mkdir -p /home/builder/.gradle /home/builder/.android && \
+    chown -R builder:builder /home/builder
 USER builder
 WORKDIR /src
 

@@ -8,7 +8,12 @@ esac
 
 cd android
 chmod +x gradlew
-./gradlew "assemble${build_type}" --no-daemon
+# Version metadata from the VERSION file (see deploy/start.sh): passed as Gradle
+# properties so app/build.gradle can use them with fallback defaults.
+gradle_args=""
+if [ -n "${ML_VERSION_NAME:-}" ]; then gradle_args="$gradle_args -PversionName=$ML_VERSION_NAME"; fi
+if [ -n "${ML_VERSION_CODE:-}" ]; then gradle_args="$gradle_args -PversionCode=$ML_VERSION_CODE"; fi
+./gradlew "assemble${build_type}" --no-daemon $gradle_args
 mkdir -p /output
 # We require a SIGNED apk; the AGP-generated `*-unsigned.apk` is rejected on
 # purpose. For `release` there is no debug-key fallback (an unsigned APK would

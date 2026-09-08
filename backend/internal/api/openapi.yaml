@@ -1409,13 +1409,13 @@ paths:
               properties:
                 recreateExisting:
                   type: boolean
-                  description: Re-read metadata for all media, including those that already have metadata.
+                  description: Re-read metadata for all media, including those that already have metadata. When unchecked, existing metadata (and its error) is kept and only media without metadata yet are filled.
                 updateGps:
                   type: boolean
-                  description: Re-import GPS coordinates for media that already have GPS.
+                  description: Re-import GPS coordinates for media that already have GPS. When unchecked, stored coordinates are kept and only media without GPS are filled. An extract that yields no coordinates never wipes stored ones.
                 updateTakenAt:
                   type: boolean
-                  description: Re-derive the taken-at timestamp for media that already have one.
+                  description: Re-derive the taken-at timestamp for media that already have one. When unchecked, stored timestamps are kept and only media without one are filled.
       responses:
         "202":
           description: Metadata renew job started
@@ -2449,7 +2449,7 @@ components:
           type: string
         category:
           type: string
-          enum: [scan, thumbnail-create, vacuum, orphan-thumbnail-cleanup]
+          enum: [scan, thumbnail-create, vacuum, orphan-thumbnail-cleanup, metadata-renew]
         type:
           type: string
         libraryId:
@@ -2461,6 +2461,9 @@ components:
         scopeFolderId:
           type: integer
           description: Folder id the job is scoped to; zero means the whole library.
+        scopeFolderName:
+          type: string
+          description: Full path of the scope folder; the jobs list labels a scoped job with this instead of the library name.
         status:
           type: string
           enum: [running, paused, cancelling, done, failed, cancelled]
@@ -2730,6 +2733,11 @@ components:
           type: string
           enum: [osm, esri, esri:satellite, carto, carto:voyager, carto:dark]
           description: Map tile source for the dark and forest themes. `osm` and `esri` pass through a CSS dark filter; `esri:satellite` serves Esri World Imagery unfiltered (no key); `carto:voyager` renders as native dark CARTO; `carto:dark` serves CARTO's native dark tiles. CARTO sources need the admin-configured API key; without it the tiles show an "API key required" watermark.
+        mapMaxZoom:
+          type: integer
+          minimum: 1
+          maximum: 24
+          description: Highest Leaflet zoom level the media map may reach. Tile providers render real detail only up to a native maximum (OpenStreetMap 19, CARTO and Esri 20); zooming past that simply upscales the best available tiles. Omitted or 0 falls back to 19.
         mapTileProviders:
           type: object
           readOnly: true

@@ -153,24 +153,48 @@ func gpsFromEXIF(document map[string]any) string {
 	return gps
 }
 
+// TakenAtOrDefault returns the extracted taken-at, or the file's modification
+// time formatted as RFC3339 UTC when the container carries no usable date tag
+// (e.g. MPEG-PS video). Import and metadata-renew share this fallback.
+func TakenAtOrDefault(takenAt string, modTime time.Time) string {
+	if strings.TrimSpace(takenAt) != "" {
+		return takenAt
+	}
+	return modTime.UTC().Format(time.RFC3339)
+}
+
+const maxClockShift = 12 * time.Hour
+
 func takenAtFromEXIF(document map[string]any) string {
+	// GPSDateTime is the capture instant measured by the GPS receiver, which
+	// keeps UTC directly from the satellites. Unlike the file mtime it cannot
+	// be corrupted by copying a file between disks, so whenever a real
+	// (non-zero) fix was recorded it is the absolute truth — return it
+	// directly. parseExifDate already rejects zeroed stamps ("0000:00:00 …"
+	// = no fix), so no further plausibility check is needed.
+	if value, ok := stringValue(document["GPSDateTime"]); ok {
+		if parsed, ok := parseExifDate(value); ok {
+			return parsed.UTC().Format(time.RFC3339)
+		}
+	}
+	if deviceUTC, ok := deviceTimeFromEXIF(document); ok {
+		return deviceUTC.UTC().Format(time.RFC3339)
+	}
+	return ""
+}
+
+// deviceTimeFromEXIF converts the camera's wall-clock capture time to UTC.
+// Camera dates carry no timezone: the wall-clock time in the EXIF matches the
+// file's mtime (both follow the camera clock), so the mtime — an absolute
+// instant — is used to convert to UTC; otherwise the naive string would be
+// treated as UTC and drift by the camera offset in the UI.
+func deviceTimeFromEXIF(document map[string]any) (time.Time, bool) {
 	var fileModify time.Time
 	fileModifyValid := false
 	if value, ok := stringValue(document["FileModifyDate"]); ok {
 		if parsed, ok := parseExifDate(value); ok {
 			fileModify = parsed
 			fileModifyValid = true
-		}
-	}
-	// GPSDateTime is always UTC and can be used as a reference to determine the
-	// camera clock offset when FileModifyDate is too far away (e.g. file was
-	// copied long after the photo was taken).
-	var gpsTime time.Time
-	gpsTimeValid := false
-	if value, ok := stringValue(document["GPSDateTime"]); ok {
-		if parsed, ok := parseExifDate(value); ok {
-			gpsTime = parsed.UTC()
-			gpsTimeValid = true
 		}
 	}
 	for _, key := range []string{
@@ -180,39 +204,28 @@ func takenAtFromEXIF(document map[string]any) string {
 		"TrackCreateDate",
 		"ModifyDate",
 	} {
-		if value, ok := stringValue(document[key]); ok {
-			parsed, ok := parseExifDate(value)
-			if !ok {
-				continue
-			}
-			if hasExplicitOffset(value) {
-				return parsed.UTC().Format(time.RFC3339)
-			}
-			// Camera dates carry no timezone: the wall-clock time in the EXIF
-			// matches the file's mtime (both follow the camera clock). Use the
-			// mtime, which is an absolute instant, to convert to UTC; otherwise
-			// the naive string would be treated as UTC and drift by the camera
-			// offset in the UI.
-			if fileModifyValid {
-				correction := fileModify.Sub(parsed)
-				if correction > -12*time.Hour && correction < 12*time.Hour {
-					parsed = parsed.Add(correction)
-					return parsed.UTC().Format(time.RFC3339)
-				}
-			}
-			// FileModifyDate is too far away (file copied long after capture).
-			// Use GPS time to determine the camera clock offset.
-			if gpsTimeValid {
-				correction := gpsTime.Sub(parsed)
-				if correction > -12*time.Hour && correction < 12*time.Hour {
-					parsed = parsed.Add(correction)
-					return parsed.UTC().Format(time.RFC3339)
-				}
-			}
-			return parsed.UTC().Format(time.RFC3339)
+		value, ok := stringValue(document[key])
+		if !ok {
+			continue
 		}
+		parsed, ok := parseExifDate(value)
+		if !ok {
+			continue
+		}
+		if hasExplicitOffset(value) {
+			return parsed.UTC(), true
+		}
+		if fileModifyValid {
+			correction := fileModify.Sub(parsed)
+			if correction > -maxClockShift && correction < maxClockShift {
+				return parsed.Add(correction).UTC(), true
+			}
+		}
+		// FileModifyDate is too far away (file copied long after capture):
+		// treat the naive wall-clock time as UTC rather than drifting it.
+		return parsed.UTC(), true
 	}
-	return ""
+	return time.Time{}, false
 }
 
 var explicitOffsetRe = regexp.MustCompile(`(?i)(?:z|[+-]\d{2}:?\d{2})\s*$`)

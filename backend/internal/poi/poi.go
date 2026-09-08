@@ -286,7 +286,7 @@ var geoapifyCategories = map[CategoryID]string{
 	CategoryFood:        "catering.restaurant,catering.cafe,catering.fast_food,catering.pub",
 	CategoryFuelParking: "service.vehicle.fuel,parking",
 	CategoryLodging:     "accommodation.hotel,accommodation.motel,accommodation.hostel,camping",
-	CategoryAttraction:  "entertainment.museum,entertainment.attraction,leisure.park,tourism.viewpoint",
+	CategoryAttraction:  "entertainment.museum,tourism.attraction,leisure.park,tourism.viewpoint",
 	CategoryHealth:      "healthcare.clinic,healthcare.pharmacy,commercial.bank,commercial.atm",
 	CategoryShops:       "commercial.supermarket,commercial.convenience,commercial.shopping_mall",
 }

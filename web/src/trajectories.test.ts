@@ -90,4 +90,29 @@ describe("buildTrajectories", () => {
     expect(segments).toHaveLength(1);
     expect(segments[0].points).toHaveLength(3);
   });
+
+  test("a start flag on a GPS-less item still opens a new segment", () => {
+    const segments = buildTrajectories([
+      item({id: 1, gps: "10,10", takenAt: "2025-01-01T00:00:00Z", trajectoryStart: true}),
+      item({id: 2, gps: "10.1,10.1", takenAt: "2025-01-01T01:00:00Z"}),
+      item({id: 3, gps: "", takenAt: "2025-01-01T02:00:00Z", trajectoryStart: true}),
+      item({id: 4, gps: "10.3,10.3", takenAt: "2025-01-01T03:00:00Z"}),
+    ]);
+    expect(segments).toHaveLength(2);
+    expect(segments[0].points).toEqual([[10,10],[10.1,10.1]]);
+    expect(segments[1].start.trajectoryStart).toBe(true);
+    expect(segments[1].start.gps).toBe("");
+    expect(segments[1].points).toEqual([[10.3,10.3]]);
+  });
+
+  test("an end flag on a GPS-less item still closes its segment", () => {
+    const segments = buildTrajectories([
+      item({id: 1, gps: "10,10", takenAt: "2025-01-01T00:00:00Z", trajectoryStart: true}),
+      item({id: 2, gps: "10.1,10.1", takenAt: "2025-01-01T01:00:00Z"}),
+      item({id: 3, gps: "", takenAt: "2025-01-01T02:00:00Z", trajectoryEnd: true}),
+      item({id: 4, gps: "10.2,10.2", takenAt: "2025-01-01T03:00:00Z"}),
+    ]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].points).toEqual([[10,10],[10.1,10.1]]);
+  });
 });

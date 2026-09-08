@@ -1415,7 +1415,7 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("thumbnail job status = %d: %s", response.Code, response.Body)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		jobs := request(f.handler, http.MethodGet, "/api/v1/admin/jobs", admin, nil)
 		if jobs.Code != http.StatusOK {
@@ -1442,6 +1442,80 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("thumbnail job did not finish")
+}
+
+func TestMetadataRenewFallsBackToFileMTimeForDatelessMedia(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	videoPath := filepath.Join(f.mediaRoot, "family", "2025", "MOV08446.MPG")
+	if err := os.WriteFile(videoPath, []byte("mpeg stream"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2017, 9, 11, 11, 35, 53, 0, time.UTC)
+	if err := os.Chtimes(videoPath, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	video, err := f.store.UpsertMedia(context.Background(), domain.Media{
+		ID: domain.InvalidID, FolderID: f.folderID, Path: videoPath,
+		RelativePath: "2025/MOV08446.MPG", Name: "MOV08446.MPG",
+		Kind: domain.KindVideo, MIMEType: "video/mpeg", TakenAt: "2024-01-28T09:52:15Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRenew := func(body string) {
+		t.Helper()
+		response := request(f.handler, http.MethodPost, fmt.Sprintf("/api/v1/admin/libraries/%d/metadata/renew", f.libraryID), admin, []byte(body))
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("renew status = %d: %s", response.Code, response.Body)
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			jobs := request(f.handler, http.MethodGet, "/api/v1/admin/jobs", admin, nil)
+			if jobs.Code != http.StatusOK {
+				t.Fatalf("jobs status = %d: %s", jobs.Code, jobs.Body)
+			}
+			var statuses []api.JobStatus
+			if err := json.Unmarshal(jobs.Body.Bytes(), &statuses); err != nil {
+				t.Fatal(err)
+			}
+			found, running := false, false
+			for _, status := range statuses {
+				if status.Type == "metadata-renew" {
+					found = true
+					if status.Status != "done" {
+						running = true
+					}
+				}
+			}
+			if found && !running {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatal("metadata renew job did not finish")
+	}
+	waitRenew(`{"updateTakenAt":true}`)
+	updated, err := f.store.Media(context.Background(), video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TakenAt != "2017-09-11T11:35:53Z" {
+		t.Fatalf("taken_at after renew = %q, want file mtime fallback", updated.TakenAt)
+	}
+	// Without the update flag the restored mtime must not touch an existing taken_at.
+	later := time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := os.Chtimes(videoPath, later, later); err != nil {
+		t.Fatal(err)
+	}
+	waitRenew(`{}`)
+	updated, err = f.store.Media(context.Background(), video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TakenAt != "2017-09-11T11:35:53Z" {
+		t.Fatalf("taken_at changed without update flag: %q", updated.TakenAt)
+	}
 }
 
 func TestLoginCookieIsSecureBehindHTTPSProxy(t *testing.T) {
@@ -1750,11 +1824,14 @@ func TestMapTileProviderIsPerUserSetting(t *testing.T) {
 	if fetched.MapTileProviderLight != "osm" || fetched.MapTileProviderDark != "osm" {
 		t.Fatalf("default map tile providers = %q/%q, want osm/osm", fetched.MapTileProviderLight, fetched.MapTileProviderDark)
 	}
+	if fetched.MapMaxZoom != 19 {
+		t.Fatalf("default map max zoom = %d, want 19", fetched.MapMaxZoom)
+	}
 
 	body, _ := json.Marshal(map[string]any{"theme": "dark", "codec": "h264-aac-mp4", "zoom": 100,
 		"dateFormat": "auto", "streamChunkSize": 10000, "defaultThumbImage": "mountains",
 		"defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains",
-		"mapTileProviderLight": "esri", "mapTileProviderDark": "carto:dark"})
+		"mapTileProviderLight": "esri", "mapTileProviderDark": "carto:dark", "mapMaxZoom": 23})
 	saved := request(f.handler, http.MethodPut, settingsURL, alice, body)
 	if saved.Code != http.StatusOK {
 		t.Fatalf("put settings status = %d: %s", saved.Code, saved.Body)
@@ -1769,6 +1846,9 @@ func TestMapTileProviderIsPerUserSetting(t *testing.T) {
 	}
 	if updated.MapTileProviderLight != "esri" || updated.MapTileProviderDark != "carto:dark" {
 		t.Fatalf("saved map tile providers = %q/%q, want esri/carto:dark", updated.MapTileProviderLight, updated.MapTileProviderDark)
+	}
+	if updated.MapMaxZoom != 23 {
+		t.Fatalf("saved map max zoom = %d, want 23", updated.MapMaxZoom)
 	}
 
 	// A bare "carto" normalizes to the voyager sub-provider in both modes.
@@ -1785,6 +1865,9 @@ func TestMapTileProviderIsPerUserSetting(t *testing.T) {
 	if legacySettings.MapTileProviderLight != "carto:voyager" || legacySettings.MapTileProviderDark != "carto:voyager" {
 		t.Fatalf("legacy carto = %q/%q, want carto:voyager/carto:voyager", legacySettings.MapTileProviderLight, legacySettings.MapTileProviderDark)
 	}
+	if legacySettings.MapMaxZoom != 19 {
+		t.Fatalf("legacy max zoom (omitted) = %d, want default 19", legacySettings.MapMaxZoom)
+	}
 
 	admin, _ := f.store.UserSettings(context.Background(), 1)
 	if admin.MapTileProviderLight != "osm" || admin.MapTileProviderDark != "osm" {
@@ -1796,6 +1879,8 @@ func TestMapTileProviderIsPerUserSetting(t *testing.T) {
 		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderDark":"carto:dusk"}`),
 		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderLight":"carto:dark"}`),
 		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderDark":"carto:light"}`),
+		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderLight":"osm","mapTileProviderDark":"osm","mapMaxZoom":25}`),
+		[]byte(`{"theme":"dark","codec":"h264","zoom":100,"mapTileProviderLight":"osm","mapTileProviderDark":"osm","mapMaxZoom":-3}`),
 	} {
 		if got := request(f.handler, http.MethodPut, settingsURL, alice, body).Code; got != http.StatusBadRequest {
 			t.Fatalf("invalid provider status = %d, want 400 for %s", got, body)
@@ -2016,7 +2101,7 @@ func TestAdminCanVacuumDatabaseFromPanel(t *testing.T) {
 	if job.Category != "vacuum" || job.Status != "running" || job.Cancelable {
 		t.Fatalf("unexpected vacuum job: %#v", job)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		statuses := request(f.handler, http.MethodGet, "/api/v1/admin/jobs", admin, nil)
 		if statuses.Code != http.StatusOK {

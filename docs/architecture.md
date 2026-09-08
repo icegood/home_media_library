@@ -15,13 +15,13 @@ Both roles may edit coordinates for media they can read.
 When an admin selects a folder as a library root, the backend validates and
 upserts that folder into `media_folders` first, then creates `LibraryRoot` as a
 link to that folder by `media_folders.id`.
-`Media` represents one physical image or video leaf and points to its containing
-folder, so reusing a folder in multiple libraries does not duplicate media. It
-stores its physical path, MIME type, size, timestamps, extracted EXIF/media
-metadata and optional GPS as one canonical `latitude,longitude` string. Image
-vs video type is derived from the `media_mime_types.media_type` lookup instead
-of being stored as a second field on each media row. Scanning never changes the
-directory layout.
+`Media` represents one physical image, video or document leaf and points to its
+containing folder, so reusing a folder in multiple libraries does not duplicate
+media. It stores its physical path, MIME type, size, timestamps, extracted
+EXIF/media metadata and optional GPS as one canonical `latitude,longitude`
+string. The `image`/`video`/`document` type is derived from the
+`media_mime_types.media_type` lookup instead of being stored as a second field
+on each media row. Scanning never changes the directory layout.
 
 ## Security boundaries
 
@@ -92,4 +92,6 @@ thumbnail-sized tiles.
   direct-play video already supports HTTP byte-range seeking.
 - Add token revocation.
 - Add offline Android caching and background uploads if write support is added.
-- Add end-to-end browser/Android tests and backup/restore commands.
+- Extend the Playwright end-to-end suites (`web/e2e`) to cover the Android app;
+  they already run in a dedicated Docker runner via `sh deploy/start.sh e2e`.
+- Add backup/restore commands.

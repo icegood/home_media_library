@@ -81,7 +81,7 @@ type Store interface {
 	FoldersForSubtree(ctx context.Context, folderID int) ([]domain.MediaFolder, error)
 	RootPathForFolder(ctx context.Context, folderID int) string
 	ThumbnailCleanupRefsForLibrary(ctx context.Context, libraryID int) (domain.ThumbnailCleanupRefs, error)
-	UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error
+	UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, opts domain.MetadataWriteOptions) error
 	SetMediaActionError(ctx context.Context, id int, action, message string) error
 	PruneFolder(ctx context.Context, rootFolderID int, keepFolders, keepMedia map[int]bool) error
 	CreateLibrary(ctx context.Context, library domain.Library) (domain.Library, error)
@@ -109,4 +109,20 @@ type Store interface {
 	DisableScheduledTask(ctx context.Context, id int) error
 	DueScheduledTasks(ctx context.Context, now time.Time) ([]domain.ScheduledTask, error)
 	MarkScheduledTaskRun(ctx context.Context, id int, lastRunAt, nextRunAt time.Time) error
+}
+
+// restoreJobScope re-derives the folder-scope fields the jobs table has no
+// columns for. The API's newJob persists the scope (rootId, folderName) inside
+// options_json, so every store loader must fold them back into the struct
+// after unmarshalling — otherwise resumed and listed jobs lose their scope
+// label and the dedupe guard treats them as whole-library.
+func restoreJobScope(job *domain.BackgroundJob) {
+	if job.ScopeFolderID == 0 {
+		if rootID, ok := job.Options["rootId"].(float64); ok {
+			job.ScopeFolderID = int(rootID)
+		}
+	}
+	if name, ok := job.Options["folderName"].(string); ok {
+		job.ScopeFolderName = name
+	}
 }

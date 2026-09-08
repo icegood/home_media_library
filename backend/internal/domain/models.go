@@ -133,6 +133,11 @@ type UserSettings struct {
 	// the carto API key) live in ServerSettings.MapTileProviders.
 	MapTileProviderLight string `json:"mapTileProviderLight"`
 	MapTileProviderDark  string `json:"mapTileProviderDark"`
+	// MapMaxZoom caps how far the media map can zoom in. The value is a
+	// Leaflet zoom level; going past the tile provider's native maximum just
+	// upscales the best available tiles, which is why the web UI documents a
+	// per-provider recommended level next to the option (OSM 19, CARTO/Esri 20).
+	MapMaxZoom int `json:"mapMaxZoom"`
 
 	// POIProviderLight/Dark pick the points-of-interest source shown on the
 	// media map, independently for light and dark themes. A source is a bare
@@ -147,6 +152,7 @@ func DefaultUserSettings() UserSettings {
 		Theme: "light", Codec: "h264-aac-mp4", Zoom: 100, DateFormat: "auto", StreamChunkSize: 10000, Language: "auto",
 		DefaultThumbImage: "mountains", DefaultThumbVideo: "mountains", DefaultThumbFolder: "mountains",
 		MapTileProviderLight: "osm", MapTileProviderDark: "osm",
+		MapMaxZoom: 19,
 	}
 }
 
@@ -159,6 +165,21 @@ type ScheduledTask struct {
 	Enabled   bool       `json:"enabled"`
 	LastRunAt *time.Time `json:"lastRunAt,omitempty"`
 	NextRunAt time.Time  `json:"nextRunAt"`
+}
+
+// MetadataWriteOptions selects how freshly extracted values are applied to an
+// existing media row by UpdateMediaMetadata. Each flag governs one field: when
+// set the stored value is overwritten; when clear an already-populated value
+// survives and only empty rows are filled. An absent extracted value never
+// wipes stored data.
+type MetadataWriteOptions struct {
+	// RecreateExisting rewrites stored metadata JSON (and its error) for media
+	// that already have metadata.
+	RecreateExisting bool
+	// UpdateGPS overwrites existing coordinates.
+	UpdateGPS bool
+	// UpdateTakenAt overwrites an existing taken-at timestamp.
+	UpdateTakenAt bool
 }
 
 type BackgroundJob struct {
@@ -179,6 +200,10 @@ type BackgroundJob struct {
 	FinishedAt  *time.Time     `json:"finishedAt,omitempty"`
 	Options     map[string]any `json:"options,omitempty"`
 	ScopeFolderID int          `json:"scopeFolderId,omitempty"`
+	// ScopeFolderName is the full path of the scope folder, shown in the
+	// jobs list instead of the library name when a job targets one folder. It
+	// is persisted inside Options (options_json) and restored on load.
+	ScopeFolderName string `json:"scopeFolderName,omitempty"`
 }
 
 type ImportedUser struct {

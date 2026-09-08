@@ -73,7 +73,11 @@ func TestWatcherTriggersDebouncedScan(t *testing.T) {
 	store := &stubStore{roots: []domain.WatchedRoot{{LibraryID: 7, Path: dir}}, libs: map[int]domain.Library{7: {ID: 7, Name: "watched"}}}
 	starter := &stubStarter{}
 	w := New(store, starter)
-	w.SetDebounce(80 * time.Millisecond)
+	// A short debounce raced against fsnotify event delivery jitter on loaded
+	// CI runners: two writes could land in separate windows and the test then
+	// failed its "collapsed into one scan" assertion. 250ms keeps the window
+	// comfortably above inotify delivery latency while still exercising it.
+	w.SetDebounce(250 * time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go w.Run(ctx)
@@ -81,7 +85,7 @@ func TestWatcherTriggersDebouncedScan(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dir, "a.jpg"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(dir, "b.jpg"), []byte("x"), 0o644) // same debounce window
-	waitFor(t, 3*time.Second, func() bool { return starter.count() >= 1 })
+	waitFor(t, 5*time.Second, func() bool { return starter.count() >= 1 })
 	time.Sleep(2 * w.debounce)
 	if got := starter.count(); got != 1 {
 		t.Fatalf("debounce collapsed %d events into %d scans", 2, got)

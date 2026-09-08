@@ -242,10 +242,7 @@ func (s Scanner) importMedia(ctx context.Context, root, filePath string, mimeTyp
 			applog.Printf(applog.Error, "metadata failed for %s: %s", filePath, metadataError)
 		}
 	}
-	takenAt := extracted.TakenAt
-	if takenAt == "" {
-		takenAt = info.ModTime().UTC().Format("2006-01-02T15:04:05Z07:00")
-	}
+	takenAt := metadata.TakenAtOrDefault(extracted.TakenAt, info.ModTime())
 	media, err := s.Store.UpsertMedia(ctx, domain.Media{
 		ID: domain.InvalidID, FolderID: parentID, Path: filePath, RelativePath: relative, Name: filepath.Base(filePath),
 		Kind: domain.KindFromMIME(mimeType), MIMEType: mimeType, Size: info.Size(),

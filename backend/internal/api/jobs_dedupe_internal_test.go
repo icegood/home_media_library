@@ -34,6 +34,24 @@ func TestStartVacuumJobReturnsActiveVacuum(t *testing.T) {
 	}
 }
 
+func TestActiveJobMatchesFolderScopeExactly(t *testing.T) {
+	a := &API{jobs: map[string]*JobStatus{}}
+	a.jobs["lib"] = &JobStatus{ID: "lib", Category: "metadata-renew", LibraryID: 7, ScopeFolderID: 0, Status: "running"}
+	a.jobs["folder20"] = &JobStatus{ID: "folder20", Category: "metadata-renew", LibraryID: 7, ScopeFolderID: 20, Status: "running"}
+	// A folder request must not be absorbed by the running whole-library job
+	// (that made per-folder refreshes silently run as library-wide jobs), and a
+	// different folder must not match either.
+	if _, ok := a.activeJob("metadata-renew", 7, 21); ok {
+		t.Fatal("folder-21 request must not dedupe onto library or folder-20 jobs")
+	}
+	if got, ok := a.activeJob("metadata-renew", 7, 20); !ok || got.ID != "folder20" {
+		t.Fatalf("folder-20 request = %q/%v, want folder20/true", got.ID, ok)
+	}
+	if got, ok := a.activeJob("metadata-renew", 7, 0); !ok || got.ID != "lib" {
+		t.Fatalf("library request = %q/%v, want lib/true", got.ID, ok)
+	}
+}
+
 func TestApplyRenewResume(t *testing.T) {
 	items := []domain.Media{{ID: 1}, {ID: 2}, {ID: 3}}
 	if got := applyRenewResume(items, 0); len(got) != 3 {

@@ -10,11 +10,13 @@ runtime
 build
 deploy/.env
 .github-token
+.android-cache
 
 web/node_modules
 web/dist
 web/.vite
 web/coverage
+web/test-output
 web/android/.gradle
 web/android/app/build
 web/src/generated-version.ts

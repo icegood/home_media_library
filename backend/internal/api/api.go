@@ -485,8 +485,9 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 		"defaultThumbImage":     settings.DefaultThumbImage,
 		"defaultThumbVideo":     settings.DefaultThumbVideo,
 		"defaultThumbFolder":    settings.DefaultThumbFolder,
-		"mapTileProviderLight":  settings.MapTileProviderLight,
+"mapTileProviderLight":  settings.MapTileProviderLight,
 		"mapTileProviderDark":   settings.MapTileProviderDark,
+		"mapMaxZoom":            settings.MapMaxZoom,
 		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
 		"poiProviderLight":      settings.POIProviderLight,
 		"poiProviderDark":       settings.POIProviderDark,
@@ -545,6 +546,7 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		DefaultThumbFolder string `json:"defaultThumbFolder"`
 		MapTileProviderLight string `json:"mapTileProviderLight"`
 		MapTileProviderDark  string `json:"mapTileProviderDark"`
+		MapMaxZoom           int    `json:"mapMaxZoom"`
 		POIProviderLight     string `json:"poiProviderLight"`
 		POIProviderDark      string `json:"poiProviderDark"`
 	}
@@ -604,6 +606,14 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "dark map tile source must be osm, esri, esri:satellite, carto, carto:voyager, or carto:dark")
 		return
 	}
+	maxZoom := input.MapMaxZoom
+	if maxZoom == 0 {
+		maxZoom = domain.DefaultUserSettings().MapMaxZoom
+	}
+	if maxZoom < 1 || maxZoom > 24 {
+		problem(w, http.StatusBadRequest, "map max zoom must be between 1 and 24")
+		return
+	}
 	lightPOI, ok := normalizePOISource(input.POIProviderLight)
 	if !ok {
 		problem(w, http.StatusBadRequest, "light POI source must be overpass, geoapify, or mapbox")
@@ -616,7 +626,7 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat, StreamChunkSize: chunk,
 		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder, Language: input.Language,
-		MapTileProviderLight: lightSource, MapTileProviderDark: darkSource,
+		MapTileProviderLight: lightSource, MapTileProviderDark: darkSource, MapMaxZoom: maxZoom,
 		POIProviderLight: lightPOI, POIProviderDark: darkPOI}
 	settings.DateFormat = normalizeDateFormat(settings.DateFormat)
 	settings.Language = normalizeLanguage(settings.Language)
@@ -2416,42 +2426,18 @@ func (a *API) libraryInput(w http.ResponseWriter, r *http.Request) (string, []do
 }
 
 func (a *API) scanLibrary(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r, "id")
+	library, rootID, ok := a.jobScope(w, r)
 	if !ok {
 		return
-	}
-	library, err := a.Store.Library(r.Context(), id)
-	if err != nil {
-		problem(w, 404, "library not found")
-		return
-	}
-	rootID := rootParam(w, r)
-	if rootID != 0 {
-		if _, err := a.Store.Folder(r.Context(), rootID); err != nil {
-			problem(w, 404, "folder not found")
-			return
-		}
 	}
 	job := a.startScanJob(library, rootID)
 	writeJSON(w, http.StatusAccepted, job)
 }
 
 func (a *API) thumbnailLibrary(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r, "id")
+	library, rootID, ok := a.jobScope(w, r)
 	if !ok {
 		return
-	}
-	library, err := a.Store.Library(r.Context(), id)
-	if err != nil {
-		problem(w, 404, "library not found")
-		return
-	}
-	rootID := rootParam(w, r)
-	if rootID != 0 {
-		if _, err := a.Store.Folder(r.Context(), rootID); err != nil {
-			problem(w, 404, "folder not found")
-			return
-		}
 	}
 	var input struct {
 		RecreateExisting bool `json:"recreateExisting"`
@@ -2467,21 +2453,9 @@ func (a *API) thumbnailLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) metadataRenew(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r, "id")
+	library, rootID, ok := a.jobScope(w, r)
 	if !ok {
 		return
-	}
-	library, err := a.Store.Library(r.Context(), id)
-	if err != nil {
-		problem(w, 404, "library not found")
-		return
-	}
-	rootID := rootParam(w, r)
-	if rootID != 0 {
-		if _, err := a.Store.Folder(r.Context(), rootID); err != nil {
-			problem(w, 404, "folder not found")
-			return
-		}
 	}
 	var input struct {
 		RecreateExisting bool `json:"recreateExisting"`
@@ -2495,33 +2469,71 @@ func (a *API) metadataRenew(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	job := a.startMetadataRenewJob(library, rootID, input.RecreateExisting, input.UpdateGps, input.UpdateTakenAt)
+	// Log the effective job parameters (including the dedupe result) so the
+	// admin log viewer shows exactly what every metadata refresh ran with.
+	applog.Printf(applog.Info, "metadata renew job %s: library=%d(%s) scope=%s recreateExisting=%v updateGps=%v updateTakenAt=%v requested by %s from %s",
+		job.ID, library.ID, library.Name, job.RootPath, input.RecreateExisting, input.UpdateGps, input.UpdateTakenAt, current(r).ID, remoteAddr(r))
 	writeJSON(w, http.StatusAccepted, job)
 }
 
-// rootParam reads an optional "root" query parameter naming a folder ID to
-// scope a refresh job to. Returns 0 when absent, meaning the whole library.
-func rootParam(w http.ResponseWriter, r *http.Request) int {
-	raw := r.URL.Query().Get("root")
-	if raw == "" {
-		return 0
+// jobScope resolves the inputs shared by the scan/thumbnail/metadata-renew
+// starters: the library named by the {id} path segment and the optional
+// ?root= folder id used to scope the job to one folder (0 = whole library).
+// It writes the matching problem response and returns ok=false when either
+// is missing or invalid — crucially, a malformed ?root= aborts the request
+// instead of silently starting a whole-library job.
+func (a *API) jobScope(w http.ResponseWriter, r *http.Request) (domain.Library, int, bool) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return domain.Library{}, 0, false
 	}
-	rootID, err := strconv.Atoi(raw)
-	if err != nil || rootID <= 0 {
-		problem(w, http.StatusBadRequest, "invalid root folder")
-		return 0
+	library, err := a.Store.Library(r.Context(), id)
+	if err != nil {
+		problem(w, http.StatusNotFound, "library not found")
+		return domain.Library{}, 0, false
 	}
-	return rootID
+	rootID := 0
+	if raw := r.URL.Query().Get("root"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			problem(w, http.StatusBadRequest, "invalid root folder")
+			return domain.Library{}, 0, false
+		}
+		if _, err := a.Store.Folder(r.Context(), parsed); err != nil {
+			problem(w, http.StatusNotFound, "folder not found")
+			return domain.Library{}, 0, false
+		}
+		rootID = parsed
+	}
+	return library, rootID, true
+}
+
+// optionInt/optionBool read values back from a persisted job's Options map
+// (JSON-decoded, so numbers arrive as float64) with zero-value fallbacks.
+func optionInt(options map[string]any, key string) int {
+	if value, ok := options[key].(float64); ok {
+		return int(value)
+	}
+	return 0
+}
+
+func optionBool(options map[string]any, key string) bool {
+	value, _ := options[key].(bool)
+	return value
 }
 
 // activeJob returns a snapshot of an active (running or paused) job of the
-// same category for the same library. Running two jobs of the same kind would
-// duplicate work and spawn competing thumbnail chains, so starters return the
-// existing job instead.
-func (a *API) activeJob(category string, libraryID int) (JobStatus, bool) {
+// same category, library and folder scope. Running two jobs of the same kind
+// on the same scope would duplicate work and spawn competing thumbnail chains,
+// so starters return the existing job instead. The scope is part of the match:
+// a folder-scoped request must never silently return (or be swallowed by) a
+// whole-library job that happens to still be active, and different folders of
+// one library are independent work.
+func (a *API) activeJob(category string, libraryID int, scopeFolderID int) (JobStatus, bool) {
 	a.jobMu.Lock()
 	defer a.jobMu.Unlock()
 	for _, job := range a.jobs {
-		if job.Category == category && job.LibraryID == libraryID && (job.Status == "running" || job.Status == "paused") {
+		if job.Category == category && job.LibraryID == libraryID && job.ScopeFolderID == scopeFolderID && (job.Status == "running" || job.Status == "paused") {
 			return *job, true
 		}
 	}
@@ -2529,7 +2541,7 @@ func (a *API) activeJob(category string, libraryID int) (JobStatus, bool) {
 }
 
 func (a *API) startMetadataRenewJob(library domain.Library, rootID int, recreateExisting, updateGps, updateTakenAt bool) JobStatus {
-	if existing, ok := a.activeJob("metadata-renew", library.ID); ok {
+	if existing, ok := a.activeJob("metadata-renew", library.ID, rootID); ok {
 		return existing
 	}
 	return a.startJob(a.newJob("metadata-renew", library, rootID, map[string]any{"recreateExisting": recreateExisting, "updateGps": updateGps, "updateTakenAt": updateTakenAt, "rootId": rootID}), func(job *JobStatus) error {
@@ -2565,19 +2577,16 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, rootID
 	// skipped this way is picked up by the next renew.
 	items = applyRenewResume(items, job.Processed)
 	a.updateJob(job.ID, func(job *JobStatus) { job.Total = len(items) + job.Processed })
-	type metadataTask struct {
-		item domain.Media
-	}
-	tasks := []metadataTask{}
-	for _, item := range items {
-		tasks = append(tasks, metadataTask{item: item})
-	}
-	if len(tasks) > 0 {
-		work := make([]jobpool.Work, len(tasks))
-		for i, task := range tasks {
-			task := task
+	// All three renew options map 1:1 onto the write policy: checked → the
+	// freshly extracted value replaces whatever is stored; unchecked → it is
+	// only written where the field is still empty. The store enforces this per
+	// column (see domain.MetadataWriteOptions).
+	opts := domain.MetadataWriteOptions{RecreateExisting: recreateExisting, UpdateGPS: updateGps, UpdateTakenAt: updateTakenAt}
+	if len(items) > 0 {
+		work := make([]jobpool.Work, len(items))
+		for i, item := range items {
+			item := item
 			work[i] = func(ctx context.Context) error {
-				item := task.item
 				a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = item.RelativePath })
 				extracted, err := extractor.Extract(ctx, item.Path, item.MIMEType)
 				metadataError := ""
@@ -2586,15 +2595,17 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, rootID
 				} else {
 					metadataError = extracted.Error
 				}
-				gps := ""
-				if updateGps {
-					gps = extracted.GPS
+				// Files whose container carries no date tags (MPEG-PS, plain AVI)
+				// renew from the filesystem mtime, mirroring the import-time
+				// fallback in the scanner; only when the job is allowed to
+				// overwrite taken-at.
+				takenAt := extracted.TakenAt
+				if takenAt == "" && updateTakenAt {
+					if info, statErr := os.Stat(item.Path); statErr == nil {
+						takenAt = metadata.TakenAtOrDefault(extracted.TakenAt, info.ModTime())
+					}
 				}
-				takenAt := ""
-				if updateTakenAt {
-					takenAt = extracted.TakenAt
-				}
-				if err := a.jobStore().UpdateMediaMetadata(ctx, item.ID, extracted.Metadata, gps, takenAt, metadataError, recreateExisting); err != nil {
+				if err := a.jobStore().UpdateMediaMetadata(ctx, item.ID, extracted.Metadata, extracted.GPS, takenAt, metadataError, opts); err != nil {
 					applog.Printf(applog.Error, "metadata renew failed for %s: %s", item.RelativePath, err)
 					a.updateJob(job.ID, func(job *JobStatus) {
 						job.Error = fmt.Sprintf("%s: %v", item.RelativePath, err)
@@ -2626,12 +2637,12 @@ func applyRenewResume(items []domain.Media, processed int) []domain.Media {
 }
 
 func (a *API) startScanJob(library domain.Library, rootID ...int) JobStatus {
-	if existing, ok := a.activeJob("scan", library.ID); ok {
-		return existing
-	}
 	scope := 0
 	if len(rootID) > 0 {
 		scope = rootID[0]
+	}
+	if existing, ok := a.activeJob("scan", library.ID, scope); ok {
+		return existing
 	}
 	return a.startJob(a.newJob("scan", library, scope, map[string]any{"rootId": scope}), func(job *JobStatus) error {
 		return a.runScanJob(job, library, scope)
@@ -2685,7 +2696,7 @@ func (a *API) runScanJob(job *JobStatus, library domain.Library, rootID int) err
 }
 
 func (a *API) startThumbnailJob(library domain.Library, rootID int, recreateExisting ...bool) JobStatus {
-	if existing, ok := a.activeJob("thumbnail-create", library.ID); ok {
+	if existing, ok := a.activeJob("thumbnail-create", library.ID, rootID); ok {
 		return existing
 	}
 	recreate := len(recreateExisting) > 0 && recreateExisting[0]
@@ -2700,7 +2711,7 @@ func (a *API) cleanupOrphanThumbnails(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) startOrphanThumbnailCleanupJob() JobStatus {
-	if existing, ok := a.activeJob("orphan-thumbnail-cleanup", 0); ok {
+	if existing, ok := a.activeJob("orphan-thumbnail-cleanup", 0, 0); ok {
 		return existing
 	}
 	return a.startJob(a.newJob("orphan-thumbnail-cleanup", domain.Library{ID: 0, Name: "All libraries"}, 0, nil), func(job *JobStatus) error {
@@ -2935,15 +2946,27 @@ func (a *API) newJob(kind string, library domain.Library, rootID int, options ma
 		rootPath = library.Roots[0].Path
 	}
 	scope := rootID
+	folderName := ""
 	if scope != 0 {
 		if folder, err := a.Store.Folder(context.Background(), rootID); err == nil {
 			rootPath = folder.Path
+			// The jobs list labels a scoped job with the folder's full path so
+			// the row identifies the exact folder across libraries.
+			folderName = folder.Path
 		}
+	}
+	if folderName != "" {
+		// Persisted inside options_json so the jobs list can label a scoped job
+		// with its folder name across restarts (see jobsWhere in the stores).
+		if options == nil {
+			options = map[string]any{}
+		}
+		options["folderName"] = folderName
 	}
 	now := time.Now()
 	return JobStatus{
 		ID: strconv.FormatInt(now.UnixNano(), 36), Category: kind, Type: kind, LibraryID: library.ID, LibraryName: library.Name,
-		RootPath: rootPath, Status: "running", Cancelable: true, StartedAt: now, Options: options, ScopeFolderID: scope,
+		RootPath: rootPath, Status: "running", Cancelable: true, StartedAt: now, Options: options, ScopeFolderID: scope, ScopeFolderName: folderName,
 	}
 }
 
@@ -3041,12 +3064,18 @@ func (a *API) recoverJobs() {
 		}
 		switch job.Category {
 		case "scan":
-			rootID, _ := job.Options["rootId"].(float64)
-			a.startJob(job, func(job *JobStatus) error { return a.runScanJob(job, library, int(rootID)) })
+			rootID := optionInt(job.Options, "rootId")
+			a.startJob(job, func(job *JobStatus) error { return a.runScanJob(job, library, rootID) })
 		case "thumbnail-create":
-			recreate, _ := job.Options["recreateExisting"].(bool)
-			rootID, _ := job.Options["rootId"].(float64)
-			a.startJob(job, func(job *JobStatus) error { return a.runThumbnailJob(job, library, int(rootID), recreate) })
+			recreate := optionBool(job.Options, "recreateExisting")
+			rootID := optionInt(job.Options, "rootId")
+			a.startJob(job, func(job *JobStatus) error { return a.runThumbnailJob(job, library, rootID, recreate) })
+		case "metadata-renew":
+			recreate := optionBool(job.Options, "recreateExisting")
+			updateGps := optionBool(job.Options, "updateGps")
+			updateTakenAt := optionBool(job.Options, "updateTakenAt")
+			rootID := optionInt(job.Options, "rootId")
+			a.startJob(job, func(job *JobStatus) error { return a.runMetadataRenewJob(job, library, rootID, recreate, updateGps, updateTakenAt) })
 		case "orphan-thumbnail-cleanup":
 			a.startJob(job, func(job *JobStatus) error { return a.runOrphanThumbnailCleanupJob(job) })
 		case "vacuum":
@@ -3385,7 +3414,7 @@ func (a *API) vacuumDB(w http.ResponseWriter, r *http.Request) {
 // startVacuumJob starts a database vacuum background job. The second return
 // value is false when the configured store does not support vacuuming.
 func (a *API) startVacuumJob() (JobStatus, bool) {
-	if existing, ok := a.activeJob("vacuum", 0); ok {
+	if existing, ok := a.activeJob("vacuum", 0, 0); ok {
 		return existing, true
 	}
 	provider, ok := a.Store.(interface {

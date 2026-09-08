@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: "./src/test-setup.ts",
+    // Per-test budget must exceed the 5s asyncUtilTimeout so a slow runner
+    // cannot turn a just-in-time waitFor pass into a test timeout.
+    testTimeout: 30000,
     coverage: {
       // Gate on line coverage; text table lands in build logs, the HTML
       // report under web/coverage/ shows per-line details for developers.

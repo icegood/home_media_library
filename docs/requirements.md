@@ -23,13 +23,15 @@ via `sh deploy/start.sh e2e`.
 ## Statistics - one shape everywhere
 
 - Classification comes ONLY from the `media_mime_types(value, media_type)` table via JOIN. Never classify by parsing `mime_type` strings.
-- The only statistics shape is `{images, videos}` (`domain.KindStats` / web `KindStats`). No other counts (folders/files) are exposed anywhere.
+- The only statistics shape is `{images, videos, documents}` (`domain.KindStats` / web `KindStats`). No other counts (folders/files) are exposed anywhere.
 - All stats surfaces use it: embedded `/api/v1/libraries` listing (computed server-side for all libraries in one grouped recursive pass), per-library `/stats` endpoint, folder menus, favorite-view menus.
-- Folder and favorite-view menu lines render `Images: X . Videos: Y` inline; values are always backend-computed recursively, never client-side tallies.
+- Folder and favorite-view menu lines render `Images: X · Videos: Y · Documents: Z` inline; values are always backend-computed recursively, never client-side tallies.
 
 ## Browsing
 
 - Views per library: Folders tree, Timeline (date groups), List/Tile layouts, content-visibility + virtual scrolling for large sets.
+- Timeline groups by date along a vertical ruler; its filter bar scopes the view by kind (All / Images / Videos / Documents) and by GPS presence (All / Geotagged / No GPS). Opening an item keeps the current folder/kind/GPS scope in the viewer (`root=`, `kind=`, `gps=` URL params), so prev/next paging stays inside the active filter.
+- Folders view kind scope (All / Images / Videos / Documents) filters the entry cards client-side and keeps the scope when opening the viewer (`kind=` URL param, no `root`).
 - Fixed filters bar auto-hides under the header (`VV` handle); its height publishes `--filters-h` on every page that has one, including Map.
 - Bulk selection: checkboxes top-left on every card where selection applies (media and folder cards, tile and list). Selection feeds bulk GPS set/shift and download.
 - Item dropdowns (three-dot): ONE component (`CardMenu`) for library tiles, folder entries, admin library rows and favorite rows; portal popup, closes on outside click and on menu-item click, fetches lazy contents only while open.
@@ -37,7 +39,7 @@ via `sh deploy/start.sh e2e`.
 
 ## Media viewer
 
-- Opens from any surface preserving context (folder range, root/kind scope, favorites origin chain via `?fav=`, map selections via `?list=`).
+- Opens from any surface preserving context (folder range, root/kind/GPS scope, favorites origin chain via `?fav=`, map selections via `?list=`).
 - Images: zoom/pan. Videos: direct play when browser codecs allow, otherwise FFmpeg transcode to the user's chosen fallback codec (h264/h265/vp9); server-side seek offset support.
 - Fullscreen control for videos; keyboard arrows page within the active range only.
 
@@ -51,9 +53,12 @@ via `sh deploy/start.sh e2e`.
 ## Map
 
 - Markers cluster by zoom; progressive rendering for large sets; place search ordered nearest-first; GPS picker popup.
+- Coordinate search (map-menu "Set point by coordinates" and the picked-point popup) accepts the canonical `lat,lng`, Google Maps degree+decimal-minute text (`N 050° 4.035, E 19° 56.614`), DMS and hemisphere forms, and Google Maps/`geo:` links (`q=`/`ll=`/`query=`, trailing `@lat,lng,z`, `!3d…!4d…`). Input is normalized to the canonical `latitude,longitude`; out-of-range coordinates are rejected.
+- In a folder-scoped map the "No GPS" toggle lists that folder's un-geotagged media in a left side panel (loaded from the folder media endpoint); a no-GPS viewer paging keeps `gps=nogps` scope.
 - Area selection draws a rectangle and queries the server for contained media.
 - Results panel: right-side overlay anchored below header+filters on ALL viewports (phone: capped at `min(320px, 82vw)` so it never covers the screen).
 - Clicking a result opens the viewer paging through EXACTLY the selected items in selected order; the selection is handed over verbatim (sessionStorage key `media-library-map-selection`, URL param `list=`).
+- Map tile sources per theme (light/dark) with an admin-supplied CARTO API key; per-user "Maximum zoom" (1–24, `mapMaxZoom` in the settings API, default 19) caps how far the map may zoom. Recommended: 19 for OpenStreetMap, 20 for CARTO and Esri (the provider's last native tile level; higher values just upscale those tiles).
 
 ## Thumbnails & metadata
 
@@ -80,7 +85,7 @@ via `sh deploy/start.sh e2e`.
 - Themes: light / dark / forest (+ system-follow). All component colors come from CSS custom properties defined per theme; hardcoded theme-specific colors are forbidden.
 - Active/selected controls use `--primary-text` background with `--primary-contrast` text; primary buttons glow uses `--btn-shadow-color`.
 - Global unified focus ring (`:focus-visible` outline in `--primary`).
-- User settings: UI zoom, stream chunk size, date format, video fallback codec, default thumbnails.
+- User settings: UI zoom, stream chunk size, date format, video fallback codec, default thumbnails, map tile sources per light/dark theme, map maximum zoom.
 - Languages: UI is authored in English; a per-user setting (`auto` or a fixed language: `en`, `ua`, `de`, `nl`, `fi`, `sv`, `pl`, `che` (Czech), `slo` (Slovak), `hu`, `es`, `it`, `sl` (Slovenian), `no`, `pt`; `auto` follows the browser) applies live translations to all rendered text and common attributes without page reload. New UI strings must keep English as the canonical source and add an entry to every table in `web/src/i18n.ts`.
 - Network settings toggle HTTP/HTTPS; gateway Caddyfile regenerates and hot-reloads.
 

@@ -15,6 +15,49 @@ export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:f
 export const StreamChunkSizeCtx = createContext(10000);
 export const DEFAULT_STREAM_CHUNK_SIZE = 10000;
 
+// ---------------------------------------------------------------- native chrome
+// The Android build runs edge-to-edge (media keeps the whole screen, including
+// under the system bars). MainActivity exposes the real status/navigation bar
+// sizes through the MLSafeInsets JS interface; the SPA shifts its own chrome
+// (top menu, viewer buttons, video controls) away from the bars using the
+// --ml-safe-* CSS variables. A plain browser never instantiates the interface,
+// so those variables stay 0 and the layout is untouched.
+declare global {
+  interface Window {
+    MLSafeInsets?: {
+      getTop(): number;
+      getBottom(): number;
+      getLeft(): number;
+      getRight(): number;
+      setDarkSystemIcons(dark:boolean): void;
+      // Hides/restores the system bars for in-app fullscreen (the Capacitor
+      // WebView cancels DOM requestFullscreen, so the native viewer mode asks
+      // the activity to go immersive instead).
+      setImmersive?(immersive:boolean): void;
+      // Hands a document URL to the native side, which downloads it with the
+      // WebView's auth cookie and opens it in an external viewer (the Android
+      // system WebView has no built-in PDF renderer).
+      openDocument?(url:string): void;
+    };
+  }
+  interface WindowEventMap {
+    "ml-insets": Event;
+  }
+}
+
+function syncNativeChrome() {
+  const insets = window.MLSafeInsets;
+  if (!insets) return;
+  const style = document.documentElement.style;
+  style.setProperty("--ml-safe-top", `${insets.getTop()}px`);
+  style.setProperty("--ml-safe-bottom", `${insets.getBottom()}px`);
+  style.setProperty("--ml-safe-left", `${insets.getLeft()}px`);
+  style.setProperty("--ml-safe-right", `${insets.getRight()}px`);
+  // The page background sits behind the transparent system bars, so invert the
+  // bar icons to match the active theme.
+  insets.setDarkSystemIcons(document.documentElement.dataset.theme !== "dark");
+}
+
 // ModalBackdrop: reusable backdrop that installs a capture-phase pointerdown handler
 // when mounted to prevent clicks from reaching elements underneath the modal. It
 // also exposes the same onClick backdrop-close behavior used across the app.
@@ -48,7 +91,7 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [zoom, setZoom] = useState(100);
   const [streamChunkSize, setStreamChunkSize] = useState(DEFAULT_STREAM_CHUNK_SIZE);
-  const [mapTileSettings, setMapTileSettings] = useState<{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>}>({providerLight:"osm", providerDark:"osm", mapProviders:{carto:{apiKey:""}}});
+  const [mapTileSettings, setMapTileSettings] = useState<{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number}>({providerLight:"osm", providerDark:"osm", mapProviders:{carto:{apiKey:""}}, maxZoom:19});
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsWarn, setSettingsWarn] = useState(false);
@@ -85,7 +128,21 @@ export function App() {
   const resolvedTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme;
+    syncNativeChrome();
   }, [resolvedTheme]);
+  useEffect(() => {
+    syncNativeChrome();
+    window.addEventListener("resize", syncNativeChrome);
+    window.addEventListener("orientationchange", syncNativeChrome);
+    // MainActivity fires this after the system bars hide/show or the inset
+    // values change, so the chrome shifts track immersive transitions.
+    window.addEventListener("ml-insets", syncNativeChrome);
+    return () => {
+      window.removeEventListener("resize", syncNativeChrome);
+      window.removeEventListener("orientationchange", syncNativeChrome);
+      window.removeEventListener("ml-insets", syncNativeChrome);
+    };
+  }, []);
   useEffect(() => {
     document.documentElement.style.fontSize = `${zoom}%`;
   }, [zoom]);
@@ -106,7 +163,7 @@ export function App() {
   }, [overlayLocation.pathname]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}}); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}, maxZoom: settings.mapMaxZoom || 19}); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
   }, [user?.id]);
   useEffect(() => {
     function closeTopMenus(event:PointerEvent) {
@@ -924,10 +981,14 @@ function isActiveJob(job:JobStatus) {
 
 function JobInstanceRow({job,onControl}:{job:JobStatus; onControl:(id:string, action:"pause"|"resume"|"cancel")=>void}) {
   const percent = job.total > 0 ? Math.min(100, Math.round(job.processed * 100 / job.total)) : 0;
+  // Scoped jobs carry the full folder path in the title already, so the detail
+  // line only repeats the current item; library-wide jobs fall back to their
+  // root path there.
+  const detailPath = job.currentPath || (job.scopeFolderName ? "" : job.rootPath);
   return <article className="job-row">
-    <div className="job-header"><span className="job-category-badge">{categoryLabel(jobCategory(job))}</span><strong>{job.libraryName}</strong><small>{job.status}</small><small className="job-instance-id">{job.id.slice(0, 8)}</small></div>
+    <div className="job-header"><span className="job-category-badge">{categoryLabel(jobCategory(job))}</span><strong>{job.scopeFolderName || job.libraryName}</strong><small>{job.status}</small><small className="job-instance-id">{job.id.slice(0, 8)}</small></div>
     <div className="job-progress"><span style={{width:`${percent}%`}}/></div>
-    <small>{job.total > 0 ? `${job.processed}/${job.total}` : `${job.processed} paths`}{job.currentPath || job.rootPath ? ` · ${job.currentPath || job.rootPath}` : ""}</small>
+    <small>{job.total > 0 ? `${job.processed}/${job.total}` : `${job.processed} paths`}{detailPath ? ` · ${detailPath}` : ""}</small>
     {job.cancelable && <div className="job-controls">
       {job.paused || job.status === "paused"
         ? <button type="button" className="secondary" onClick={() => onControl(job.id, "resume")}>Resume</button>
@@ -1374,6 +1435,20 @@ function Login({onLogin}:{onLogin:(user:User)=>void}) {
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotMessage, setForgotMessage] = useState("");
   const [forgotBusy, setForgotBusy] = useState(false);
+  const [servers, setServers] = useState<SavedServer[]>([]);
+  useEffect(() => {
+    // On the native app this page can be the login of any remembered server,
+    // so offer the saved-server list right here (the state is read from native
+    // storage, which is shared across all origins the WebView visits).
+    if (isNativeApp()) setServers(loadServerList());
+  }, []);
+  useEffect(() => {
+    // The form is only mounted after the api.me() probe resolves, so the
+    // platform autofill framework likely already scanned the page when no
+    // inputs existed. Tell Android to rescan so password managers offer their
+    // overlay for the freshly rendered username/password fields.
+    (window as unknown as {MLAutofill?:{rescanAutofill?:()=>void}}).MLAutofill?.rescanAutofill?.();
+  }, []);
   async function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
     const login = String(data.get("login"));
@@ -1400,10 +1475,19 @@ function Login({onLogin}:{onLogin:(user:User)=>void}) {
       setForgotBusy(false);
     }
   }
-  return <main className="center"><form className="card login" onSubmit={submit}><h1>Media Library</h1>
-    <label><span>Login</span><input name="login" id="login" autoComplete="username" required/></label>
+  return <main className="center"><form className="card login" autoComplete="on" onSubmit={submit}><h1>Media Library</h1>
+    <label><span>Login</span><input name="login" id="login" type="text" autoComplete="username" autoCorrect="off" autoCapitalize="none" spellCheck={false} required/></label>
     <label><span>Password</span><input name="password" id="password" type="password" autoComplete="current-password" required/></label>
     {error && <p className="error">{error}</p>}<button type="submit">Sign in</button>
+    {isNativeApp() && servers.length > 0 && <>
+      <p className="muted">Or switch to a saved library:</p>
+      <SavedServers servers={servers} onServersChanged={setServers} onPick={server => { window.location.replace(server.url); }}/>
+    </>}
+    {isNativeApp() && <p className="muted"><a href={bundledGateURL()} onClick={event => {
+      event.preventDefault();
+      // Back to the bundled origin's gate, which lists every remembered server.
+      window.location.replace(bundledGateURL());
+    }}>Connect to a different server</a></p>}
     <p className="muted"><button type="button" className="link-button" onClick={() => { setForgot(value => !value); setError(""); }}>Forgot password?</button></p>
     {forgot && <fieldset><legend>Password reset</legend>
       <label><span>Email</span><input type="email" value={forgotEmail} onChange={event => setForgotEmail(event.target.value)} autoComplete="email" required/></label>
@@ -1452,8 +1536,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   onThemeChange:(theme:"light"|"dark"|"forest"|"system")=>void;
   onZoomChange:(zoom:number)=>void;
   onStreamChunkSizeChange:(size:number)=>void;
-  mapTileSettings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>};
-  onMapTileChange:(settings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>})=>void;
+  mapTileSettings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number};
+  onMapTileChange:(settings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number})=>void;
   onUserChanged:(user:User)=>void; onClose:()=>void;
 }) {
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"forest"|"system">(theme);
@@ -1469,6 +1553,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   const [defaultThumbFolder, setDefaultThumbFolder] = useState("mountains");
   const [mapTileProviderLight, setMapTileProviderLight] = useState<MapTileSource>("osm");
   const [mapTileProviderDark, setMapTileProviderDark] = useState<MapTileSource>("osm");
+  const [mapMaxZoom, setMapMaxZoom] = useState(19);
   const [poiProviderLight, setPoiProviderLight] = useState<POISource>("overpass");
   const [poiProviderDark, setPoiProviderDark] = useState<POISource>("overpass");
   const [poiProviders, setPoiProviders] = useState<Record<string, Record<string, string>>>({overpass:{}});
@@ -1492,6 +1577,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       setDraftLanguage((settings as UserSettingsPayload).language ?? "auto");
       setMapTileProviderLight(normalizeMapTileSource(settings.mapTileProviderLight));
       setMapTileProviderDark(normalizeMapTileSource(settings.mapTileProviderDark));
+      setMapMaxZoom(settings.mapMaxZoom || 19);
       setPoiProviderLight(normalizePOISource(settings.poiProviderLight));
       setPoiProviderDark(normalizePOISource(settings.poiProviderDark));
       setPoiProviders(settings.poiProviders ?? {overpass:{}});
@@ -1520,13 +1606,13 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   async function saveSettings() {
     setSaving(true); setError(""); setSaved(false);
     try {
-      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, poiProviderLight, poiProviderDark, poiProviders});
+      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders});
       applyUserLanguage(draftLanguage);
-      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, poiProviderLight, poiProviderDark, poiProviders});
+      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders});
       onThemeChange(draftTheme);
       onZoomChange(draftZoom);
       onStreamChunkSizeChange(normalizeStreamChunkSize(draftStreamChunkSize));
-      onMapTileChange({providerLight: mapTileProviderLight, providerDark: mapTileProviderDark, mapProviders: mapTileSettings.mapProviders});
+      onMapTileChange({providerLight: mapTileProviderLight, providerDark: mapTileProviderDark, mapProviders: mapTileSettings.mapProviders, maxZoom: mapMaxZoom});
       setSaved(true);
     } catch (cause) { setError(notify(cause)); } finally { setSaving(false); }
   }
@@ -1559,6 +1645,9 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
         <label>Tile source in light mode<Combobox value={mapTileProviderLight} ariaLabel="Tile source in light mode" options={LIGHT_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderLight(value as MapTileSource); setSaved(false); }}/></label>
         <label>Tile source in dark/forest mode<Combobox value={mapTileProviderDark} ariaLabel="Tile source in dark/forest mode" options={DARK_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderDark(value as MapTileSource); setSaved(false); }}/></label>
         <small>Dark or forest themes use a native dark source when available (CARTO Voyager dark, CARTO Native dark); other sources get a dark filter. OSM and Esri need no key; every CARTO source needs one, configured by the admin in the Admin panel → Map tiles. Without a configured key, CARTO tiles show an "API key required" watermark.</small>
+        <label>Maximum zoom<input type="number" min={1} max={24} value={mapMaxZoom}
+          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setMapMaxZoom(next); setSaved(false); } }}/></label>
+        <small>Deepest zoom level the map may reach (1–24). Recommended: 19 for OpenStreetMap, 20 for CARTO and Esri. Higher values are allowed and just upscale the provider's best tiles, so expect blurry imagery past the recommended level.</small>
       </fieldset>
       <fieldset><legend>Map points of interest</legend>
         <label>POI provider in light mode<Combobox value={poiProviderLight} ariaLabel="POI provider in light mode" options={POI_SOURCE_OPTIONS} onSelect={value => { setPoiProviderLight(value as POISource); setSaved(false); }}/></label>
@@ -1817,6 +1906,7 @@ function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string
     <div className="card settings modal">
       <div className="panel-title"><h2>Re-extract metadata: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
       {error && <p className="error">{error}</p>}
+      <p className="muted">Every file is re-extracted; a checked option also overwrites values files already have, an unchecked one only fills what is still missing.</p>
       <label className="check"><input type="checkbox" checked={recreateExisting} onChange={event => setRecreateExisting(event.target.checked)}/> Re-extract metadata JSON for all files</label>
       <label className="check"><input type="checkbox" checked={updateGps} onChange={event => setUpdateGps(event.target.checked)}/> Update GPS coordinates</label>
       <label className="check"><input type="checkbox" checked={updateTakenAt} onChange={event => setUpdateTakenAt(event.target.checked)}/> Update date/time</label>
@@ -1921,13 +2011,14 @@ function Browser() {
   const currentFolderId = folderId == null ? null : Number(folderId);
   const favParam = new URLSearchParams(location.search).get("fav");
   const [view, setView] = useState<"tile"|"list">("tile");
-  const [kind, setKind] = useState<"all"|"image"|"video">("all");
+  const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
   const streamChunkSize = useContext(StreamChunkSizeCtx);
   useSyncBrowserBarMetrics();
   const {entries, setEntries, done:entriesDone, loading:entriesLoading, loadMore} = useBufferedFolderEntries(libraryId, currentFolderId, kind !== "all", streamChunkSize);
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
+  const visibleEntries = kind === "all" ? entries : entries.filter(entry => entry.type === "media" && entry.media != null && entry.media.kind === kind);
   const gridRef = useRef<HTMLDivElement|null>(null);
   const [favItem, setFavItem] = useState<Media|null>(null);
   const [favFolder, setFavFolder] = useState<{id:ID; name:string}|null>(null);
@@ -1966,10 +2057,10 @@ function Browser() {
     <span className="bar-sep"/>
     <BarSelect value={view} options={[{value:"tile", label:"Tile"}, {value:"list", label:"List"}]} onChange={v => setView(v as "tile"|"list")}/>
     <span className="bar-sep"/>
-    <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}]} onChange={v => setKind(v as "all"|"image"|"video")}/>
+    <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}, {value:"document", label:"Documents"}]} onChange={v => setKind(v as "all"|"image"|"video"|"document")}/>
     <span className="bar-sep"/>
     <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
-    <VirtualEntries entries={entries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone} kbFocusId={kb.focusId} kbBand={kb.bandIds} kbFocus={kb.focus}/>
+    <VirtualEntries entries={visibleEntries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam, ...(kind !== "all" ? {kind} : {})} : kind !== "all" ? {kind} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone} kbFocusId={kb.focusId} kbBand={kb.bandIds} kbFocus={kb.focus}/>
     {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
     {favFolder && createPortal(<FolderFavoriteViewChooser folderId={favFolder.id} folderName={favFolder.name} onChange={() => setFavFolder(null)} onClose={() => setFavFolder(null)}/>, document.body)}
   </main>;
@@ -1985,8 +2076,9 @@ function LibraryTimeline() {
   useSyncBrowserBarMetrics();
   const [items, setItems] = useState<Media[]>([]);
   const [loading, setLoading] = useState(true);
-  const [kind, setKind] = useState<"all"|"image"|"video">("all");
+  const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
   const [sort, setSort] = useState<"desc"|"asc">("asc");
+  const [gpsFilter, setGpsFilter] = useState<"all"|"gps"|"nogps">("all");
   useEffect(() => {
     if (!Number.isFinite(libraryId)) return;
     let cancelled = false;
@@ -1997,7 +2089,10 @@ function LibraryTimeline() {
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [libraryId, currentFolderId]);
-  const filtered = items.filter(item => kind === "all" || item.kind === kind);
+  const filtered = items.filter(item =>
+    (kind === "all" || item.kind === kind) &&
+    (gpsFilter === "all" ? true : gpsFilter === "nogps" ? item.gps === "" : item.gps !== "")
+  );
   const sorted = sortMedia(filtered, sort);
   const [selected, setSelected] = useState<ID[]>([]);
   const gridRef = useRef<HTMLDivElement|null>(null);
@@ -2025,8 +2120,9 @@ function LibraryTimeline() {
         ]}
         onChange={v => { if (v) navigate(v); }}/>
       <span className="bar-sep"/>
-      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}]} onChange={v => setKind(v as "all"|"image"|"video")}/>
+      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}, {value:"document", label:"Documents"}]} onChange={v => setKind(v as "all"|"image"|"video"|"document")}/>
       <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
+      <BarSelect ariaLabel="GPS" value={gpsFilter} options={[{value:"all", label:"All"}, {value:"gps", label:"Geotagged"}, {value:"nogps", label:"No GPS"}]} onChange={v => setGpsFilter(v as "all"|"gps"|"nogps")}/>
       <span className="bar-sep"/>
     <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
     {loading ? <div className="empty-state">
@@ -2039,7 +2135,7 @@ function LibraryTimeline() {
           <span className="timeline-group-date">{group.label}</span>
           <span className="timeline-group-dot" aria-hidden="true"/>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(favParam ? {fav:favParam} : {})}} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)}/>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(gpsFilter !== "all" ? {gps:gpsFilter} : {}), ...(favParam ? {fav:favParam} : {})}} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
           )}</div>
         </div>
       )}</div>}
@@ -2118,6 +2214,15 @@ function FavoriteViewRow({view,onChange}:{view:FavoriteView; onChange:()=>void})
 
 type FavoriteItem = {id:ID; name:string; mimeType?:string; isFolder?:boolean};
 
+// Checkbox labels on entry cards own the click so the card does not navigate
+// or toggle twice, then move keyboard focus onto the card itself (the checkbox
+// input is blurred so keyboard grid navigation keeps working after a check).
+function selectLabelClick(event:React.MouseEvent, kbFocus?:()=>void) {
+  event.stopPropagation();
+  kbFocus?.();
+  (document.activeElement as HTMLElement)?.blur?.();
+}
+
 function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected, onToggleSelected, kbFocused=false, kbRange=false, kbFocus}:{id:ID; name:string; view:"tile"|"list"; favoriteViewId?:ID; onRemove?:(id:ID)=>void; selected?:boolean; onToggleSelected?:(id:ID)=>void; kbFocused?:boolean; kbRange?:boolean; kbFocus?:()=>void}) {
   const [busy, setBusy] = useState(false);
   async function remove(event:MouseEvent<HTMLButtonElement>) {
@@ -2164,7 +2269,7 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected,
     }
   }
   return <article className={`card media folder-card ${view}${kbRange ? " kb-range" : ""}${kbFocused ? " kb-focus" : ""}`} data-kb-card="true" data-kb-id={`f${id}`} onClick={event => { if ((event.target as HTMLElement).closest("button, a, input, label, select, textarea")) return; if (event.button === 1 || event.ctrlKey || event.metaKey) void openFolderNewTab(event); else void openFolder(); }} onAuxClick={openFolderNewTab}>
-    {onToggleSelected && <label className="select-media" aria-label={`Select ${name}`} onClick={event => { event.stopPropagation(); kbFocus?.(); (document.activeElement as HTMLElement)?.blur?.(); }}>
+    {onToggleSelected && <label className="select-media" aria-label={`Select ${name}`} onClick={event => selectLabelClick(event, kbFocus)}>
       <input type="checkbox" checked={Boolean(selected)} onChange={() => onToggleSelected(id)}/>
     </label>}
     {view === "tile" && <div className="thumb-wrap"><FolderCover folderId={id}/></div>}
@@ -2183,7 +2288,7 @@ function FavoriteViewPage() {
   const mediaReqRef = useRef(0);
   const [view, setView] = useState<"tile"|"list">("tile");
   const [displayMode, setDisplayMode] = useState<"folders"|"timeline"|"map">("folders");
-  const [kind, setKind] = useState<"all"|"image"|"video">("all");
+  const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
@@ -2236,7 +2341,7 @@ function FavoriteViewPage() {
     }
     ensureMedia();
   }, [favoriteViewId, displayMode, mediaLoaded, selected, selectedFolders]);
-  const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (kind === "image" ? i.mimeType?.startsWith("image/") : i.mimeType?.startsWith("video/")));
+  const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (kind === "image" ? i.mimeType?.startsWith("image/") : kind === "video" ? i.mimeType?.startsWith("video/") : i.mimeType != null && !i.mimeType.startsWith("image/") && !i.mimeType.startsWith("video/")));
   const orderedItems = useMemo(() => [...filteredItems].sort((a, b) =>
     Number(Boolean(b.isFolder)) - Number(Boolean(a.isFolder)) || a.name.localeCompare(b.name, undefined, {sensitivity:"base"}) || a.id - b.id
   ), [filteredItems]);
@@ -2256,7 +2361,7 @@ function FavoriteViewPage() {
       <span className="bar-sep"/>
       <BarSelect value={view} options={[{value:"tile", label:"Tile"}, {value:"list", label:"List"}]} onChange={v => setView(v as "tile"|"list")}/>
       <span className="bar-sep"/>
-      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}]} onChange={v => setKind(v as "all"|"image"|"video")}/>
+      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}, {value:"document", label:"Documents"}]} onChange={v => setKind(v as "all"|"image"|"video"|"document")}/>
       {displayMode === "timeline" && <>
         <span className="bar-sep"/>
         <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
@@ -2329,7 +2434,7 @@ function FavoriteMediaViewerPage() {
   }
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
-      if (isEditableTarget(event.target)) return;
+      if (isEditableTarget(event.target) || isRangeInput(event.target)) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key === "ArrowLeft" && previous) {
         event.preventDefault();
@@ -2463,15 +2568,15 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
     setBandIds([]);
     card?.scrollIntoView?.({block:"nearest", inline:"nearest"});
   }, [options.containerRef]);
-  const stateRef = useRef({focusId, anchorId, onToggle:options.onToggle, onFavorite:options.onFavorite});
+  const stateRef = useRef({focusId, anchorId, onToggle:options.onToggle, onFavorite:options.onFavorite, enabled:options.enabled});
   useEffect(() => {
     stateRef.current.focusId = focusId;
     stateRef.current.anchorId = anchorId;
     stateRef.current.onToggle = options.onToggle;
     stateRef.current.onFavorite = options.onFavorite;
+    stateRef.current.enabled = options.enabled;
   });
   useEffect(() => {
-    if (!options.enabled) return;
     function cards() {
       const el = options.containerRef.current;
       return el ? Array.from(el.querySelectorAll<HTMLElement>("[data-kb-card]")) : [];
@@ -2519,6 +2624,9 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
       next.scrollIntoView?.({block:"nearest", inline:"nearest"});
     }
     function onKeyDown(event:KeyboardEvent) {
+      // Attached for the component's whole lifetime; the enabled flag is read
+      // live so no event can slip through an attach/detach gap (kb-flake fix).
+      if (!stateRef.current.enabled) return;
       if (isEditableTarget(event.target)) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (target && target.closest("input, button, select, textarea, a, label")) return;
@@ -2579,7 +2687,7 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [options.enabled, options.containerRef]);
+  }, [options.containerRef]);
   return {focusId, bandIds, focus};
 }
 
@@ -2851,7 +2959,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
     handleOpen(event);
   }
   return <div className={`card library folder-entry ${view === "list" ? "folder-entry-list" : ""}${kbRange ? " kb-range" : ""}${kbFocused ? " kb-focus" : ""}`} data-kb-card="true" data-kb-id={`f${entry.id}`} onClick={handleCardClick}>
-    {onToggleFolderSelected && <label className="select-media" aria-label={`Select ${entry.name}`} onClick={event => { event.stopPropagation(); kbFocus?.(); (document.activeElement as HTMLElement)?.blur?.(); }}>
+    {onToggleFolderSelected && <label className="select-media" aria-label={`Select ${entry.name}`} onClick={event => selectLabelClick(event, kbFocus)}>
       <input type="checkbox" checked={folderSelected} onChange={() => onToggleFolderSelected(entry.id)}/>
     </label>}
     <button type="button" className="folder-thumb-button" aria-label={`Open folder ${entry.name}`} onClick={handleOpen}>
@@ -2925,10 +3033,10 @@ function ThumbImage({src, priority, kind}:{src:string; priority?:boolean; kind?:
   const [state, setState] = useState<"loading"|"missing"|"loaded">("loading");
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (state !== "missing" || document.hidden) return;
+    if (state !== "missing" || document.hidden || attempt >= 2) return;
     const interval = window.setInterval(() => setAttempt(value => value + 1), THUMB_RETRY_MS);
     return () => window.clearInterval(interval);
-  }, [state]);
+  }, [state, attempt]);
   const url = attempt === 0 ? src : `${src}${src.includes("?") ? "&" : "?"}ts=${attempt}`;
   return <div className="thumb-frame">
     {state !== "loaded" && <span className="thumb-placeholder" aria-hidden="true">
@@ -2958,7 +3066,7 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,o
   }
   return <article className={`card media ${view}${kbRange ? " kb-range" : ""}${kbFocused ? " kb-focus" : ""}`} data-kb-card="true" data-kb-id={kbId ?? `m${item.id}`} onClick={handleClick} role="button" tabIndex={0}
     onKeyDown={event => { if (event.key === "Enter") navigate(url); }}>
-    {onToggleSelected && <label className="select-media" aria-label={`Select ${item.name}`} onClick={event => { event.stopPropagation(); kbFocus?.(); (document.activeElement as HTMLElement)?.blur?.(); }}>
+    {onToggleSelected && <label className="select-media" aria-label={`Select ${item.name}`} onClick={event => selectLabelClick(event, kbFocus)}>
       <input type="checkbox" checked={selected} onChange={() => onToggleSelected(item.id)}/>
     </label>}
     {view === "tile" && <div className="thumb-wrap">
@@ -3227,6 +3335,8 @@ function MediaViewerPage() {
   const sortParam = query.get("sort") ?? "name";
   const rootParam = query.get("root");
   const kindParam = query.get("kind");
+  const gpsRaw = query.get("gps");
+  const gpsParam: "gps"|"nogps"|null = gpsRaw === "gps" || gpsRaw === "nogps" ? gpsRaw : null;
   const w = query.get("w"), s = query.get("s"), e = query.get("e"), n = query.get("n");
   const bounds = w != null && s != null && e != null && n != null
     ? {west:Number(w), south:Number(s), east:Number(e), north:Number(n)}
@@ -3264,19 +3374,25 @@ function MediaViewerPage() {
       const load = rootParam === "all" ? api.libraryMedia(libraryId) : api.folderMedia(libraryId, Number(rootParam));
       load.then(items => {
         if (cancelled) return;
-        setScopedMedia(kindParam === "image" || kindParam === "video" ? items.filter(m => m.kind === kindParam) : items);
+        const byKind = kindParam === "image" || kindParam === "video" || kindParam === "document" ? items.filter(m => m.kind === kindParam) : items;
+        const byGPS = gpsParam === "nogps" ? byKind.filter(m => m.gps === "") : gpsParam === "gps" ? byKind.filter(m => m.gps !== "") : byKind;
+        setScopedMedia(byGPS);
       }).catch(() => { if (!cancelled) setScopedMedia(null); });
     } else {
       setScopedMedia(null);
     }
     return () => { cancelled = true; };
-  }, [libraryId, rootParam, kindParam, listParam, w, s, e, n]);
+  }, [libraryId, rootParam, kindParam, gpsParam, listParam, w, s, e, n]);
   const folderMedia = useMemo(() => {
     const scoped = scopedMedia
       ?? (listIds.length > 0
         ? items.filter(media => Number.isFinite(media.id) && listIds.includes(media.id))
         : null);
-    const base = (scoped ?? items.filter(media => media.folderId === routeFolderId)).map(media => mediaOverrides[media.id] ?? media);
+    const kindScoped = kindParam === "image" || kindParam === "video" || kindParam === "document";
+    const baseSource = scoped == null && kindScoped
+      ? items.filter(media => media.folderId === routeFolderId && media.kind === kindParam)
+      : scoped ?? items.filter(media => media.folderId === routeFolderId);
+    const base = baseSource.map(media => mediaOverrides[media.id] ?? media);
     if (sortParam === "name") return base;
     return sortMedia(base, sortParam === "date-asc" ? "asc" : "desc");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3306,15 +3422,16 @@ function MediaViewerPage() {
     const fav = query.get("fav") ?? undefined;
     if (listParam) return {list:listParam, fav};
     if (bounds && Number.isFinite(bounds.west)) return {bounds, fav};
-    if (rootParam != null) return {root:rootParam, kind: kindParam === "image" || kindParam === "video" ? kindParam : "all", fav};
-    return fav ? {fav} : {};
-  }, [bounds, rootParam, kindParam, listParam, location.search]);
+    if (rootParam != null) return {root:rootParam, kind: kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : "all", gps: gpsParam ?? undefined, fav};
+    const kindNav = kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : "all";
+    return fav ? {kind: kindNav, fav} : kindNav !== "all" ? {kind: kindNav} : {};
+  }, [bounds, rootParam, kindParam, gpsParam, listParam, location.search]);
   function go(media:Media|null) {
     if (media) navigate(libraryItemURL(libraryId, media, sortParam, nav));
   }
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
-      if (isEditableTarget(event.target)) return;
+      if (isEditableTarget(event.target) || isRangeInput(event.target)) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key === "ArrowLeft" && previous) {
         event.preventDefault();
@@ -3353,7 +3470,8 @@ function MediaViewerPage() {
 
 export interface ItemNav {
   root?:string;
-  kind?:"all"|"image"|"video";
+  kind?:"all"|"image"|"video"|"document";
+  gps?:"gps"|"nogps";
   bounds?:{west:number; south:number; east:number; north:number};
   list?:string;
   fav?:string;
@@ -3364,6 +3482,7 @@ function libraryItemURL(libraryId:ID, item:Media, sort:string = "name", nav?:Ite
   if (sort !== "name") query.set("sort", sort);
   if (nav?.root != null) query.set("root", nav.root);
   if (nav?.kind != null && nav.kind !== "all") query.set("kind", nav.kind);
+  if (nav?.gps != null) query.set("gps", nav.gps);
   if (nav?.fav) query.set("fav", String(nav.fav));
   if (nav?.list) query.set("list", nav.list);
   if (nav?.bounds) {
@@ -3385,7 +3504,17 @@ function isEditableTarget(target:EventTarget|null) {
   return tag === "textarea" || tag === "select" || element.isContentEditable;
 }
 
+// Range sliders are not treated as editable by isEditableTarget (so Space
+// still toggles play/pause in the video player), but arrow keys on a focused
+// slider must adjust its value (seek the video) instead of navigating media.
+function isRangeInput(target:EventTarget|null) {
+  const element = target instanceof HTMLElement ? target : null;
+  return !!element && element.tagName.toLowerCase() === "input" && (element as HTMLInputElement).type === "range";
+}
+
 const SWIPE_THRESHOLD = 50;
+const LONG_PRESS_MS = 600;
+const LONG_PRESS_SLOP = 14;
 
 function mediaDimensions(metadata:Record<string, unknown>): {width:number; height:number}|null {
   const dimension = (value:unknown) => typeof value === "string" ? Number(value) : value;
@@ -3435,22 +3564,41 @@ function unlockOrientation() {
 
 function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,onUpdated}:{item:Media; favoriteViewId?:ID; infoOpen:boolean; previous:Media|null; next:Media|null; onGo:(media:Media|null)=>void; onToggleInfo:()=>void; onUpdated?:(updated:Media)=>void}) {
   const supported = supportedVideoCodecs();
+  const navigate = useNavigate();
   const mediaRef = useRef<HTMLDivElement|null>(null);
   const [imageZoom, setImageZoom] = useState(1);
   const [imagePan, setImagePan] = useState({x:0, y:0});
   const [imageRotation, setImageRotation] = useState(0);
   const [drag, setDrag] = useState<{pointerId:number; startX:number; startY:number; originX:number; originY:number}|null>(null);
   const [docUrl, setDocUrl] = useState<string>("");
+  const [docNative, setDocNative] = useState(false);
   const [docError, setDocError] = useState<string>("");
   useEffect(() => { setImagePan({x:0, y:0}); setDrag(null); setImageRotation(0); }, [item.id]);
   useEffect(() => { if (imageZoom === 1) { setImagePan({x:0, y:0}); setDrag(null); } }, [imageZoom]);
-  // Documents (PDFs, etc.) are proxied through the authenticated fetch so
-  // the Android WebView's built-in PDF viewer still gets the HttpOnly cookie,
-  // which it would otherwise strip and replace with "Authorization required".
+  // Documents (PDFs, etc.) are shown in an <iframe> on desktop/iOS via a blob
+  // URL fetched with credentials, so the request keeps the HttpOnly auth cookie
+  // (a plain iframe navigation would drop it — "401 Authorization required").
+  // The Android system WebView has no PDF renderer at all, so there the URL is
+  // handed to MainActivity's MLSafeInsets.openDocument bridge instead, which
+  // downloads the file and opens it through an external native viewer Intent.
   useEffect(() => {
     if (item.kind !== "document") return;
     let alive = true;
-    setDocUrl(""); setDocError("");
+    setDocUrl(""); setDocError(""); setDocNative(false);
+    const contentUrl = api.contentUrl(item.id);
+    // The Android system WebView has no PDF renderer. When the native
+    // bridge is available, hand the absolute URL to MainActivity which
+    // downloads the file with the WebView's auth cookie and opens it via
+    // an external Intent (ACTION_VIEW). On iOS/desktop, the blob/iframe
+    // path is kept (WebKit and desktop browsers render PDFs inline).
+    if (window.MLSafeInsets?.openDocument) {
+      try {
+        const absolute = new URL(contentUrl, window.location.href).toString();
+        window.MLSafeInsets.openDocument(absolute);
+        setDocNative(true);
+      } catch (cause) { if (alive) setDocError((cause as Error).message); }
+      return () => { alive = false; };
+    }
     api.documentContent(item.id).then(url => { if (!alive) { URL.revokeObjectURL(url); return; } setDocUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url; }); }, cause => { if (!alive) return; setDocError((cause as Error).message); });
     return () => {
       alive = false;
@@ -3491,11 +3639,111 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     setDrag(null);
   }
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // The Capacitor WebView never honours Element.requestFullscreen (its chrome
+  // client immediately cancels the custom view), so the native app uses an
+  // in-page fullscreen instead: the media element is pinned edge-to-edge with
+  // CSS while MainActivity hides the system bars (setImmersive).
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const nativeFullscreenRef = useRef(false);
+  nativeFullscreenRef.current = nativeFullscreen;
+  // Long press acts as the system back button. In the Android native app the
+  // in-app fullscreen hides the system bars (setImmersive), so there is no
+  // on-screen back/gesture target once the media is pinned edge-to-edge; a
+  // long tap on the media always works as an escape hatch (leave fullscreen,
+  // then a second long tap goes back a page).
+  const longPressTimer = useRef<number|null>(null);
+  const longPressStart = useRef<{x:number; y:number}|null>(null);
+  const longPressTriggered = useRef(false);
+  function cancelLongPress() {
+    if (longPressTimer.current != null) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+    longPressStart.current = null;
+  }
+  function handleLongPress() {
+    longPressTriggered.current = true;
+    cancelLongPress();
+    if (nativeFullscreenRef.current) {
+      // Same exit path as toggleFullscreen-off: pop the fullscreen history
+      // entry so the SPA restores the bars and unlocks orientation.
+      setNativeFullscreen(false);
+      try { window.MLSafeInsets?.setImmersive?.(false); } catch { /* bridge may be gone */ }
+      unlockOrientation();
+      try { history.back(); } catch { /* history may be unavailable */ }
+      return;
+    }
+    if (document.fullscreenElement) {
+      // Browser (DOM) fullscreen: long press exits it — same escape a
+      // hidden browser chrome would otherwise need.
+      try { void document.exitFullscreen?.(); } catch { /* ignore */ }
+      return;
+    }
+    // In the Android native app a long press doubles as the system back
+    // button outside fullscreen too. Browsers keep their native long-press
+    // menu instead of being hijacked into navigating back.
+    if (window.MLSafeInsets?.setImmersive) navigate(-1);
+  }
+  function onViewerContextMenu(event:React.MouseEvent) {
+    // The Android WebView's long-press context menu would fight the back
+    // gesture — suppress it in the native app (browser right-clicks keep the
+    // normal image/video menu).
+    if (window.MLSafeInsets?.setImmersive) event.preventDefault();
+  }
+  // Fullscreen chrome is immersive: a short tap on the media reveals the
+  // overlay controls (time bar, zoom/rotate, arrows, favorite/download) and
+  // another tap hides them again. Outside fullscreen the controls are always
+  // visible regardless of this flag.
+  const [controlsShown, setControlsShown] = useState(false);
+  const controlsShownRef = useRef(controlsShown);
+  controlsShownRef.current = controlsShown;
+  const controlsHideTimer = useRef<number|null>(null);
+  function hideControls() {
+    setControlsShown(false);
+    if (controlsHideTimer.current != null) {
+      window.clearTimeout(controlsHideTimer.current);
+      controlsHideTimer.current = null;
+    }
+  }
+  function showControls() {
+    if (!nativeFullscreenRef.current && !document.fullscreenElement) return;
+    setControlsShown(true);
+    if (controlsHideTimer.current != null) window.clearTimeout(controlsHideTimer.current);
+    controlsHideTimer.current = window.setTimeout(() => {
+      if (nativeFullscreenRef.current || document.fullscreenElement) setControlsShown(false);
+    }, 4000);
+  }
+  function toggleControls() {
+    if (controlsShownRef.current) hideControls();
+    else showControls();
+  }
+  useEffect(() => () => {
+    if (controlsHideTimer.current != null) window.clearTimeout(controlsHideTimer.current);
+    if (longPressTimer.current != null) window.clearTimeout(longPressTimer.current);
+    if (nativeFullscreenRef.current) window.MLSafeInsets?.setImmersive?.(false);
+  }, []);
+  useEffect(() => {
+    if (!nativeFullscreen) return;
+    // System back popped the fullscreen history entry: leave fullscreen.
+    function onPopState() {
+      setNativeFullscreen(false);
+      window.MLSafeInsets?.setImmersive?.(false);
+      unlockOrientation();
+      hideControls();
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [nativeFullscreen]);
   useEffect(() => {
     function syncFullscreen() {
       const active = Boolean(document.fullscreenElement);
       setIsFullscreen(active);
-      if (!active) unlockOrientation();
+      if (active) {
+        showControls();
+      } else {
+        unlockOrientation();
+        hideControls();
+      }
     }
     document.addEventListener("fullscreenchange", syncFullscreen);
     return () => document.removeEventListener("fullscreenchange", syncFullscreen);
@@ -3503,6 +3751,28 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   async function toggleFullscreen() {
     const el = mediaRef.current;
     if (!el) return;
+    // In the native app, MainActivity's MLSafeInsets bridge is always injected
+    // before the SPA boots; browsers never have it. Presence of setImmersive is
+    // the feature check (the WebView cannot do DOM fullscreen).
+    if (window.MLSafeInsets?.setImmersive) {
+      const next = !nativeFullscreen;
+      setNativeFullscreen(next);
+      try { window.MLSafeInsets?.setImmersive?.(next); } catch {
+        // Bridge interface may not be injected yet — the class still applies.
+      }
+      if (next) {
+        lockOrientation(item);
+        // A history entry makes the system back button leave fullscreen first
+        // (popstate below) instead of exiting the app or navigating away.
+        try { history.pushState({mlFullscreen:true}, ""); } catch { /* history may be unavailable */ }
+        showControls();
+      } else {
+        unlockOrientation();
+        hideControls();
+        try { history.back(); } catch { /* ignore */ }
+      }
+      return;
+    }
     try {
       if (document.fullscreenElement) await document.exitFullscreen?.();
       else {
@@ -3540,18 +3810,35 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     return () => window.removeEventListener("keydown", onZoomKey);
   }, [item.id]);
   function onTouchStart(event:React.TouchEvent<HTMLDivElement>) {
-    if (item.kind !== "image" && item.kind !== "video") return;
-    if (event.touches.length >= 2) { setDrag(null); return; }
-    if (imageZoom > 1) { swipeStart.current = null; return; }
     const target = event.target;
-    if (!(target instanceof HTMLElement) || isEditableTarget(target) || target.closest("button, a, .video-controls")) {
+    const onControl = target instanceof HTMLElement && (isEditableTarget(target) || Boolean(target.closest("button, a, .video-controls")));
+    const touch = event.touches[0];
+    if (longPressTimer.current != null) window.clearTimeout(longPressTimer.current);
+    longPressStart.current = touch && !onControl ? {x:touch.clientX, y:touch.clientY} : null;
+    longPressTriggered.current = false;
+    // A hold is how a zoomed image/video is panned, so only the unzoomed media
+    // (and documents) treat a long tap as back.
+    const pressable = touch != null && !onControl && !((item.kind === "image" || item.kind === "video") && imageZoom > 1);
+    if (pressable) {
+      longPressTimer.current = window.setTimeout(handleLongPress, LONG_PRESS_MS);
+    }
+    if (item.kind !== "image" && item.kind !== "video") return;
+    if (event.touches.length >= 2) { setDrag(null); cancelLongPress(); return; }
+    if (imageZoom > 1) { swipeStart.current = null; return; }
+    if (onControl) {
       swipeStart.current = null;
       return;
     }
-    const touch = event.touches[0];
     swipeStart.current = touch ? {x:touch.clientX, y:touch.clientY} : null;
   }
   function onTouchMove(event:React.TouchEvent<HTMLDivElement>) {
+    if (longPressStart.current != null && !longPressTriggered.current) {
+      const touch = event.touches[0];
+      if (touch && (Math.abs(touch.clientX - longPressStart.current.x) > LONG_PRESS_SLOP || Math.abs(touch.clientY - longPressStart.current.y) > LONG_PRESS_SLOP)) {
+        cancelLongPress();
+      }
+    }
+    if (event.touches.length >= 2) cancelLongPress();
     if (item.kind !== "image" && item.kind !== "video") return;
     if (event.touches.length < 2) {
       // A pinch is only active while two fingers stay down; once one lifts,
@@ -3579,6 +3866,14 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     setImageZoom(Math.round(next * 100) / 100);
   }
   function onTouchEnd(event:React.TouchEvent<HTMLDivElement>) {
+    if (longPressTriggered.current) {
+      // A touch that already fired the back gesture must not also act as a
+      // plain tap (play/pause, swipe) once the finger lifts.
+      event.preventDefault();
+      longPressStart.current = null;
+      return;
+    }
+    cancelLongPress();
     if (pinchStart.current != null) {
       pinchStart.current = null;
       swipeStart.current = null;
@@ -3600,17 +3895,31 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     }
   }
   return <div className={`viewer-stage ${infoOpen ? "info-open" : ""}`} aria-label={item.name}>
-    <div className="viewer-media" ref={mediaRef} onWheel={onImageWheel} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
+    <div className={`viewer-media${nativeFullscreen ? " ml-fullscreen" : ""}${(nativeFullscreen || isFullscreen) && !controlsShown ? " ml-controls-hidden" : ""}`} ref={mediaRef} onWheel={onImageWheel} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onContextMenu={onViewerContextMenu} onClick={event => {
+        if (longPressTriggered.current) { event.preventDefault(); event.stopPropagation(); longPressTriggered.current = false; return; }
+        // A short tap anywhere on the bare media toggles the fullscreen
+        // chrome; taps on an actual control (buttons, time bar, zoom/rotate)
+        // keep doing their own thing instead of hiding the overlay.
+        const target = event.target;
+        const onControl = target instanceof HTMLElement && (isEditableTarget(target) || Boolean(target.closest("button, a, .video-controls, .zoom-controls, .video-badge-wrap")));
+        if (onControl) return;
+        toggleControls();
+      }}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
+      {item.kind === "image" && <button type="button" className="viewer-fullscreen" aria-label={isFullscreen || nativeFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen || nativeFullscreen ? "⤡" : "⛶"}</button>}
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
-      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
+      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         item.kind === "image" ?
         <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`}} src={api.contentUrl(item.id)} alt={item.name}
           onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         <>
-          <iframe key={`document-${item.id}`} className="viewer-document" hidden={!docUrl && !docError} title={item.name} src={docUrl}/>
-          {!docUrl && !docError && <div className="map-notice" role="status">Opening document…</div>}
+          {docNative
+            ? <div className="map-notice" role="status">Opening document in the system viewer…</div>
+            : <>
+              <iframe key={`document-${item.id}`} className="viewer-document" hidden={!docUrl && !docError} title={item.name} src={docUrl}/>
+              {!docUrl && !docError && <div className="map-notice" role="status">Opening document…</div>}
+            </>}
           {docError && <div className="map-notice" role="alert">Cannot open document: {docError}</div>}
         </>}
       <button type="button" className="viewer-arrow viewer-arrow-right" aria-label="Next media" disabled={!next} onClick={() => onGo(next)}>{">"}</button>
@@ -4120,11 +4429,10 @@ function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] 
   return items.slice(0, count);
 }
 
-function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>}}) {
+function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number}}) {
   const navigate = useNavigate();
   useSyncBrowserBarMetrics();
   const [items, setItems] = useState<MapMedia[]>([]);
-  const [showTrajectories, setShowTrajectories] = useState(false);
   const [pickedGPS, setPickedGPS] = useState("");
   const [coordinateInput, setCoordinateInput] = useState("");
   const [coordinateError, setCoordinateError] = useState("");
@@ -4139,8 +4447,13 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const folderParam = query.get("folder");
   const favoriteParam = query.get("favorite");
   const folderScoped = !!folderParam;
-  const [selectedIndex, setSelectedIndex] = useState<number|null>(null);
+  const [selectedTrajectories, setSelectedTrajectories] = useState<number[]>([]);
+  const [trajDropdownOpen, setTrajDropdownOpen] = useState(false);
+  const trajDropdownRef = useRef<HTMLButtonElement|null>(null);
   const [hideMarkers, setHideMarkers] = useState(false);
+  const [showNoGPS, setShowNoGPS] = useState(false);
+  const [noGPSItems, setNoGPSItems] = useState<Media[]>([]);
+  const [noGPSLoading, setNoGPSLoading] = useState(false);
   const [showTrajectoryNumbers, setShowTrajectoryNumbers] = useState(false);
   const [showPOIs, setShowPOIs] = useState(false);
   const [poiCategories, setPoiCategories] = useState<POICategory[]>([]);
@@ -4149,17 +4462,37 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const [pois, setPois] = useState<POI[]>([]);
   const [poiLoading, setPoiLoading] = useState(false);
   const [poiError, setPoiError] = useState("");
-  const segments = useMemo(() => folderScoped && showTrajectories ? buildTrajectories(items) : [], [items, showTrajectories, folderScoped]);
-  useEffect(() => { if (!showTrajectories) setSelectedIndex(null); }, [showTrajectories]);
-  useEffect(() => { if (selectedIndex != null && selectedIndex >= segments.length) setSelectedIndex(null); }, [segments.length, selectedIndex]);
+  const segments = useMemo(() => folderScoped ? buildTrajectories(items) : [], [items, folderScoped]);
+  useEffect(() => {
+    setSelectedTrajectories(prev => prev.filter(index => index < segments.length));
+  }, [segments.length]);
   useEffect(() => {
     api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
   }, [libraryParam, folderParam, favoriteParam]);
+  useEffect(() => {
+    if (!showNoGPS || !folderScoped || !libraryParam || !folderParam) {
+      setNoGPSLoading(false);
+      setNoGPSItems([]);
+      return;
+    }
+    let cancelled = false;
+    setNoGPSLoading(true);
+    api.folderMedia(Number(libraryParam), Number(folderParam)).then(items => {
+      if (cancelled) return;
+      setNoGPSItems(items.filter(item => item.gps === ""));
+      setNoGPSLoading(false);
+    }).catch(cause => {
+      if (cancelled) return;
+      setNoGPSLoading(false);
+      setMapError((cause as Error).message);
+    });
+    return () => { cancelled = true; };
+  }, [showNoGPS, folderScoped, libraryParam, folderParam]);
   const focused = items.find(item => item.id === Number(query.get("item")));
   const focusedGPS = focused ? parseGPS(focused.gps) : null;
   function setByCoordinates() {
     const pt = parseGPS(coordinateInput.trim());
-    if (!pt) { setCoordinateError("Enter coordinates as lat,lng (e.g. 50.45,30.52)."); return; }
+    if (!pt) { setCoordinateError("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614)."); return; }
     const gps = formatGPS(pt[0], pt[1]);
     setPickedGPS(gps);
     setCoordinateInput(gps);
@@ -4223,6 +4556,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const tileAttribution = cartoTiles ? "&copy; OpenStreetMap contributors &copy; CARTO"
     : esriTiles ? "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics"
     : "&copy; OpenStreetMap contributors";
+  const mapMaxZoom = Math.min(24, Math.max(1, Math.round(tileSettings.maxZoom || 19)));
   const filterDark = darkMode && !(isSatellite || (cartoTiles && effectiveSubStyle === "dark"));
   useEffect(() => {
     const container = mapRef.current?.getContainer();
@@ -4242,16 +4576,24 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
           ]} onChange={v => { if (v) navigate(v); }}/>;
         })()}
       {folderScoped && <span className="bar-group">
-        <label className="map-trajectory-toggle" title="Connect geotagged media in time order; breaks at saved starts">
-          <input type="checkbox" checked={showTrajectories} onChange={event => setShowTrajectories(event.target.checked)}/> Trajectories
-        </label>
-        {showTrajectories && <label className="map-trajectory-toggle" title="Show travel-order numbers along each trajectory">
+        {segments.length > 0 && <>
+          <button ref={trajDropdownRef} type="button" className="trajectory-filter-trigger" aria-haspopup="dialog" aria-expanded={trajDropdownOpen} title="Pick which trajectories to show" onClick={() => setTrajDropdownOpen(value => !value)}>
+            Trajectories{selectedTrajectories.length > 0 ? ` · ${selectedTrajectories.length}/${segments.length}` : " · none"} <span className="caret" aria-hidden="true">▾</span>
+          </button>
+          {trajDropdownOpen && trajDropdownRef.current && createPortal(
+            <TrajectoryFilterPanel
+              anchor={trajDropdownRef.current}
+              segments={segments}
+              selected={selectedTrajectories}
+              onChange={setSelectedTrajectories}
+              onClose={() => setTrajDropdownOpen(false)}
+            />,
+            document.body
+          )}
+        </>}
+        {selectedTrajectories.length > 0 && <label className="map-trajectory-toggle" title="Show travel-order numbers along each trajectory">
           <input type="checkbox" checked={showTrajectoryNumbers} onChange={event => setShowTrajectoryNumbers(event.target.checked)}/> Numbers
         </label>}
-        {showTrajectories && <BarSelect ariaLabel="Filter by trajectory" value={selectedIndex == null ? "" : String(selectedIndex)} style={selectedIndex != null ? {borderColor: TRAJECTORY_COLORS[selectedIndex % TRAJECTORY_COLORS.length]} : undefined} options={[
-          {value:"", label:segments.length > 0 ? "All trajectories" : "No trajectories"},
-          ...segments.map((segment, index) => ({value:String(index), label:segment.name})),
-        ]} onChange={value => setSelectedIndex(value === "" ? null : Number(value))}/>}
       </span>}
       <span className="bar-group">
         <div className="button-group">
@@ -4259,11 +4601,14 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
           {area && <button className="secondary" onClick={() => setArea(null)}>Clear selection</button>}
         </div>
         <form className="map-coordinate-input" onSubmit={event => { event.preventDefault(); setByCoordinates(); }}>
-          <input aria-label="Set point by coordinates" value={coordinateInput} onChange={event => { setCoordinateInput(event.target.value); setCoordinateError(""); }} placeholder="lat, lng (set point)"/>
+          <input aria-label="Set point by coordinates" value={coordinateInput} onChange={event => { setCoordinateInput(event.target.value); setCoordinateError(""); }} placeholder="lat, lng or Google Maps link"/>
           <button type="submit" className="secondary">Set point</button>
         </form>
       </span>
       <span className="bar-group">
+        <label className="map-trajectory-toggle" title="List the media in this folder that have no GPS coordinates">
+          <input type="checkbox" checked={showNoGPS} onChange={event => setShowNoGPS(event.target.checked)}/> No GPS
+        </label>
         <label className="map-trajectory-toggle" title="Hide all item and cluster markers, leaving only the basemap">
           <input type="checkbox" checked={hideMarkers} onChange={event => setHideMarkers(event.target.checked)}/> Map only
         </label>
@@ -4288,24 +4633,17 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
     <div className="map-stage">
       {(mapError) && <div className="map-notice" role="alert">{mapError}</div>}
       <MapContainer ref={mapRef} center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className={`map${filterDark ? " dark-tile-filter" : ""}`}>
-        <TileLayer key={`${theme}-${isSatellite ? "satellite" : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}/>
+        <TileLayer key={`${theme}-${isSatellite ? "satellite" : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}
+          maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>
         <ScaleControl position="bottomleft" imperial={false}/>
         <PlaceSearch/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
-        <MapItems items={items} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} showTrajectories={showTrajectories} segments={segments} selectedIndex={selectedIndex} onSelectSegment={setSelectedIndex} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} onSetTrajectoryStart={folderScoped ? async (item, start) => {
-          await api.setTrajectoryStart(item.id, item.folderId, start);
-          api.map(libraryParam ? Number(libraryParam) : undefined, Number(folderParam), undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
-        } : undefined} onSetTrajectoryEnd={folderScoped ? async (item, end) => {
-          await api.setTrajectoryEnd(item.id, item.folderId, end);
-          api.map(libraryParam ? Number(libraryParam) : undefined, Number(folderParam), undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
-        } : undefined} onSetTrajectoryName={folderScoped ? async (item, name) => {
-          await api.setTrajectoryName(item.id, item.folderId, name);
-          api.map(libraryParam ? Number(libraryParam) : undefined, Number(folderParam), undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
-        } : undefined}/>
+        <MapItems items={items} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo}/>
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
       {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
+      {showNoGPS && folderScoped && <NoGPSPanel items={noGPSItems} loading={noGPSLoading} libraryId={Number(libraryParam)} folderId={Number(folderParam)} onClose={() => setShowNoGPS(false)}/>}
     </div>
   </main>;
 }
@@ -4483,7 +4821,10 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
     const onMove = (move:PointerEvent) => {
       if (!dragRef.current || !panelRef.current) return;
       const next = dragRef.current.width + (dragRef.current.pointer - move.clientX);
-      const clamped = Math.min(Math.max(next, 220), Math.max(220, window.innerWidth - 80));
+      // The CSS default is min(360px, 100vw - 24px); never clamp below it,
+      // otherwise dragging wider on a narrow viewport would shrink the panel.
+      const defaultWidth = Math.min(360, window.innerWidth - 24);
+      const clamped = Math.min(Math.max(next, 220), Math.max(220, defaultWidth, window.innerWidth - 80));
       panelRef.current.style.width = `${clamped}px`;
       setWidth(clamped);
     };
@@ -4526,6 +4867,32 @@ function MapAreaItem({item,sort,selection}:{item:MapMedia; sort:"desc"|"asc"; se
     <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
     <small>{item.name}</small>
   </Link>;
+}
+
+function NoGPSPanel({items,loading,libraryId,folderId,onClose}:{items:Media[]; loading:boolean; libraryId:ID; folderId:ID; onClose:()=>void}) {
+  const sorted = useMemo(() => sortMedia(items, "desc"), [items]);
+  const visible = useProgressiveReveal(sorted, 100);
+  const groups = useMemo(() => groupByDate(visible), [visible]);
+  return <aside className="map-timeline-panel nogps" aria-label="Media without GPS in this folder">
+    <div className="map-timeline-head">
+      <strong>{sorted.length} {sorted.length === 1 ? "item" : "items"} without GPS</strong>
+      <button className="secondary" onClick={onClose}>Close</button>
+    </div>
+    {loading && <p className="map-render-status inline" role="status">Loading media without GPS…</p>}
+    {!loading && sorted.length === 0 ? <div className="empty-state"><p>Every item in this folder has GPS.</p></div> :
+      <div className="timeline-grid map-area-grid">{groups.map(group =>
+        <div className="timeline-group" key={group.label}>
+          <span className="timeline-group-date">{group.label}</span>
+          <span className="timeline-group-dot" aria-hidden="true"/>
+          <div className="timeline-group-grid">{group.items.map(item =>
+            <Link key={item.id} className="map-area-item" to={libraryItemURL(libraryId, item, "date", {root:String(folderId), gps:"nogps"})} aria-label={`Open ${item.name} in folder`}>
+              <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
+              <small>{item.name}</small>
+            </Link>
+          )}</div>
+        </div>
+      )}</div>}
+  </aside>;
 }
 
 // Wikipedia thumbnails for POI popups. The summary endpoint is keyless and
@@ -4685,19 +5052,21 @@ function POILayer({active, categories, pois, onFetch, onError}:{active:boolean; 
   return <>{focused.slice(0, rendered).map(point => <POIMarker key={point.id} poi={point}/>)}</>;
 }
 
-function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,showTrajectories,segments,selectedIndex,onSelectSegment,hideMarkers,showTrajectoryNumbers,flyTo,onSetTrajectoryStart,onSetTrajectoryEnd,onSetTrajectoryName}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; showTrajectories:boolean; segments:TrajectorySegment[]; selectedIndex:number|null; onSelectSegment:(index:number|null)=>void; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; onSetTrajectoryStart?:(item: MapMedia, start:boolean)=>void; onSetTrajectoryEnd?:(item: MapMedia, end:boolean)=>void; onSetTrajectoryName?:(item: MapMedia, name:string)=>void}) {
+function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
     click: event => { if (!selectMode) onPick(formatGPS(event.latlng.lat, event.latlng.lng)); },
     zoomend: event => setZoom(event.target.getZoom())
   });
-  const [editId, setEditId] = useState<number|null>(null);
-  const editItem = editId != null ? items.find(item => item.id === editId) ?? null : null;
-  const selectedSegment = selectedIndex != null ? segments[selectedIndex] : undefined;
+  const drawnTrajectories = useMemo(
+    () => selectedTrajectories.map(index => segments[index]).filter((segment): segment is TrajectorySegment => segment !== undefined),
+    [selectedTrajectories, segments]
+  );
+  const trajectoryIds = useMemo(() => new Set(drawnTrajectories.flatMap(segment => segment.ids)), [drawnTrajectories]);
   const fitItems = useMemo(
-    () => selectedSegment ? items.filter(item => selectedSegment.ids.includes(item.id)) : items,
-    [items, selectedSegment]
+    () => drawnTrajectories.length > 0 ? items.filter(item => trajectoryIds.has(item.id)) : items,
+    [items, drawnTrajectories, trajectoryIds]
   );
   const markerItems = useMemo(
     () => hideMarkers ? [] : fitItems,
@@ -4738,42 +5107,32 @@ function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onR
   useEffect(() => {
     onRenderProgress(visibleClusters.length < clusters.length);
   }, [visibleClusters.length, clusters.length, onRenderProgress]);
-  const drawn = useMemo(() => {
-    if (!showTrajectories) return [];
-    if (selectedIndex != null) {
-      const s = segments[selectedIndex];
-      return s ? [{segment:s, index:selectedIndex}] : [];
-    }
-    return segments.map((segment, index) => ({segment, index}));
-  }, [showTrajectories, selectedIndex, segments]);
+  const drawn = selectedTrajectories
+    .map((segmentIndex, drawIndex) => ({segment: segments[segmentIndex], index: segmentIndex, key: drawIndex}))
+    .filter((entry): entry is {segment:TrajectorySegment; index:number; key:number} => entry.segment !== undefined);
   return <>
-    {drawn.map(({segment, index}) => {
+    {drawn.map(({segment, index, key}) => {
       const color = TRAJECTORY_COLORS[index % TRAJECTORY_COLORS.length];
-      return <Fragment key={index}>
-        {segment.points.length >= 2 && <Polyline positions={segment.points} eventHandlers={{click: () => onSelectSegment(selectedIndex === index ? null : index)}} pathOptions={{color, weight: selectedIndex === index ? 4 : 3, opacity: 0.85}}/>}
+      return <Fragment key={key}>
+        {segment.points.length >= 2 && <Polyline positions={segment.points} pathOptions={{color, weight: 3, opacity: 0.85}}/>}
         {showTrajectoryNumbers && segment.points.length >= 2 && Array.from({length: segment.points.length - 1}, (_, edgeIndex) => {
         const a = segment.points[edgeIndex];
         const b = segment.points[edgeIndex + 1];
         const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        return <Marker key={`${index}-e${edgeIndex}`} position={mid} icon={trajectoryNumberIcon(edgeIndex + 1, color)} interactive={false} keyboard={false}/>;
+        return <Marker key={`${key}-e${edgeIndex}`} position={mid} icon={trajectoryNumberIcon(edgeIndex + 1, color)} interactive={false} keyboard={false}/>;
       })}
       </Fragment>;
     })}
     {visibleClusters.map(cluster => {
       const item = cluster.items[0];
       const icon = cluster.items.length === 1
-        ? mediaPointIcon(!showTrajectories ? "none" : item.trajectoryStart ? "start" : item.trajectoryEnd ? "end" : "none")
+        ? mediaPointIcon(trajectoryIds.has(item.id) ? (item.trajectoryStart ? "start" : item.trajectoryEnd ? "end" : "none") : "none")
         : clusterIcon(cluster.items.length);
-      const isTrajectoryPoint = cluster.items.length === 1 && showTrajectories && !!onSetTrajectoryStart && !!onSetTrajectoryEnd;
-      return <Marker key={cluster.id} position={[cluster.lat, cluster.lng]} icon={icon} eventHandlers={{click: () => { if (selectMode) return; if (isTrajectoryPoint) setEditId(item.id); else onSelectCluster(cluster.items); }}} />;
+      return <Marker key={cluster.id} position={[cluster.lat, cluster.lng]} icon={icon} eventHandlers={{click: () => { if (selectMode) return; onSelectCluster(cluster.items); }}} />;
     })}
     {pickedGPS && parseGPS(pickedGPS) && <Marker position={parseGPS(pickedGPS)!} icon={pickedPointIcon()}>
       <Popup><PickedPointPopup gps={pickedGPS} onSetGPS={gps => { onPick(gps); flyToPoint(gps); }}/></Popup>
     </Marker>}
-    {editItem && onSetTrajectoryStart && onSetTrajectoryEnd && createPortal(
-      <TrajectoryDialog item={editItem} onClose={() => setEditId(null)} onSetStart={onSetTrajectoryStart} onSetEnd={onSetTrajectoryEnd} onSetName={onSetTrajectoryName}/>,
-      document.body
-    )}
   </>;
 }
 
@@ -4835,6 +5194,43 @@ function POICategoryPanel({anchor, selected, onChange, onClose}:{anchor:HTMLElem
   </div>;
 }
 
+// Checkbox dropdown that picks which trajectories are drawn on the map. Nothing
+// is shown until at least one trajectory is checked (none selected by default).
+function TrajectoryFilterPanel({anchor, segments, selected, onChange, onClose}:{anchor:HTMLElement; segments:TrajectorySegment[]; selected:number[]; onChange:(next:number[])=>void; onClose:()=>void}) {
+  const ref = useRef<HTMLDivElement|null>(null);
+  const [position, setPosition] = useState<{top:number; right:number}>(() => computePosition(anchor));
+  useEffect(() => {
+    const handler = (event:PointerEvent) => { if (ref.current && !ref.current.contains(event.target as Node) && !anchor.contains(event.target as Node)) onClose(); };
+    const keyHandler = (event:KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    const reposition = () => setPosition(computePosition(anchor));
+    window.addEventListener("resize", reposition);
+    document.addEventListener("pointerdown", handler);
+    document.addEventListener("keydown", keyHandler);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      document.removeEventListener("pointerdown", handler);
+      document.removeEventListener("keydown", keyHandler);
+    };
+  }, [anchor, onClose]);
+  function toggle(index:number, checked:boolean) {
+    onChange(checked ? [...selected, index] : selected.filter(i => i !== index));
+  }
+  return <div className="poi-cat-panel trajectory-filter-panel" ref={ref} role="dialog" aria-label="Trajectories" style={{top:position.top, right:position.right}}
+    onKeyDown={event => event.stopPropagation()}>
+    {segments.map((segment, index) => (
+      <label key={index} className="poi-cat-row">
+        <input type="checkbox" checked={selected.includes(index)} onChange={event => toggle(index, event.target.checked)}/>
+        <span className="trajectory-swatch" style={{background:TRAJECTORY_COLORS[index % TRAJECTORY_COLORS.length]}} aria-hidden="true"/>
+        <span className="poi-cat-text">{segment.name}</span>
+      </label>
+    ))}
+    <div className="poi-cat-actions">
+      <button type="button" className="secondary" onClick={() => onChange(segments.map((_, index) => index))} disabled={selected.length === segments.length}>Select all</button>
+      <button type="button" className="secondary" onClick={() => onChange([])} disabled={selected.length === 0}>Clear</button>
+    </div>
+  </div>;
+}
+
 function PickedPointPopup({gps,onSetGPS}:{gps:string; onSetGPS:(gps:string)=>void}) {
   const [value, setValue] = useState(gps);
   const [status, setStatus] = useState("");
@@ -4849,7 +5245,7 @@ function PickedPointPopup({gps,onSetGPS}:{gps:string; onSetGPS:(gps:string)=>voi
   }
   function setPoint() {
     const pt = parseGPS(value.trim());
-    if (!pt) { setStatus("Enter coordinates as lat,lng (e.g. 50.45,30.52)."); return; }
+    if (!pt) { setStatus("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614)."); return; }
     onSetGPS(formatGPS(pt[0], pt[1]));
     setStatus("Point set.");
   }
@@ -4956,8 +5352,15 @@ export interface TrajectorySegment {
 export function buildTrajectories(items:readonly MapMedia[]): TrajectorySegment[] {
   const ordered = items
     .map(item => ({item, gps: parseGPS(item.gps), time: item.takenAt ? Date.parse(item.takenAt) : NaN}))
-    .filter(entry => entry.gps !== null && !Number.isNaN(entry.time))
-    .sort((a, b) => a.time - b.time || a.item.id - b.item.id);
+    // A trajectoryStart/End flag changes the segmentation even when the marker
+    // item itself has no GPS (e.g. a photo taken without a fix). Those flags
+    // must survive the filter; only actual trajectory points need coordinates.
+    .filter(entry => !Number.isNaN(entry.time) || entry.item.trajectoryStart || entry.item.trajectoryEnd)
+    .sort((a, b) => {
+      const ta = Number.isNaN(a.time) ? Infinity : a.time;
+      const tb = Number.isNaN(b.time) ? Infinity : b.time;
+      return ta - tb || a.item.id - b.item.id;
+    });
   const segments: TrajectorySegment[] = [];
   let current: {points:[number,number][]; ids:number[]; start:MapMedia} | null = null;
   for (const {item, gps} of ordered) {
@@ -4966,8 +5369,10 @@ export function buildTrajectories(items:readonly MapMedia[]): TrajectorySegment[
       current = {points: [], ids: [], start: item};
     }
     if (current === null) continue;
-    current.ids.push(item.id);
-    current.points.push(gps!);
+    if (gps !== null) {
+      current.ids.push(item.id);
+      current.points.push(gps);
+    }
     if (item.trajectoryEnd) {
       segments.push(toSegment(current));
       current = null;
@@ -5049,8 +5454,116 @@ function formatTime(seconds:number) {
 }
 
 function parseGPS(gps:string):[number,number]|null {
-  const parts = gps.split(",").map(Number);
-  return parts.length === 2 && parts.every(Number.isFinite) ? [parts[0],parts[1]] : null;
+  const input = gps.trim();
+  if (!input) return null;
+  const fromURL = coordinatesFromGoogleMapsURL(input);
+  if (fromURL) return fromURL;
+  const at = input.lastIndexOf("@");
+  if (at >= 0) {
+    const match = input.slice(at + 1).match(/^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+    if (match) {
+      const pair = validPair(Number(match[1]), Number(match[2]));
+      if (pair) return pair;
+    }
+  }
+  return parsePairText(input);
+}
+
+function validPair(lat:number, lng:number):[number,number]|null {
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? [lat, lng] : null;
+}
+
+// Splits "lat,lng" text into two coordinate groups, then parses each group as
+// decimal degrees, degrees+decimal minutes (Google Maps' "N 050° 4.035" DMM),
+// or degrees-minutes-seconds. Groups may carry a leading or trailing N/S/E/W
+// hemisphere letter and decimal-degree values may use a comma or a space before
+// the comma-free pair ("50.45 30.52", "50.45N 30.52E").
+function parsePairText(raw:string):[number,number]|null {
+  const text = raw.trim();
+  if (!text) return null;
+  const bySeparator = text.split(/[;,]+/).map(part => part.trim()).filter(Boolean);
+  let groups: string[];
+  if (bySeparator.length >= 2) {
+    groups = bySeparator;
+  } else {
+    const spaceParts = text.split(/\s+/).filter(Boolean);
+    if (spaceParts.length === 2 && parseDegreesToken(spaceParts[0]) != null && parseDegreesToken(spaceParts[1]) != null) {
+      groups = spaceParts;
+    } else {
+      // A bare hemisphere letter begins a new group (Google's "N 050° 4.035").
+      groups = [];
+      let current: string[] = [];
+      for (const part of spaceParts) {
+        if (/^[NSEW]$/i.test(part) && current.length > 0) {
+          groups.push(current.join(" "));
+          current = [];
+        }
+        current.push(part);
+      }
+      if (current.length > 0) groups.push(current.join(" "));
+    }
+  }
+  const parsed: number[] = [];
+  for (const group of groups) {
+    const value = parseDegreesToken(group);
+    if (value != null) parsed.push(value);
+    if (parsed.length === 2) break;
+  }
+  return parsed.length >= 2 ? validPair(parsed[0], parsed[1]) : null;
+}
+
+// Parses a single lat- or lng-style token. The numeric parts are counted: one
+// value means decimal degrees ("50.45"), two mean degrees + decimal minutes
+// ("050° 4.035" → 50 + 4.035/60), three mean DMS ("50°26'34.5"). A hemisphere
+// letter or leading minus negates the result when S/W.
+function parseDegreesToken(value:string):number|null {
+  const token = value.trim();
+  if (!token) return null;
+  let body = token;
+  let sign = 1;
+  const leading = body.match(/^([NSEW])\s*/i);
+  const trailing = body.match(/\s*([NSEW])$/i);
+  if (leading?.[1]) { if (/[SW]/i.test(leading[1])) sign = -1; body = body.replace(/^[NSEW]\s*/i, ""); }
+  else if (trailing?.[1]) { if (/[SW]/i.test(trailing[1])) sign = -1; body = body.replace(/\s*[NSEW]$/i, ""); }
+  if (/^[-−]/.test(body)) { sign = -sign; body = body.slice(1).trim(); }
+  const numbers = body.match(/\d+(?:\.\d+)?/g);
+  if (!numbers || numbers.length === 0 || numbers.length > 3) return null;
+  const parts = numbers.map(Number);
+  const degrees = parts.length === 1 ? parts[0] : parts.length === 2 ? parts[0] + parts[1] / 60 : parts[0] + parts[1] / 60 + parts[2] / 3600;
+  return Number.isFinite(degrees) ? sign * degrees : null;
+}
+
+// Extracts coordinates from shared Google Maps links and geo: URIs: ?q=/ll=/
+// query= query params (coordinates may be DMM text or decimal), the trailing
+// "@lat,lng,z" form, and "!3d…!4d…" place markers.
+function coordinatesFromGoogleMapsURL(input:string):[number,number]|null {
+  if (!/maps\.google|google\.com\/maps|goo\.gl|geo:/i.test(input)) return null;
+  if (/^geo:/i.test(input)) {
+    const coordPart = input.replace(/^geo:/i, "").split(/[?#]/)[0];
+    const pair = parsePairText(coordPart);
+    if (pair) return pair;
+  }
+  for (const key of ["q", "ll", "query"]) {
+    const match = input.match(new RegExp(`[?&]${key}=([^&#]+)`));
+    if (!match) continue;
+    const pair = parsePairText(decodeURIComponent(match[1].replace(/\+/g, " ")));
+    if (pair) return pair;
+  }
+  const at = input.lastIndexOf("@");
+  if (at >= 0) {
+    const match = input.slice(at + 1).match(/^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)(?:,\d+(?:\.\d+)?z?)?/i);
+    if (match) {
+      const pair = validPair(Number(match[1]), Number(match[2]));
+      if (pair) return pair;
+    }
+  }
+  const latRaw = input.match(/!3d(-?\d+(?:\.\d+)?)/);
+  const lngRaw = input.match(/!4d(-?\d+(?:\.\d+)?)/);
+  if (latRaw && lngRaw) {
+    const pair = validPair(Number(latRaw[1]), Number(lngRaw[1]));
+    if (pair) return pair;
+  }
+  return null;
 }
 
 function formatGPS(lat:number, lng:number) {
@@ -5083,6 +5596,108 @@ async function copyText(value:string) {
 // existing Strict/Secure cookie auth works unchanged.
 // ---------------------------------------------------------------------------
 const SERVER_URL_KEY = "ml.server.url";
+// Most-recently-used list of servers the app has connected to. Stored on the
+// bundled origin (the gate only ever runs there); SERVER_URL_KEY stays the
+// last-used entry so boots keep auto-connecting to the preferred server.
+// Entries carry a user-editable display name (empty falls back to the host).
+const SERVER_LIST_KEY = "ml.server.list";
+type SavedServer = {url:string; name:string};
+type ServerState = {url:string; list:SavedServer[]};
+
+// The remembered-server state must be readable from ANY origin the WebView
+// visits: the bundled gate (https://localhost) records servers, but the login
+// page that must display them is served from the user's self-hosted server.
+// localStorage is origin-scoped, so the Android build persists the state in
+// native SharedPreferences behind the MLServerStore bridge instead; the
+// browser build and unit tests fall back to localStorage.
+const serverStateBridge = () =>
+  (window as unknown as {MLServerStore?:{getServerState?:()=>string; setServerState?:(json:string)=>void}}).MLServerStore;
+
+function readServerState():ServerState {
+  const bridge = serverStateBridge();
+  if (bridge?.getServerState) {
+    try {
+      const raw:unknown = JSON.parse(bridge.getServerState() ?? "");
+      if (raw && typeof raw === "object" && typeof (raw as ServerState).url === "string" && Array.isArray((raw as ServerState).list)) {
+        return raw as ServerState;
+      }
+    } catch { /* corrupted native state -> empty */ }
+    return {url:"", list:[]};
+  }
+  const url = localStorage.getItem(SERVER_URL_KEY) ?? "";
+  let list:SavedServer[] = [];
+  let raw:unknown[] = [];
+  try {
+    const parsed:unknown = JSON.parse(localStorage.getItem(SERVER_LIST_KEY) ?? "[]");
+    if (Array.isArray(parsed)) raw = parsed;
+  } catch { /* empty list */ }
+  for (const entry of raw) {
+    if (typeof entry === "string" && entry.trim()) {
+      list.push({url:entry, name:""}); // legacy string entries
+    } else if (entry && typeof entry === "object") {
+      const record = entry as {url?:unknown; name?:unknown};
+      if (typeof record.url === "string" && record.url.trim()) {
+        list.push({url:record.url, name:typeof record.name === "string" ? record.name : ""});
+      }
+    }
+  }
+  // Upgrade installs that predate the list: the last-used server joins it.
+  if (url && !list.some(server => server.url === url)) list = [{url, name:""}, ...list];
+  return {url, list};
+}
+
+function writeServerState(state:ServerState) {
+  const bridge = serverStateBridge();
+  if (bridge?.setServerState) {
+    bridge.setServerState(JSON.stringify(state));
+    return;
+  }
+  localStorage.setItem(SERVER_URL_KEY, state.url);
+  localStorage.setItem(SERVER_LIST_KEY, JSON.stringify(state.list));
+}
+
+function loadServerList():SavedServer[] {
+  return readServerState().list;
+}
+
+function saveServerList(list:SavedServer[]) {
+  writeServerState({url:readServerState().url, list});
+}
+
+function rememberServer(base:string) {
+  const previous = readServerState();
+  const known = previous.list.find(server => server.url === base);
+  writeServerState({
+    url:base,
+    list:[{url:base, name:known?.name ?? ""}, ...previous.list.filter(server => server.url !== base)],
+  });
+}
+
+function forgetServer(base:string) {
+  const state = readServerState();
+  writeServerState({
+    url:state.url === base ? "" : state.url,
+    list:state.list.filter(server => server.url !== base),
+  });
+}
+
+// Drop the "always connect here" default without removing the server from the
+// saved list (used by the connecting screen's "Change server" escape hatch).
+function clearServerDefault() {
+  writeServerState({url:"", list:readServerState().list});
+}
+
+function renameServer(url:string, name:string) {
+  saveServerList(loadServerList().map(server => server.url === url ? {...server, name} : server));
+}
+
+// Bundled-origin gate URL with the picker forced, so the in-app login page can
+// hand the user back to the remembered-server list even while a default server
+// is saved (otherwise the gate would auto-connect straight past it).
+function bundledGateURL():string {
+  const origin = Capacitor.getPlatform() === "ios" ? "capacitor://localhost" : "https://localhost";
+  return `${origin}/?change-server=1`;
+}
 
 function normalizeServerUrl(raw:string):string|null {
   const trimmed = raw.trim().replace(/\/+$/, "");
@@ -5095,6 +5710,39 @@ function normalizeServerUrl(raw:string):string|null {
   } catch {
     return null;
   }
+}
+
+const serverHost = (value:string) => {
+  try { return new URL(value).host; } catch { return value; }
+};
+
+// Shared picker for every point that must list the remembered servers: the
+// native gate on the bundled origin and the login page on a server origin.
+// The pick action differs per context (probe+connect on the gate, direct
+// navigation from the login page), the rename/forget handling does not.
+function SavedServers({servers, onServersChanged, onPick}:{servers:SavedServer[]; onServersChanged:(servers:SavedServer[])=>void; onPick:(server:SavedServer)=>void}) {
+  const [editing, setEditing] = useState<{url:string; name:string}|null>(null);
+  if (servers.length === 0) return null;
+  return <div className="server-list" aria-label="Saved servers">
+    {servers.map(server => {
+      const host = serverHost(server.url);
+      const label = server.name || host;
+      if (editing && editing.url === server.url) {
+        return <div key={server.url} className="server-row">
+          <label className="server-name-field">Name<input aria-label="Server name" value={editing.name} placeholder={host} onChange={event => setEditing({url:server.url, name:event.target.value})}/></label>
+          <button type="button" className="server-icon" aria-label={`Save name for ${host}`} onClick={() => { renameServer(server.url, editing.name.trim()); onServersChanged(loadServerList()); setEditing(null); }}>✓</button>
+          <button type="button" className="server-icon" aria-label={`Cancel rename of ${host}`} onClick={() => setEditing(null)}>✕</button>
+        </div>;
+      }
+      return <div key={server.url} className="server-row">
+        <button type="button" className="server-pick" onClick={() => onPick(server)}>
+          {label}{server.name ? <small>{host}</small> : null}
+        </button>
+        <button type="button" className="server-icon" aria-label={`Rename ${label}`} onClick={() => setEditing({url:server.url, name:server.name})}>✎</button>
+        <button type="button" className="server-icon" aria-label={`Forget ${label}`} onClick={() => { forgetServer(server.url); onServersChanged(loadServerList()); }}>✕</button>
+      </div>;
+    })}
+  </div>;
 }
 
 // Overridden only by unit tests to exercise the picker without a device.
@@ -5117,15 +5765,18 @@ function useNativeServerGate():ReactNode|null {
   const [mode, setMode] = useState<"idle"|"form"|"connecting">("idle");
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  const [servers, setServers] = useState<SavedServer[]>([]);
   // The gate only belongs on the bundled Capacitor origin. Once the WebView has
   // navigated to the self-hosted server, the page is same-origin with the API
   // and the app must render directly — otherwise the gate would re-arm on that
   // origin and loop reloading into the server-address form.
   const bundledOrigin = isBundledOrigin();
+  const forcedPicker = bundledOrigin && new URLSearchParams(window.location.search).has("change-server");
   useEffect(() => {
     if (!native || !bundledOrigin) return;
-    const saved = localStorage.getItem(SERVER_URL_KEY) ?? "";
-    if (!saved) {
+    const saved = readServerState().url;
+    setServers(loadServerList());
+    if (forcedPicker || !saved) {
       setMode("form");
       return;
     }
@@ -5150,7 +5801,8 @@ function useNativeServerGate():ReactNode|null {
       const response = await fetch(`${base}/api/v1/setup`, {signal:controller.signal});
       console.log(`ML connect: setup responded ${response.status}`);
       if (!response.ok) throw new Error(`server responded ${response.status}`);
-      localStorage.setItem(SERVER_URL_KEY, base);
+      rememberServer(base);
+      setServers(loadServerList());
       console.log(`ML connect: navigating to ${base}`);
       window.location.replace(base);
     } catch (cause) {
@@ -5165,17 +5817,18 @@ function useNativeServerGate():ReactNode|null {
   }
   if (!native || !bundledOrigin || mode === "idle") return null;
   if (mode === "connecting") {
-    let host = url;
-    try { host = new URL(url).host; } catch { /* keep raw */ }
+    const host = serverHost(url);
+    const knownName = servers.find(server => server.url === url)?.name;
     return <main className="center"><div className="card login" role="status">
       <h1>Media Library</h1>
-      <p className="muted">Connecting to <strong>{host}</strong>…</p>
-      <button type="button" className="secondary" onClick={() => { localStorage.removeItem(SERVER_URL_KEY); setMode("form"); }}>Change server</button>
+      <p className="muted">Connecting to <strong>{knownName || host}</strong>…</p>
+      <button type="button" className="secondary" onClick={() => { clearServerDefault(); setMode("form"); }}>Change server</button>
     </div></main>;
   }
   return <main className="center"><form className="card login" onSubmit={event => { event.preventDefault(); void connect(url); }}>
     <h1>Media Library</h1>
     <p className="muted">Where is your library hosted?</p>
+    <SavedServers servers={servers} onServersChanged={setServers} onPick={server => void connect(server.url)}/>
     <label>Server address<input value={url} onChange={event => setUrl(event.target.value)} type="url" inputMode="url" autoComplete="url"
       placeholder="https://media.example.com" required/></label>
     {error && <p className="error">{error}</p>}

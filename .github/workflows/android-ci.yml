@@ -49,8 +49,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Gradle runs inside a throwaway container, so docker layer caching cannot
+      # help it. Persist the Gradle user home (distribution + dependency cache)
+      # and the Android home (debug keystore, so consecutive CI APKs keep one
+      # signature and sideload over each other without uninstall) via
+      # actions/cache; deploy/start.sh bind-mounts them when the dirs are set.
+      - name: Restore Gradle/Android caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.android-cache/gradle
+            ${{ github.workspace }}/.android-cache/android
+          key: ${{ runner.os }}-android-${{ hashFiles('web/android/gradle/wrapper/gradle-wrapper.properties', 'web/android/build.gradle', 'web/android/app/build.gradle', 'web/android/variables.gradle', 'web/android/gradle.properties', 'web/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-android-
+
       - name: Build debug APK
         shell: bash
+        env:
+          ANDROID_GRADLE_CACHE_DIR: ${{ github.workspace }}/.android-cache/gradle
+          ANDROID_ANDROID_HOME_DIR: ${{ github.workspace }}/.android-cache/android
         run: |
           set -euo pipefail
           ANDROID_BUILD_TYPE=debug sh deploy/start.sh android

@@ -49,6 +49,11 @@ Key facts:
 - Video: `/play` direct-plays if browser codecs + container/audio allow, else FFmpeg
   transcodes to the requesting user's chosen fallback codec (h264/h265/vp9, set per
   account in user settings).
+- Media kinds: `image`/`video`/`document` (classified via `media_mime_types.media_type`).
+  Kind filters (All/Images/Videos/Documents) exist on Timeline, Folders and Favorites;
+  the Timeline also filters by GPS presence (All/Geotagged/No GPS) with `gps=` kept in the
+  viewer URL, and the map has a "No GPS" side panel in folder-scoped view and parses Google
+  Maps coordinate formats (`N 050° 4.035, E 19° 56.614`, DMS, links) in its coordinate search.
 - Scanner: background job walks folder (progress, pause/cancel), upserts folders +
   media, extracts ExifTool/FFprobe metadata, then a thumbnail-create job runs.
 - Folder watcher: per-root `watch` flag (off by default) — fsnotify watches each

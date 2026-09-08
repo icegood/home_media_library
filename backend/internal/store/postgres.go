@@ -1527,26 +1527,47 @@ func (s *Postgres) SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, 
 	return err
 }
 
-func (s *Postgres) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error {
+// UpdateMediaMetadata writes one metadata-renew result onto a media row.
+// Every field is applied according to its MetadataWriteOptions flag: set →
+// overwrite, clear → only fill when currently empty. metadata_error follows
+// metadata_json so a skipped row keeps a consistent error with its stored
+// metadata. GPS needs no gps_lat/gps_lng mirror (unlike SQLite): the PostGIS
+// geom column is generated from gps and recomputes on its own.
+func (s *Postgres) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, opts domain.MetadataWriteOptions) error {
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	gps = strings.TrimSpace(gps)
+	metadataPresent := `metadata_json NOT IN ('{}'::jsonb, 'null'::jsonb)`
 	n := 1
-	sets := []string{`metadata_json = $` + strconv.Itoa(n) + `::jsonb`}
-	args := []any{string(metadataJSON)}
-	n++
-	sets = append(sets, `metadata_error = $`+strconv.Itoa(n))
-	args = append(args, metadataError)
-	n++
+	var sets []string
+	var args []any
+	if opts.RecreateExisting {
+		sets = []string{`metadata_json = $` + strconv.Itoa(n) + `::jsonb`}
+		args = append(args, string(metadataJSON))
+		n++
+		sets = append(sets, `metadata_error = $`+strconv.Itoa(n))
+		args = append(args, metadataError)
+		n++
+	} else {
+		sets = append(sets,
+			`metadata_json = CASE WHEN `+metadataPresent+` THEN metadata_json ELSE $`+strconv.Itoa(n)+`::jsonb END`,
+			`metadata_error = CASE WHEN `+metadataPresent+` THEN metadata_error ELSE $`+strconv.Itoa(n+1)+` END`)
+		args = append(args, string(metadataJSON), metadataError)
+		n += 2
+	}
+	gps = strings.TrimSpace(gps)
 	if gps != "" {
-		sets = append(sets, `gps = $`+strconv.Itoa(n))
+		if opts.UpdateGPS {
+			sets = append(sets, `gps = $`+strconv.Itoa(n))
+		} else {
+			sets = append(sets, `gps = CASE WHEN gps = '' THEN $`+strconv.Itoa(n)+` ELSE gps END`)
+		}
 		args = append(args, gps)
 		n++
 	}
 	if takenAt != "" {
-		if replaceTakenAt {
+		if opts.UpdateTakenAt {
 			sets = append(sets, `taken_at = $`+strconv.Itoa(n))
 		} else {
 			sets = append(sets, `taken_at = CASE WHEN taken_at = '' THEN $`+strconv.Itoa(n)+` ELSE taken_at END`)
@@ -1600,13 +1621,17 @@ func (s *Postgres) bulkTargetSubPG(ids []int, folderIDs []int) (cte, targetSub s
 }
 
 func (s *Postgres) BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs []int, gps string, lat, lng float64) ([]domain.BulkMediaResult, error) {
+	_ = lat
+	_ = lng
+	// Postgres has no gps_lat/gps_lng columns: the map lookup runs off the
+	// generated PostGIS geom column, which recomputes from gps by itself.
 	cte, targetSub, args := s.bulkTargetSubPG(ids, folderIDs)
 	if targetSub == "" {
 		return []domain.BulkMediaResult{}, nil
 	}
 	n := len(args)
-	setClause := "gps = $" + strconv.Itoa(n+1) + ", gps_lat = $" + strconv.Itoa(n+2) + ", gps_lng = $" + strconv.Itoa(n+3)
-	fullArgs := append(args, gps, lat, lng)
+	setClause := "gps = $" + strconv.Itoa(n+1)
+	fullArgs := append(args, gps)
 	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
 		return nil, err
 	}
@@ -1977,6 +2002,43 @@ func (s *Postgres) enrichMapMediaTrajectory(ctx context.Context, out []domain.Ma
 	return nil
 }
 
+// scopedMedia drains the result set shared by the MediaFor* queries below
+// (mediaColumns + relative-path expression + favorite flag) and enriches the
+// batch with trajectory flags.
+func (s *Postgres) scopedMedia(ctx context.Context, rows *sql.Rows) ([]domain.Media, error) {
+	out := []domain.Media{}
+	for rows.Next() {
+		var relativePath string
+		var favorite bool
+		item, err := scanMedia(rows, &relativePath, &favorite)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = relativePath
+		item.Favorite = favorite
+		out = append(out, item)
+	}
+	_ = s.enrichMediaTrajectory(ctx, out)
+	return out, rows.Err()
+}
+
+// subtreeMediaPGSQL mirrors subtreeMediaSQL with $n placeholders: every media
+// row beneath a folder (first bind), relative paths anchored at that folder,
+// and the second bind feeding the favorite expression's user id.
+var subtreeMediaPGSQL = func() string {
+	rel := relativePathExpr("m.path", "covers.root_path")
+	return `WITH RECURSIVE covers(folder_id, root_path) AS (
+		SELECT f.id, f.path FROM media_folders f WHERE f.id = $1
+		UNION ALL
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path,
+		EXISTS(SELECT 1 FROM favorite_view_items fvi
+			JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
+			WHERE fv.user_id = $2 AND fvi.media_id = m.id)
+	FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	ORDER BY relative_path`
+}()
+
 func (s *Postgres) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error) {
 	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
 		return nil, err
@@ -1997,84 +2059,30 @@ func (s *Postgres) MediaForLibrary(ctx context.Context, userID, libraryID int) (
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.Media{}
-	for rows.Next() {
-		var relativePath string
-		var favorite bool
-		item, err := scanMedia(rows, &relativePath, &favorite)
-		if err != nil {
-			return nil, err
-		}
-		item.RelativePath = relativePath
-		item.Favorite = favorite
-		out = append(out, item)
-	}
-	_ = s.enrichMediaTrajectory(ctx, out)
-	return out, rows.Err()
+	return s.scopedMedia(ctx, rows)
 }
 
 func (s *Postgres) MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error) {
 	if _, err := s.FolderChain(ctx, libraryID, folderID); err != nil {
 		return nil, err
 	}
-	rel := relativePathExpr("m.path", "covers.root_path")
-	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
-		SELECT f.id, f.path FROM media_folders f WHERE f.id = $1
-		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path,
-		EXISTS(SELECT 1 FROM favorite_view_items fvi
-			JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
-			WHERE fv.user_id = $2 AND fvi.media_id = m.id)
-	FROM media m JOIN covers ON covers.folder_id = m.folder_id
-	ORDER BY relative_path`
-	rows, err := s.db.QueryContext(ctx, query, folderID, userID)
+	rows, err := s.db.QueryContext(ctx, subtreeMediaPGSQL, folderID, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.Media{}
-	for rows.Next() {
-		var relativePath string
-		var favorite bool
-		item, err := scanMedia(rows, &relativePath, &favorite)
-		if err != nil {
-			return nil, err
-		}
-		item.RelativePath = relativePath
-		item.Favorite = favorite
-		out = append(out, item)
-	}
-	_ = s.enrichMediaTrajectory(ctx, out)
-	return out, rows.Err()
+	return s.scopedMedia(ctx, rows)
 }
 
 func (s *Postgres) MediaForSubtree(ctx context.Context, folderID int) ([]domain.Media, error) {
-	rel := relativePathExpr("m.path", "covers.root_path")
-	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
-		SELECT f.id, f.path FROM media_folders f WHERE f.id = $1
-		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path FROM media m JOIN covers ON covers.folder_id = m.folder_id
-	ORDER BY relative_path`
-	rows, err := s.db.QueryContext(ctx, query, folderID)
+	// The favorite expression is bound to user id 0 (no user) so jobs get the
+	// full media set.
+	rows, err := s.db.QueryContext(ctx, subtreeMediaPGSQL, folderID, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.Media{}
-	for rows.Next() {
-		var relativePath string
-		var favorite bool
-		item, err := scanMedia(rows, &relativePath, &favorite)
-		if err != nil {
-			return nil, err
-		}
-		item.RelativePath = relativePath
-		out = append(out, item)
-	}
-	_ = s.enrichMediaTrajectory(ctx, out)
-	return out, rows.Err()
+	return s.scopedMedia(ctx, rows)
 }
 
 func (s *Postgres) FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error) {
@@ -2747,6 +2755,7 @@ func (s *Postgres) jobsWhere(ctx context.Context, where string) ([]domain.Backgr
 		if len(optionsRaw) != 0 {
 			_ = json.Unmarshal(optionsRaw, &job.Options)
 		}
+		restoreJobScope(&job)
 		jobs = append(jobs, job)
 	}
 	return jobs, rows.Err()

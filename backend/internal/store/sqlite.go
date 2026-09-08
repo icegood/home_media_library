@@ -35,6 +35,19 @@ const favoriteExpr = `EXISTS(SELECT 1 FROM favorite_view_items fvi
 	JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
 	WHERE fv.user_id = ? AND fvi.media_id = m.id)`
 
+// subtreeMediaSQL lists every media row beneath a folder (first bind), with
+// relative paths anchored at that folder; the second bind feeds favoriteExpr's
+// user id (job paths bind 0 = no user, so every media is returned).
+var subtreeMediaSQL = func() string {
+	rel := relativePathExpr("m.path", "covers.root_path")
+	return `WITH RECURSIVE covers(folder_id, root_path) AS (
+		SELECT f.id, f.path FROM media_folders f WHERE f.id = ?
+		UNION ALL
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+	SELECT ` + mediaColumns + `, ` + rel + `, ` + favoriteExpr + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
+	ORDER BY ` + rel
+}()
+
 // folderEntriesSQL returns child folders and media rows of a folder in a single
 // result set, discriminated by a leading entry_kind column ('folder'/'media').
 // Column order: entry_kind, id, parent/folder_id, path, name, mime_type, size,
@@ -1719,21 +1732,41 @@ func (s *SQLite) SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, en
 	return err
 }
 
-func (s *SQLite) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, replaceTakenAt bool) error {
+// UpdateMediaMetadata writes one metadata-renew result onto a media row.
+// Every field is applied according to its MetadataWriteOptions flag: set →
+// overwrite, clear → only fill when currently empty. metadata_error follows
+// metadata_json so a skipped row keeps a consistent error with its stored
+// metadata. All CASEs read the pre-update row values (single UPDATE).
+func (s *SQLite) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, opts domain.MetadataWriteOptions) error {
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
+	metadataPresent := `metadata_json NOT IN ('', '{}', 'null')`
 	sets := []string{"metadata_json = ?", "metadata_error = ?"}
+	if !opts.RecreateExisting {
+		sets = []string{
+			"metadata_json = CASE WHEN " + metadataPresent + " THEN metadata_json ELSE ? END",
+			"metadata_error = CASE WHEN " + metadataPresent + " THEN metadata_error ELSE ? END",
+		}
+	}
 	args := []any{string(metadataJSON), metadataError}
 	gps = strings.TrimSpace(gps)
 	if gps != "" {
 		gpsLat, gpsLng := gpsCoords(gps)
-		sets = append(sets, "gps = ?", "gps_lat = ?", "gps_lng = ?")
-		args = append(args, gps, gpsLat, gpsLng)
+		if opts.UpdateGPS {
+			sets = append(sets, "gps = ?", "gps_lat = ?", "gps_lng = ?")
+			args = append(args, gps, gpsLat, gpsLng)
+		} else {
+			sets = append(sets,
+				"gps = CASE WHEN gps = '' THEN ? ELSE gps END",
+				"gps_lat = CASE WHEN gps = '' THEN ? ELSE gps_lat END",
+				"gps_lng = CASE WHEN gps = '' THEN ? ELSE gps_lng END")
+			args = append(args, gps, gpsLat, gpsLng)
+		}
 	}
 	if takenAt != "" {
-		if replaceTakenAt {
+		if opts.UpdateTakenAt {
 			sets = append(sets, "taken_at = ?")
 		} else {
 			sets = append(sets, "taken_at = CASE WHEN taken_at = '' THEN ? ELSE taken_at END")
@@ -1782,14 +1815,26 @@ func (s *SQLite) bulkTargetSub(ctx context.Context, ids []int, folderIDs []int) 
 	return
 }
 
+// bulkSetArgs arranges the bound arguments in SQL placeholder text order for
+// bulk UPDATE statements built around bulkTargetSub: the recursive CTE folder
+// placeholders come first, then the SET clause placeholders, then the media id
+// placeholders inside the WHERE clause. SQLite binds ? by position, so mixing
+// the order up silently updates the wrong rows.
+func (s *SQLite) bulkSetArgs(ids, folderIDs []int, args []any, setArgs ...any) []any {
+	out := make([]any, 0, len(args)+len(setArgs))
+	out = append(out, args[:len(folderIDs)]...)
+	out = append(out, setArgs...)
+	out = append(out, args[len(folderIDs):]...)
+	return out
+}
+
 func (s *SQLite) BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs []int, gps string, lat, lng float64) ([]domain.BulkMediaResult, error) {
 	cte, targetSub, args := s.bulkTargetSub(ctx, ids, folderIDs)
 	if targetSub == "" {
 		return []domain.BulkMediaResult{}, nil
 	}
 	setClause := "gps = ?, gps_lat = ?, gps_lng = ?"
-	setArgs := []any{gps, lat, lng}
-	fullArgs := append(setArgs, args...)
+	fullArgs := s.bulkSetArgs(ids, folderIDs, args, gps, lat, lng)
 	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
 		return nil, err
 	}
@@ -1815,7 +1860,7 @@ func (s *SQLite) BulkUpdateMediaSetTime(ctx context.Context, ids []int, folderID
 		return []domain.BulkMediaResult{}, nil
 	}
 	setClause := "taken_at = ?"
-	fullArgs := append([]any{takenAt}, args...)
+	fullArgs := s.bulkSetArgs(ids, folderIDs, args, takenAt)
 	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
 		return nil, err
 	}
@@ -1840,8 +1885,8 @@ func (s *SQLite) BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folder
 	if targetSub == "" {
 		return []domain.BulkMediaResult{}, nil
 	}
-	setClause := "taken_at = CASE WHEN taken_at = '' THEN taken_at ELSE datetime(taken_at, ? || ' minutes') || 'Z' END"
-	fullArgs := append(args, shiftMinutes)
+	setClause := "taken_at = CASE WHEN taken_at = '' THEN taken_at ELSE strftime('%Y-%m-%dT%H:%M:%S', taken_at, ? || ' minutes') || 'Z' END"
+	fullArgs := s.bulkSetArgs(ids, folderIDs, args, shiftMinutes)
 	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET `+setClause+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
 		return nil, err
 	}
@@ -2188,6 +2233,26 @@ func (s *SQLite) enrichMapMediaTrajectory(ctx context.Context, out []domain.MapM
 	return nil
 }
 
+// scopedMedia drains the result set shared by the MediaFor* queries below
+// (mediaColumns + relative-path expression + favorite flag) and enriches the
+// batch with trajectory flags.
+func (s *SQLite) scopedMedia(ctx context.Context, rows *sql.Rows) ([]domain.Media, error) {
+	out := []domain.Media{}
+	for rows.Next() {
+		var relativePath string
+		var favorite bool
+		item, err := scanMedia(rows, &relativePath, &favorite)
+		if err != nil {
+			return nil, err
+		}
+		item.RelativePath = relativePath
+		item.Favorite = favorite
+		out = append(out, item)
+	}
+	_ = s.enrichMediaTrajectory(ctx, out)
+	return out, rows.Err()
+}
+
 func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error) {
 	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
 		return nil, err
@@ -2204,79 +2269,30 @@ func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.Media{}
-	for rows.Next() {
-		var relativePath string
-		var favorite bool
-		item, err := scanMedia(rows, &relativePath, &favorite)
-		if err != nil {
-			return nil, err
-		}
-		item.RelativePath = relativePath
-		item.Favorite = favorite
-		out = append(out, item)
-	}
-	_ = s.enrichMediaTrajectory(ctx, out)
-	return out, rows.Err()
+	return s.scopedMedia(ctx, rows)
 }
 
 func (s *SQLite) MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error) {
 	if _, err := s.FolderChain(ctx, libraryID, folderID); err != nil {
 		return nil, err
 	}
-	rel := relativePathExpr("m.path", "covers.root_path")
-	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
-		SELECT f.id, f.path FROM media_folders f WHERE f.id = ?
-		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-	SELECT ` + mediaColumns + `, ` + rel + `, ` + favoriteExpr + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
-	ORDER BY ` + rel
-	rows, err := s.db.QueryContext(ctx, query, folderID, userID)
+	rows, err := s.db.QueryContext(ctx, subtreeMediaSQL, folderID, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.Media{}
-	for rows.Next() {
-		var relativePath string
-		var favorite bool
-		item, err := scanMedia(rows, &relativePath, &favorite)
-		if err != nil {
-			return nil, err
-		}
-		item.RelativePath = relativePath
-		item.Favorite = favorite
-		out = append(out, item)
-	}
-	_ = s.enrichMediaTrajectory(ctx, out)
-	return out, rows.Err()
+	return s.scopedMedia(ctx, rows)
 }
 
 func (s *SQLite) MediaForSubtree(ctx context.Context, folderID int) ([]domain.Media, error) {
-	rel := relativePathExpr("m.path", "covers.root_path")
-	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
-		SELECT f.id, f.path FROM media_folders f WHERE f.id = ?
-		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-	SELECT ` + mediaColumns + `, ` + rel + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
-	ORDER BY ` + rel
-	rows, err := s.db.QueryContext(ctx, query, folderID)
+	// The favorite expression is bound to user id 0 (no user) so jobs get the
+	// full media set.
+	rows, err := s.db.QueryContext(ctx, subtreeMediaSQL, folderID, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []domain.Media{}
-	for rows.Next() {
-		var relativePath string
-		var favorite bool
-		item, err := scanMedia(rows, &relativePath, &favorite)
-		if err != nil {
-			return nil, err
-		}
-		item.RelativePath = relativePath
-		out = append(out, item)
-	}
-	return out, rows.Err()
+	return s.scopedMedia(ctx, rows)
 }
 
 func (s *SQLite) FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error) {
@@ -3058,6 +3074,7 @@ func (s *SQLite) jobsWhere(ctx context.Context, where string) ([]domain.Backgrou
 		if strings.TrimSpace(optionsRaw) != "" {
 			_ = json.Unmarshal([]byte(optionsRaw), &job.Options)
 		}
+		restoreJobScope(&job)
 		jobs = append(jobs, job)
 	}
 	return jobs, rows.Err()

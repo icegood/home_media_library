@@ -539,6 +539,11 @@ func TestSQLiteMediaForLibraryFavoriteFlags(t *testing.T) {
 	}
 }
 
+func TestSQLiteMediaForSubtreeScansFullRowsAndStaysWithinSubtree(t *testing.T) {
+	repository, _ := openSQLite(t)
+	verifyMediaForSubtree(t, repository)
+}
+
 func TestSQLiteMediaBatchAndFoldersByIDs(t *testing.T) {
 	repository, _ := openSQLite(t)
 	root := filepath.Join(t.TempDir(), "photos")
@@ -1080,5 +1085,140 @@ func TestSQLiteFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 	}
 	if len(area) != 1 || !area[0].TrajectoryStart || area[0].TrajectoryName != name {
 		t.Fatalf("expected area item with start flag, got %#v", area)
+	}
+}
+
+func TestSQLiteBulkUpdateMediaShiftTime(t *testing.T) {
+	repository, _ := openSQLite(t)
+	root := filepath.Join(t.TempDir(), "photos")
+	library := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
+	library, err := repository.CreateLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	camera, err := repository.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(root, "Camera"), RelativePath: "Camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := repository.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: camera.ID, Path: filepath.Join(root, "Camera", "day1"), RelativePath: "Camera/day1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := repository.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(root, "Other"), RelativePath: "Other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(folder domain.MediaFolder, name string, takenAt string) domain.Media {
+		media, err := repository.UpsertMedia(context.Background(), domain.Media{
+			ID: domain.InvalidID, FolderID: folder.ID, Path: filepath.Join(root, folder.RelativePath, name),
+			Name: name, Kind: domain.KindImage, MIMEType: "image/jpeg", TakenAt: takenAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return media
+	}
+	inCamera := insert(camera, "one.jpg", "2020-01-01T12:00:00Z")
+	inDay := insert(day, "two.jpg", "2021-06-15T08:30:00Z")
+	untouched := insert(other, "three.jpg", "2019-03-03T03:03:00Z")
+	read := func(media domain.Media) string {
+		got, err := repository.Media(context.Background(), media.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.TakenAt
+	}
+	// IDs-only selection must shift exactly the picked rows (regression: the
+	// shift value used to be bound to the first id position and ids shifted by
+	// the minute count).
+	results, err := repository.BulkUpdateMediaShiftTime(context.Background(), []int{inCamera.ID}, nil, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != inCamera.ID {
+		t.Fatalf("ids-only shift targeted %#v, want only %d", results, inCamera.ID)
+	}
+	if got := read(inCamera); got != "2020-01-01T13:30:00Z" {
+		t.Fatalf("inCamera takenAt = %q after +90min, want 2020-01-01T13:30:00Z", got)
+	}
+	if got := read(inDay); got != "2021-06-15T08:30:00Z" {
+		t.Fatalf("inDay must be untouched by ids-only shift, got %q", got)
+	}
+	// Folder selection recurses into subfolders and must apply the same offset.
+	results, err = repository.BulkUpdateMediaShiftTime(context.Background(), nil, []int{camera.ID}, -60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("folder shift targeted %d rows, want 2", len(results))
+	}
+	if got := read(inCamera); got != "2020-01-01T12:30:00Z" {
+		t.Fatalf("inCamera takenAt = %q after -60min, want 2020-01-01T12:30:00Z", got)
+	}
+	if got := read(inDay); got != "2021-06-15T07:30:00Z" {
+		t.Fatalf("inDay takenAt = %q after -60min, want 2021-06-15T07:30:00Z", got)
+	}
+	if got := read(untouched); got != "2019-03-03T03:03:00Z" {
+		t.Fatalf("untouched must keep its own time after folder shift, got %q", got)
+	}
+}
+
+func TestSQLiteBulkUpdateMediaSetTimeAndGPSByFolder(t *testing.T) {
+	repository, _ := openSQLite(t)
+	root := filepath.Join(t.TempDir(), "photos")
+	library := domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}}
+	library, err := repository.CreateLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	camera, err := repository.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(root, "Camera"), RelativePath: "Camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := repository.UpsertFolder(context.Background(), domain.MediaFolder{ID: domain.InvalidID, ParentID: camera.ID, Path: filepath.Join(root, "Camera", "day1"), RelativePath: "Camera/day1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(folder domain.MediaFolder, name string, takenAt string) domain.Media {
+		media, err := repository.UpsertMedia(context.Background(), domain.Media{
+			ID: domain.InvalidID, FolderID: folder.ID, Path: filepath.Join(root, folder.RelativePath, name),
+			Name: name, Kind: domain.KindImage, MIMEType: "image/jpeg", TakenAt: takenAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return media
+	}
+	inCamera := insert(camera, "one.jpg", "2020-01-01T12:00:00Z")
+	inDay := insert(day, "two.jpg", "2021-06-15T08:30:00Z")
+	// Folder recursion via CTE also carries the SET clause args in SQLite; a
+	// positional mismatch silently wrote the wrong column values.
+	results, err := repository.BulkUpdateMediaSetTime(context.Background(), nil, []int{camera.ID}, "2022-05-05T05:05:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("set-time targeted %d rows, want 2", len(results))
+	}
+	for _, id := range []int{inCamera.ID, inDay.ID} {
+		got, err := repository.Media(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.TakenAt != "2022-05-05T05:05:00Z" {
+			t.Fatalf("media %d takenAt = %q, want 2022-05-05T05:05:00Z", id, got.TakenAt)
+		}
+	}
+	if _, err := repository.BulkUpdateMediaGPS(context.Background(), nil, []int{camera.ID}, "50.45,30.52", 50.45, 30.52); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int{inCamera.ID, inDay.ID} {
+		got, err := repository.Media(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GPS != "50.45,30.52" {
+			t.Fatalf("media %d gps = %q, want 50.45,30.52", id, got.GPS)
+		}
 	}
 }

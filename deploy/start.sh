@@ -171,6 +171,21 @@ case "$mode" in
       release | debug) ;;
       *) echo "ANDROID_BUILD_TYPE must be release or debug (got: $build_type)." >&2; exit 1 ;;
     esac
+    # Wire the VERSION file into the APK so builds are identifiable and
+    # upgradeable: versionName = the full version, versionCode = a monotonic,
+    # injective integer from the numeric parts (major*1e6 + minor*1e3 + patch,
+    # each capped so it stays well inside int range). Without this every release
+    # APK kept the template's versionCode 1 / versionName "1.0".
+    version_name="$PROJECT_VERSION"
+    version_parts="$(printf '%s' "$version_name" | tr -c '0-9.' ' ' | awk '{print $1}')"
+    version_major="$(printf '%s' "$version_parts" | cut -sf1 -d. | grep -E '^[0-9]+$' || true)"
+    version_minor="$(printf '%s' "$version_parts" | cut -sf2 -d. | grep -E '^[0-9]+$' || true)"
+    version_patch="$(printf '%s' "$version_parts" | cut -sf3 -d. | grep -E '^[0-9]+$' || true)"
+    version_major="$(( ${version_major:-0} > 2147 ? 2147 : ${version_major:-0} ))"
+    version_minor="$(( ${version_minor:-0} > 999 ? 999 : ${version_minor:-0} ))"
+    version_patch="$(( ${version_patch:-0} > 999 ? 999 : ${version_patch:-0} ))"
+    version_code="$(( version_major * 1000000 + version_minor * 1000 + version_patch ))"
+    [ "$version_code" -ge 1 ] || version_code=1
     # The android builder user only needs a deterministic, non-root identity
     # inside the build container; it does NOT have to match the host user
     # (that's what MEDIA_UID / MEDIA_GID are for, used by the api service).
@@ -275,7 +290,29 @@ EOF
       --build-arg MEDIA_GID="$media_gid" \
       --build-arg WEB_ASSETS_IMAGE="$WEB_ASSETS_IMAGE" \
       -f Dockerfile.android -t media-library-android:local ..
-    run_mounts="-v $apk_out:/output"
+    # Gradle's user home lives in the ephemeral builder container, so without a
+    # persistent volume every run re-downloads the Gradle distribution and all
+    # dependencies and rebuilds from scratch. Persist it (plus the Android user
+    # dir, which holds the debug keystore) in named volumes so unchanged builds
+    # resolve most tasks as UP-TO-DATE and keep the same debug signing key.
+    # On ephemeral CI runners named volumes die with the job; workflows there
+    # export ANDROID_GRADLE_CACHE_DIR / ANDROID_ANDROID_HOME_DIR pointing at an
+    # actions/cache-restored host directory, which is bind-mounted instead.
+    if [ -n "${ANDROID_GRADLE_CACHE_DIR:-}" ]; then
+      mkdir -p "$ANDROID_GRADLE_CACHE_DIR"
+      gradle_home_mount="$ANDROID_GRADLE_CACHE_DIR"
+    else
+      docker volume create "${COMPOSE_PROJECT_NAME}-android-gradle" >/dev/null 2>&1 || true
+      gradle_home_mount="${COMPOSE_PROJECT_NAME}-android-gradle"
+    fi
+    if [ -n "${ANDROID_ANDROID_HOME_DIR:-}" ]; then
+      mkdir -p "$ANDROID_ANDROID_HOME_DIR"
+      android_home_mount="$ANDROID_ANDROID_HOME_DIR"
+    else
+      docker volume create "${COMPOSE_PROJECT_NAME}-android-home" >/dev/null 2>&1 || true
+      android_home_mount="${COMPOSE_PROJECT_NAME}-android-home"
+    fi
+    run_mounts="-v $gradle_home_mount:/home/builder/.gradle -v $android_home_mount:/home/builder/.android -v $apk_out:/output"
     if [ -n "$keystore_dir" ]; then
       run_mounts="$run_mounts -v $keystore_dir:/keystrokes:ro"
     fi
@@ -285,6 +322,8 @@ EOF
     # shellcheck disable=SC2086
     docker run --rm \
       -e ANDROID_BUILD_TYPE="$build_type" \
+      -e ML_VERSION_NAME="$version_name" \
+      -e ML_VERSION_CODE="$version_code" \
       $run_mounts \
       media-library-android:local
     echo ""

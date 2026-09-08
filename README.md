@@ -1,13 +1,13 @@
 # Media Library
 
-Self-hosted, multi-user photo and video library. Administrators map arbitrary
-folders from disk into library items and grant each user read access. The web
+Self-hosted, multi-user photo, video and document library. Administrators map
+arbitrary folders from disk into library items and grant each user read access. The web
 application is responsive and can also be packaged as an Android application
 with Capacitor.
 
 ## Why
 
-For a long time ago i've been trying to get along with solutions that already exist. And tried them to apply to my set of usecases. Namely, one or many media repositories with updating stuff outside of application and different users that obtain different (read/only) rights for some parts of these repositories. Emby and [jellyfin]([https://](https://github.com/jellyfin/jellyfin)https:/) were ones that more or less satisfy this but with bugs, especially during refresh. It wasn't acceptable. Other multiuser solution, [immich](https://github.com/immich-app/immich) went other way: total separation between users. Therefore, no library administrator needed. Everyone does everything with own part. It has own pros, but this is not my way (it would imply dublication of common pictures, at least). One of
+For a long time ago i've been trying to get along with solutions that already exist. And tried them to apply to my set of usecases. Namely, one or many media repositories with updating stuff outside of application and different users that obtain different (read/only) rights for some parts of these repositories. Emby and [jellyfin](https://github.com/jellyfin/jellyfin) were ones that more or less satisfy this but with bugs, especially during refresh. It wasn't acceptable. Other multiuser solution, [immich](https://github.com/immich-app/immich) went other way: total separation between users. Therefore, no library administrator needed. Everyone does everything with own part. It has own pros, but this is not my way (it would imply dublication of common pictures, at least). One of
 
 descent forks adresses it by adding concept of shared data
 
@@ -35,9 +35,9 @@ Why it is done like this right now:
 - `deploy/` — container configuration and sample environment
 
 Media files remain in their original folders. The database stores users,
-libraries, permissions, indexed file paths, extracted metadata, thumbnails and
-editable coordinates. A library's relative directory hierarchy is exposed
-unchanged by the API.
+libraries, permissions, indexed file paths, extracted metadata and editable
+coordinates (generated thumbnail *files* are kept in a runtime folder). A library's
+relative directory hierarchy is exposed unchanged by the API.
 
 ## Quick start
 

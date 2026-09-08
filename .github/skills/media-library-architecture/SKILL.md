@@ -5,10 +5,10 @@ description: "Use when working on the media library project (backend, web, gatew
 
 # Media Library Architecture
 
-Self-hosted, multi-user photo/video library. Administrators map arbitrary disk
-folders into libraries and grant per-user read access. Media files stay in
-their original folders; the database only stores indexes, metadata and grants.
-The web app also packages as an Android app via Capacitor.
+Self-hosted, multi-user photo/video/document library. Administrators map
+arbitrary disk folders into libraries and grant per-user read access. Media
+files stay in their original folders; the database only stores indexes,
+metadata and grants. The web app also packages as an Android app via Capacitor.
 
 ## Components
 
@@ -32,7 +32,11 @@ The web app also packages as an Android app via Capacitor.
 - `web/` — React 19 + TypeScript + Vite SPA (Vitest). `src/api.ts` wraps all
   REST calls; `src/App.tsx` is a single-file SPA with routes: `/` (libraries),
   `/library/:id` (browser), `/library/:id/timeline`, `/library/:id/view/:folderId`
-  (media viewer), `/favorites*`, `/map`, `/admin`.
+  (media viewer), `/favorites*`, `/map`, `/admin`. Timeline/Folders/Favorites
+  filter by kind (image/video/document); Timeline additionally filters by GPS
+  presence and the folder-scoped map has a "No GPS" side panel. The map's
+  coordinate search parses Google Maps formats (`N 050° 4.035, E 19° 56.614`,
+  DMS, shared links) into canonical `lat,lng`.
 - `gateway` — Caddy 2.10. The deploy compose inlines a small watcher for the
   generated Caddyfile and reloads Caddy on change; certs via Let's Encrypt.
 - `deploy/compose.yaml` — production api + web + gateway services; single bind
@@ -45,7 +49,10 @@ The web app also packages as an Android app via Capacitor.
   integers and are the API identifiers.
 - `MediaFolder` = global scanned directory tree (incl. empty folders), reused
   across libraries -> no media duplication. `Media` = one physical file leaf,
-  keyed by folder; image/video derived from `media_mime_types.media_type`.
+  keyed by folder; image/video/document type derived from
+  `media_mime_types.media_type`. Per-kind stats (`{images, videos, documents}`)
+  are the only statistics shape, exposed via library/folder/favorite-view stats
+  endpoints.
 - Thumbnails are files under `THUMBNAIL_DIR/media/<id/1000>/<id>_<index>.jpg`
   (folder covers under `THUMBNAIL_DIR/folders/<id/1000>/<id>_0.jpg`), not in DB,
   not in-memory cache); `thumbnails`/`folder_thumbnails`/`folder_thumbnail_files`
@@ -89,6 +96,10 @@ present), `deploy/` (including `compose.local.yaml`), `docs/`, `.github/`.
 
 Ignore (generated/output): `deploy/.env` (secrets), `.github-token`, `runtime/`,
 `web/android/.gradle/`, `web/android/app/build/`, `.idea/`, `.vscode/`.
+
+GitHub API/CI tooling on the dev host reads its token from `~/.git-credentials`
+(primary, `https://user:<ghp_...|github_pat_...>@github.com`) or the gitignored
+repo-root `.github-token` — never guess or pull tokens from stray temp files.
 
 ## Verification
 
