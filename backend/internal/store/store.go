@@ -64,6 +64,8 @@ type Store interface {
 	FavoritesForUser(ctx context.Context, userID int, mediaIDs []int) (map[int]bool, error)
 	UpdateGPS(ctx context.Context, id int, patch domain.GPSPatch) (domain.Media, error)
 	UpdateMediaDetails(ctx context.Context, id int, patch domain.MediaDetailsPatch) (domain.Media, error)
+	MediaAdjust(ctx context.Context, mediaID int) (domain.MediaAdjust, error)
+	SaveMediaAdjust(ctx context.Context, mediaID int, adjust domain.MediaAdjust) error
 	SetTrajectoryStart(ctx context.Context, folderID, mediaID int, start bool) error
 	SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, end bool) error
 	SetTrajectoryName(ctx context.Context, folderID, mediaID int, name string) error
@@ -76,6 +78,7 @@ type Store interface {
 	MediaInFolders(ctx context.Context, folderIDs []int) ([]domain.Media, error)
 	WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, error)
 	MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error)
+	MediaNeighbors(ctx context.Context, userID, libraryID, folderID, anchorID int, sort, kind, gps string, before, after int) (domain.MediaNeighbors, error)
 	MediaForSubtree(ctx context.Context, folderID int) ([]domain.Media, error)
 	FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error)
 	FoldersForSubtree(ctx context.Context, folderID int) ([]domain.MediaFolder, error)

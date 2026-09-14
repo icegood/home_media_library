@@ -115,6 +115,16 @@ export const api = {
     call<FolderEntries>(`/libraries/${libraryId}/folders/${folderId}/entries${rangeQuery(range)}`),
   libraryMedia: (libraryId:ID) => call<Media[]>(`/libraries/${libraryId}/media`),
   folderMedia: (libraryId:ID, folderId:ID) => call<Media[]>(`/libraries/${libraryId}/folders/${folderId}/media`),
+  mediaNeighbors: (libraryId:ID, folder:number|"all", anchor:ID, options?:{sort?:string; kind?:string; gps?:string; before?:number; after?:number}) => {
+    const params = new URLSearchParams({anchor:String(anchor)});
+    if (folder !== "all") params.set("folder", String(folder));
+    if (options?.sort) params.set("sort", options.sort);
+    if (options?.kind) params.set("kind", options.kind);
+    if (options?.gps) params.set("gps", options.gps);
+    if (options?.before != null) params.set("before", String(options.before));
+    if (options?.after != null) params.set("after", String(options.after));
+    return call<{anchor:Media; before:Media[]; after:Media[]}>(`/libraries/${libraryId}/media/neighbors?${params.toString()}`);
+  },
   favoriteViews: () => call<FavoriteView[]>("/favorite-views"),
   mediaFavoriteViews: (id:ID) => call<FavoriteViewMembership[]>(`/media/${id}/favorite-views`),
   folderFavoriteViews: (id:ID) => call<FavoriteViewMembership[]>(`/folders/${id}/favorite-views`),
@@ -144,7 +154,7 @@ export const api = {
   },
   updateGPS: (id:ID, gps:string|null) =>
     call<Media>(`/media/${id}/gps`, {method:"PATCH", body:JSON.stringify({gps})}),
-  updateMediaDetails: (id:ID, input:{name:string; gps:string|null; takenAt:string|null}) =>
+  updateMediaDetails: (id:ID, input:{name:string; gps:string|null; takenAt:string|null; notes?:string|null}) =>
     call<Media>(`/media/${id}/details`, {method:"PATCH", body:JSON.stringify(input)}),
   setTrajectoryStart: (id:ID, folderId:ID, start:boolean) =>
     call<{folderId:ID; mediaId:ID; start:boolean; trajectoryStart:boolean}>(`/media/${id}/trajectory-start`, {method:"PATCH", body:JSON.stringify({folderId, start})}),
@@ -152,6 +162,9 @@ export const api = {
     call<{folderId:ID; mediaId:ID; end:boolean; trajectoryEnd:boolean}>(`/media/${id}/trajectory-end`, {method:"PATCH", body:JSON.stringify({folderId, end})}),
   setTrajectoryName: (id:ID, folderId:ID, name:string) =>
     call<{folderId:ID; mediaId:ID; name:string}>(`/media/${id}/trajectory-name`, {method:"PATCH", body:JSON.stringify({folderId, name})}),
+  getAdjust: (id:ID) => call<MediaAdjust>(`/media/${id}/adjust`),
+  saveAdjust: (id:ID, adj:MediaAdjust) =>
+    call<MediaAdjust>(`/media/${id}/adjust`, {method:"PUT", body:JSON.stringify(adj)}),
   bulkUpdateMedia: (input:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string|null; takenAt?:string|null; shiftMinutes?:number|null}) =>
     call<{id:ID; takenAt?:string; gps?:string}[]>(`/media/bulk`, {method:"PATCH", body:JSON.stringify(input)}),
   metadataRenew: (libraryId:ID, input:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean; rootId?:ID}) =>
@@ -277,6 +290,17 @@ export interface UserSettings {
   poiProviderLight:POISource;
   poiProviderDark:POISource;
   poiProviders?:Record<string, Record<string, string>>;
+  thumbMin:number;
+  thumbMax:number;
+}
+
+export interface MediaAdjust {
+  brightness:number;
+  hue:number;
+  saturation:number;
+  gamma:number;
+  contrast:number;
+  rotation:number;
 }
 
 export type MapTileSource = "osm" | "esri" | "esri:satellite" | "carto" | "carto:voyager" | "carto:light" | "carto:dark";

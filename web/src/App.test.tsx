@@ -341,7 +341,7 @@ test("regular user has no settings menu and picks theme in user settings", async
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
@@ -363,7 +363,7 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   pickOption(within(dialog).getByRole("combobox", {name:"Theme"}), "System — match device");
   expect(document.documentElement.dataset.theme).toBe("light");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
@@ -457,7 +457,7 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await within(dialog).findByRole("option", {name:/VP9 \+ Opus → WebM/}));
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
 
   fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
   fireEvent.blur(within(dialog).getByLabelText("Email address"));
@@ -487,11 +487,11 @@ test("user settings modal changes zoom grade numerically", async () => {
   expect(document.documentElement.style.fontSize).toBe("120%");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
   pickOption(within(dialog).getByRole("combobox", {name:"Zoom"}), "80%");
   expect(document.documentElement.style.fontSize).toBe("80%");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
 });
 
 test("user settings saves a configured date format", async () => {
@@ -503,7 +503,7 @@ test("user settings saves a configured date format", async () => {
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   pickOption(within(dialog).getByRole("combobox", {name:"Date format"}), "16.08.2026 14:30");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
 });
 
 test("user settings saves the date format with seconds", async () => {
@@ -518,7 +518,7 @@ test("user settings saves the date format with seconds", async () => {
   expect(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"})).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
 });
 
 test("user settings saves the american date format with seconds", async () => {
@@ -533,7 +533,20 @@ test("user settings saves the american date format with seconds", async () => {
   expect(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"})).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+});
+
+test("user settings customizes map sidebar thumbnail size", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  fireEvent.change(within(dialog).getByLabelText("Minimum size, px", {exact:false}), {target:{value:"120"}});
+  fireEvent.change(within(dialog).getByLabelText("Maximum size, px", {exact:false}), {target:{value:"120"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({thumbMin:120, thumbMax:120})));
 });
 
 test("portal selection lists stack above the modal backdrop", () => {
@@ -644,7 +657,7 @@ test("user settings saves the media loading batch size", async () => {
   fireEvent.change(batchInput, {target:{value:"25"}});
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
 });
 
 test("native gate shows the server picker despite a saved default when asked to change server", async () => {
@@ -1125,7 +1138,7 @@ test("favorite view skips expanded media fetch until timeline mode opens", async
   fireEvent.click(screen.getByRole("combobox", {name:"Display mode"}));
   fireEvent.click(await screen.findByRole("option", {name:"Timeline"}));
   await waitFor(() => expect(mockApi.favoriteViewMediaFull).toHaveBeenCalledWith(30, true));
-  await waitFor(() => expect(document.body.querySelector(".timeline-group-date")).toHaveTextContent("2024"));
+  await waitFor(() => expect(document.body.querySelector(".timeline-group-caption")).toHaveTextContent("2024"));
 });
 
 test("favorite view menu shows backend-computed media statistics", async () => {
@@ -1189,11 +1202,15 @@ test("trajectory start and end markers can be toggled from the media card", asyn
   await waitFor(() => expect(mockApi.setTrajectoryStart).toHaveBeenCalledWith(100, 20, true));
   await waitFor(() => expect(mockApi.setTrajectoryName).toHaveBeenCalledWith(100, 20, "Test"));
   await waitFor(() => expect(screen.queryByRole("dialog", {name:/Name trajectory/})).not.toBeInTheDocument());
-  await waitFor(() => expect(screen.getByRole("button", {name:"Unset trajectory start"})).toHaveAttribute("aria-pressed", "true"));
-  fireEvent.click(screen.getByRole("button", {name:"Unset trajectory start"}));
-  const confirmStart = await screen.findByRole("dialog", {name:/Remove trajectory start/});
-  fireEvent.click(within(confirmStart).getByRole("button", {name:"Remove"}));
+  await waitFor(() => expect(screen.getByRole("button", {name:"Edit trajectory start"})).toHaveAttribute("aria-pressed", "true"));
+  // The single start button reopens the same form with the current name; its
+  // Remove button deletes directly (no separate confirmation dialog).
+  fireEvent.click(screen.getByRole("button", {name:"Edit trajectory start"}));
+  const editDialog = await screen.findByRole("dialog", {name:/Name trajectory/});
+  expect(within(editDialog).getByLabelText("Trajectory name")).toHaveValue("Test");
+  fireEvent.click(within(editDialog).getByRole("button", {name:"Unset"}));
   await waitFor(() => expect(mockApi.setTrajectoryStart).toHaveBeenCalledWith(100, 20, false));
+  await waitFor(() => expect(screen.getByRole("button", {name:"Set trajectory start"})).toHaveAttribute("aria-pressed", "false"));
 
   fireEvent.click(screen.getByRole("button", {name:"Set trajectory end"}));
   await waitFor(() => expect(mockApi.setTrajectoryEnd).toHaveBeenCalledWith(100, 20, true));
@@ -1207,7 +1224,7 @@ test("trajectory start and end markers can be toggled from the media card", asyn
 test("trajectory name can be set from the media card", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
   mockApi.entries.mockResolvedValue([
-    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", trajectoryStart:false, trajectoryName:""}}
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", trajectoryStart:false, trajectoryName:"Stale name"}}
   ]);
   mockApi.setTrajectoryStart.mockResolvedValue({folderId:20, mediaId:100, start:true, trajectoryStart:true});
   mockApi.setTrajectoryName.mockResolvedValue({folderId:20, mediaId:100, name:"Morning loop"});
@@ -1216,13 +1233,39 @@ test("trajectory name can be set from the media card", async () => {
 
   fireEvent.click(await screen.findByRole("button", {name:"Set trajectory start"}));
   const dialog = await screen.findByRole("dialog", {name:/Name trajectory/});
+  // A start that isn't set yet must not show a previously stored name.
+  expect(within(dialog).getByLabelText("Trajectory name")).toHaveValue("");
   const input = within(dialog).getByLabelText("Trajectory name");
   fireEvent.change(input, {target:{value:"Morning loop"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save"}));
   await waitFor(() => expect(mockApi.setTrajectoryStart).toHaveBeenCalledWith(100, 20, true));
   await waitFor(() => expect(mockApi.setTrajectoryName).toHaveBeenCalledWith(100, 20, "Morning loop"));
   await waitFor(() => expect(screen.queryByRole("dialog", {name:/Name trajectory/})).not.toBeInTheDocument());
-  await waitFor(() => expect(screen.getByRole("button", {name:"Unset trajectory start"})).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("button", {name:"Edit trajectory start"})).toBeInTheDocument());
+});
+
+test("trajectory start can be renamed without removing and recreating it", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.entries.mockResolvedValue([
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", trajectoryStart:true, trajectoryName:"Morning loop"}}
+  ]);
+  mockApi.setTrajectoryName.mockResolvedValue({folderId:20, mediaId:100, name:"Evening loop"});
+  mockApi.setTrajectoryName.mockClear();
+  mockApi.setTrajectoryStart.mockClear();
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+
+  fireEvent.click(await screen.findByRole("button", {name:"Edit trajectory start"}));
+  const dialog = await screen.findByRole("dialog", {name:/Name trajectory/});
+  expect(within(dialog).getByText(/Rename trajectory/)).toBeInTheDocument();
+  const input = within(dialog).getByLabelText("Trajectory name") as HTMLInputElement;
+  expect(input.value).toBe("Morning loop");
+  fireEvent.change(input, {target:{value:"Evening loop"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Rename"}));
+  await waitFor(() => expect(mockApi.setTrajectoryName).toHaveBeenCalledWith(100, 20, "Evening loop"));
+  // Renaming must not unset/recreate the marker.
+  expect(mockApi.setTrajectoryStart).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByRole("dialog", {name:/Name trajectory/})).not.toBeInTheDocument());
+  expect(screen.getByRole("button", {name:"Edit trajectory start"})).toBeInTheDocument();
 });
 
 test("trajectory start popup names the segment and saves it", async () => {
@@ -1330,6 +1373,13 @@ test("keyboard focus, space check, and shift-range selection work in the library
   await screen.findByText("a.jpg");
   const card = (id:number) => document.querySelector(`[data-kb-id="m${id}"]`) as HTMLElement;
   const check = (id:number) => card(id).querySelector("input[type=checkbox]") as HTMLInputElement;
+  // The grid's cards mount with the reveal; pressing a key before they exist
+  // is dropped by the handler (empty cards list) with no retry, which flaked.
+  await waitFor(() => {
+    expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull();
+    expect(document.querySelector('[data-kb-id="m101"]')).not.toBeNull();
+    expect(document.querySelector('[data-kb-id="m102"]')).not.toBeNull();
+  });
   // Oldest-first (asc, now the default) orders c(2021), b(2022), a(2023).
   // Arrow focuses without a click.
   fireEvent.keyDown(window, {key:"ArrowRight"});
@@ -1411,7 +1461,8 @@ test("map in a folder can list the media without GPS in a side panel", async () 
   ]);
   mockApi.folderMedia.mockResolvedValue([
     {id:100, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"},
-    {id:101, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2021-01-01T01:01:01Z"}
+    {id:101, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2021-01-01T01:01:01Z"},
+    {id:102, folderId:20, relativePath:"c.jpg", name:"c.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-05-05T05:05:05Z"}
   ]);
   render(<MemoryRouter initialEntries={["/map?library=1&folder=20"]}><App/></MemoryRouter>);
   await waitFor(() => expect(mockApi.map).toHaveBeenCalledWith(1, 20, undefined, undefined));
@@ -1420,6 +1471,11 @@ test("map in a folder can list the media without GPS in a side panel", async () 
   await waitFor(() => expect(screen.getByRole("complementary", {name:"Media without GPS in this folder"})).toBeInTheDocument());
   expect(await screen.findByText("b.jpg")).toBeInTheDocument();
   expect(screen.queryByText("a.jpg")).not.toBeInTheDocument();
+  const order = () => Array.from(document.querySelectorAll(".map-area-item small")).map(el => el.textContent);
+  expect(order()).toEqual(["b.jpg", "c.jpg"]);
+  fireEvent.click(screen.getByRole("button", {name:"Newest first"}));
+  await waitFor(() => expect(order()).toEqual(["c.jpg", "b.jpg"]));
+  expect(screen.getByRole("button", {name:"Oldest first"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Close"}));
   await waitFor(() => expect(screen.queryByRole("complementary", {name:"Media without GPS in this folder"})).not.toBeInTheDocument());
 });
@@ -1452,12 +1508,15 @@ test("enter on the focused media card opens the viewer in play mode", async () =
     this.dispatchEvent(new Event("pause"));
   }) as any;
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.folderMedia.mockResolvedValue([
-    {id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}
-  ]);
+  const video103 = {id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""};
+  mockApi.folderMedia.mockResolvedValue([video103]);
   mockApi.folderEntries.mockResolvedValue({entries:[
-    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}}
+    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:video103}
   ], chain: []});
+  // The viewer walks the timeline scope one anchor at a time via MediaNeighbors;
+  // the timeline targets the root= (subtree) viewer, so the anchor must come
+  // back through the neighbors endpoint rather than the folder media dump.
+  mockApi.mediaNeighbors.mockResolvedValue({anchor:video103, before:[], after:[]});
   mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
   render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
   await screen.findByText("two.mp4");
@@ -1497,7 +1556,7 @@ test("library timeline groups media by date along a vertical ruler", async () =>
   expect(screen.queryByRole("heading", {name:"Unknown date"})).not.toBeInTheDocument();
   const groups = Array.from(document.querySelectorAll(".timeline-grid .timeline-group"));
   expect(groups.length).toBe(2);
-  const dateLabels0 = Array.from(document.querySelectorAll(".timeline-group-date"));
+  const dateLabels0 = Array.from(document.querySelectorAll(".timeline-group-caption"));
   if (dateLabels0[0].textContent!.includes("2020")) {
     expect(groups[0].querySelectorAll(".timeline-group-grid .media").length).toBe(2);
     expect(groups[1].querySelectorAll(".timeline-group-grid .media").length).toBe(1);
@@ -1541,10 +1600,50 @@ test("media name and gps are saved only after explicit save", async () => {
   fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"50.45,30.52"}});
   expect(mockApi.updateMediaDetails).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
-  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"renamed.jpg", gps:"50.45,30.52", takenAt:""}));
-  expect(screen.getByRole("button", {name:"Open on map"})).toBeInTheDocument();
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"renamed.jpg", gps:"50.45,30.52", takenAt:"", notes:""}));
+  expect(screen.getByRole("link", {name:"Open on map"})).toHaveAttribute("href", "/map?item=100");
   fireEvent.click(screen.getByRole("button", {name:"Hide info panel"}));
   expect(screen.getByRole("button", {name:"Show info panel"})).toHaveTextContent("<<");
+});
+
+test("media notes are edited and saved from the Notes tab after metadata", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", notes:"existing note"}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  const metadataTab = await screen.findByRole("tab", {name:"Metadata"});
+  const notesTab = screen.getByRole("tab", {name:"Notes"});
+  expect(metadataTab.compareDocumentPosition(notesTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(notesTab);
+  const textarea = within(screen.getByRole("tabpanel", {name:"Notes"})).getByRole("textbox");
+  expect(textarea).toHaveValue("existing note");
+  expect(screen.getByRole("button", {name:"Save"})).toBeDisabled();
+  fireEvent.change(textarea, {target:{value:"a longer note"}});
+  expect(screen.getByRole("button", {name:"Save"})).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:"", notes:"a longer note"}));
+  expect(textarea).toHaveValue("a longer note");
+});
+
+test("selected media info tab is remembered when navigating to adjacent items", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", notes:"note one"}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", notes:"note two"}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  fireEvent.click(screen.getByRole("tab", {name:"Notes"}));
+  expect(within(screen.getByRole("tabpanel", {name:"Notes"})).getByRole("textbox")).toHaveValue("note one");
+  fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+  expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
+  expect(screen.getByRole("tab", {name:"Notes"})).toHaveAttribute("aria-selected", "true");
+  expect(within(screen.getByRole("tabpanel", {name:"Notes"})).getByRole("textbox")).toHaveValue("note two");
+  fireEvent.click(screen.getByRole("button", {name:"Previous media"}));
+  expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
+  expect(screen.getByRole("tab", {name:"Notes"})).toHaveAttribute("aria-selected", "true");
 });
 
 test("saved gps and name stick when navigating to an adjacent item and back", async () => {
@@ -1562,7 +1661,7 @@ test("saved gps and name stick when navigating to an adjacent item and back", as
   fireEvent.change(await screen.findByLabelText("Name"), {target:{value:"edited.jpg"}});
   fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"50.45,30.52"}});
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
-  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"edited.jpg", gps:"50.45,30.52", takenAt:""}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"edited.jpg", gps:"50.45,30.52", takenAt:"", notes:""}));
   fireEvent.click(screen.getByRole("button", {name:"Next media"}));
   expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Previous media"}));
@@ -1593,7 +1692,7 @@ test("media info shows the date in the configured format, copyable, and pasting 
   const pasted = new Date(2020, 7, 21, 14, 30);
   fireEvent.change(screen.getByLabelText("Date"), {target:{value:`${pad2(pasted.getDate())}.${pad2(pasted.getMonth() + 1)}.${pasted.getFullYear()} ${pad2(pasted.getHours())}:${pad2(pasted.getMinutes())}`}});
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
-  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:pasted.toISOString()}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:pasted.toISOString(), notes:""}));
 });
 
 test("media info shows and parses the date format with seconds", async () => {
@@ -1615,7 +1714,7 @@ test("media info shows and parses the date format with seconds", async () => {
   const pasted = new Date(2020, 7, 21, 14, 30, 15);
   fireEvent.change(screen.getByLabelText("Date"), {target:{value:`${pad2(pasted.getDate())}.${pad2(pasted.getMonth() + 1)}.${pasted.getFullYear()} ${pad2(pasted.getHours())}:${pad2(pasted.getMinutes())}:${pad2(pasted.getSeconds())}`}});
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
-  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:pasted.toISOString()}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:pasted.toISOString(), notes:""}));
 });
 
 test("the date picker opens a themed calendar right-aligned to the pick button and writes the new date back into the text input", async () => {
@@ -1655,7 +1754,7 @@ test("clearing gps in the info panel sends an empty string so the backend can NU
   expect(gps).toHaveValue("50.45,30.52");
   fireEvent.change(gps, {target:{value:""}});
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
-  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:""}));
+  await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"one.jpg", gps:"", takenAt:"", notes:""}));
 });
 
 test("media info groups metadata into one subtab per source (exif, ffprobe)", async () => {
@@ -1847,6 +1946,33 @@ test("folder breadcrumb links go through the folder chain to the library root", 
   expect(screen.getByRole("link", {name:"Libraries"})).toHaveAttribute("href", "/");
 });
 
+test("breadcrumb back to a parent folder selects and reveals the folder you came from", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const scrollIntoView = vi.fn();
+  (HTMLElement.prototype as unknown as {scrollIntoView:unknown}).scrollIntoView = scrollIntoView;
+  mockApi.folderEntries.mockImplementation((_libraryId:number, folderId:number) => Promise.resolve(folderId === 21
+    ? {entries:[], chain:[
+        {id:20, parentId:-1, relativePath:"Photos", name:"Photos"},
+        {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}
+      ]}
+    : {entries:[{id:21, name:"Nested", relativePath:"Photos/Nested", type:"folder"}], chain:[
+        {id:20, parentId:-1, relativePath:"Photos", name:"Photos"}
+      ]}));
+  render(<MemoryRouter initialEntries={["/library/1/folder/21"]}><App/></MemoryRouter>);
+  await screen.findByText("Nested");
+  fireEvent.click(screen.getByRole("link", {name:"Photos"}));
+  const card = await waitFor(() => {
+    const el = document.querySelector('.folder-entry[data-kb-id="f21"]');
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+  // The folder opened from is highlighted and scrolled into view so the user
+  // sees where they came back to without scrolling.
+  await waitFor(() => expect(card).toHaveClass("kb-focus"));
+  expect(scrollIntoView).toHaveBeenCalled();
+  delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
+});
+
 test("breadcrumb uses the real folder name even when relativePath is empty", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[], chain:[{id:7, parentId:-1, relativePath:"", name:"Trip Photos"}]});
@@ -1980,6 +2106,71 @@ test("image zoom is preserved when navigating between neighboring files", async 
   expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("150%");
 });
 
+test("image zoom is preserved when navigating between neighboring files in a root subtree view", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[]});
+  const a = {id:85943, folderId:5946, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""};
+  const b = {id:85944, folderId:5946, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""};
+  mockApi.mediaNeighbors.mockImplementation(async (_libraryId:number, _folder:number|"all", anchorId:number) =>
+    anchorId === a.id ? {anchor:a, before:[], after:[b]} : {anchor:b, before:[a], after:[]});
+  mockApi.media.mockImplementation(async (id:number) => id === a.id ? a : b);
+  render(<MemoryRouter initialEntries={["/library/3/view/5946?item=85943&sort=date-asc&root=1859"]}><App/></MemoryRouter>);
+  await screen.findByRole("img", {name:"a.jpg"});
+  fireEvent.click(screen.getByRole("button", {name:"Zoom in"}));
+  fireEvent.click(screen.getByRole("button", {name:"Zoom in"}));
+  expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("150%");
+  fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+  await screen.findByRole("img", {name:"b.jpg"});
+  expect(screen.getByRole("button", {name:"Reset zoom"})).toHaveTextContent("150%");
+});
+
+test("media with a saved rotation is not painted unrotated before adjustments load", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"DSC06360.JPG", relativePath:"DSC06360.JPG", type:"media", media:{id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  let resolveAdjust:(value:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number; rotation:number}) => void = () => {};
+  mockApi.getAdjust.mockReturnValue(new Promise(resolve => { resolveAdjust = resolve; }));
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const img = await screen.findByRole("img", {name:"DSC06360.JPG"});
+  expect(img).toHaveStyle({opacity:"0", transform:"translate(0px, 0px) rotate(0deg) scale(1)"});
+  await act(async () => { resolveAdjust({brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:270}); });
+  await waitFor(() => expect(img).toHaveStyle({opacity:"1"}));
+  expect(img).toHaveStyle({transform:"translate(0px, 0px) rotate(270deg) scale(1)"});
+});
+
+test("rotate applies immediately but persists only when Save adjustments is pressed", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"DSC06360.JPG", relativePath:"DSC06360.JPG", type:"media", media:{id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const img = await screen.findByRole("img", {name:"DSC06360.JPG"});
+  await waitFor(() => expect(img).toHaveStyle({opacity:"1"}));
+  fireEvent.click(screen.getByRole("button", {name:"Rotate media"}));
+  expect(img).toHaveStyle({transform:"translate(0px, 0px) rotate(90deg) scale(1)"});
+  expect(mockApi.saveAdjust).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByLabelText("Show info panel"));
+  fireEvent.click(screen.getByRole("button", {name:"Save adjustments"}));
+  await waitFor(() => expect(mockApi.saveAdjust).toHaveBeenCalledWith(100, {brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:90}));
+});
+
+test("ctrl+click and the L/R keys rotate counter-clockwise or clockwise", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"DSC06360.JPG", relativePath:"DSC06360.JPG", type:"media", media:{id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const img = await screen.findByRole("img", {name:"DSC06360.JPG"});
+  await waitFor(() => expect(img).toHaveStyle({opacity:"1"}));
+  fireEvent.click(screen.getByRole("button", {name:"Rotate media"}), {ctrlKey:true});
+  expect(img).toHaveStyle({transform:"translate(0px, 0px) rotate(270deg) scale(1)"});
+  fireEvent.keyDown(document.body, {key:"r"});
+  expect(img).toHaveStyle({transform:"translate(0px, 0px) rotate(0deg) scale(1)"});
+  fireEvent.keyDown(document.body, {key:"l"});
+  expect(img).toHaveStyle({transform:"translate(0px, 0px) rotate(270deg) scale(1)"});
+});
+
 test("media info remounts metadata when navigating between neighboring files", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[
@@ -2030,7 +2221,7 @@ test("seeking a transcoded video requests a server-side start offset instead of 
   mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   const slider = await screen.findByLabelText("Seek video");
-  expect(screen.getByRole("button", {name:"Full screen"})).toBeInTheDocument();
+  expect(document.querySelector('.video-controls button[aria-label="Full screen"]')).toBeInTheDocument();
   fireEvent.change(slider, {target:{value:"1234"}});
   await waitFor(() => expect(mockApi.playbackUrl).toHaveBeenLastCalledWith(100, expect.anything(), 1234));
 });
@@ -2053,7 +2244,14 @@ test("arrow keys on the focused video timeline seek instead of opening another v
   await new Promise(resolve => setTimeout(resolve, 30));
   expect(stage()).toHaveAttribute("aria-label", "clip-a.mp4");
   expect(mockApi.playbackUrl).not.toHaveBeenCalledWith(101, expect.anything(), expect.any(Number));
-  // ArrowRight outside the slider still navigates to the next video.
+  // While the clip is playing, ArrowRight on the document scrubs through the
+  // video instead of moving to the adjacent item...
+  fireEvent.keyDown(document.body, {key:"ArrowRight"});
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(stage()).toHaveAttribute("aria-label", "clip-a.mp4");
+  expect(mockApi.playbackUrl).not.toHaveBeenCalledWith(101, expect.anything(), expect.any(Number));
+  // ...but once playback is paused the arrow falls through to prev/next navigation.
+  fireEvent.pause(document.querySelector(".video-stack video") as HTMLVideoElement);
   fireEvent.keyDown(document.body, {key:"ArrowRight"});
   await waitFor(() => expect(stage()).toHaveAttribute("aria-label", "clip-b.mp4"));
 });
@@ -2225,6 +2423,26 @@ test("map renders many markers progressively instead of all at once", async () =
   }
 });
 
+test("map opened with ?item= shows only that item instead of every marker", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"15,25", takenAt:"2020-08-21T13:00:00Z"},
+    {id:102, libraryId:1, folderId:20, relativePath:"c.jpg", name:"c.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"20,30", takenAt:"2020-08-21T14:00:00Z"}
+  ]);
+  render(<MemoryRouter initialEntries={["/map?item=100"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.map).toHaveBeenCalledWith(undefined, undefined, undefined, undefined));
+  await waitFor(() => expect(document.querySelectorAll(".media-point-marker, .cluster-marker").length).toBe(1));
+  fireEvent.click(document.querySelector(".media-point-marker")!);
+  const panel = screen.getByRole("complementary", {name:"Selected area"});
+  expect(panel).toBeInTheDocument();
+  expect(within(panel).getByText("a.jpg")).toBeInTheDocument();
+  expect(screen.queryByText("b.jpg")).not.toBeInTheDocument();
+  expect(screen.queryByText("c.jpg")).not.toBeInTheDocument();
+});
+
 test("clicking a map cluster opens the same timeline panel instead of a popup", async () => {
   const L = (await import("leaflet")).default;
   (L.Browser as Record<string, unknown>).svg = true;
@@ -2244,7 +2462,7 @@ test("clicking a map cluster opens the same timeline panel instead of a popup", 
   expect(screen.getByText("a.jpg")).toBeInTheDocument();
   expect(screen.getByText("b.jpg")).toBeInTheDocument();
   expect(document.querySelectorAll(".map-timeline-panel .timeline-group").length).toBe(1);
-  expect(document.querySelectorAll(".map-timeline-panel .timeline-group-date").length).toBe(1);
+  expect(document.querySelectorAll(".map-timeline-panel .timeline-group-caption").length).toBe(1);
   fireEvent.click(screen.getByRole("button", {name:"Clear"}));
   expect(screen.queryByRole("complementary", {name:"Selected area"})).not.toBeInTheDocument();
 });
@@ -2307,7 +2525,7 @@ test("POI overlay uses a checkbox dropdown to pick categories and renders POIs n
   const panel = await screen.findByRole("dialog", {name:"POI categories"});
   expect(panel).toHaveClass("poi-cat-panel");
   expect(panel.style.top).not.toBe("");
-  expect(panel.style.right).not.toBe("");
+  expect(panel.style.left).not.toBe("");
   expect(panel.querySelectorAll('input[type="checkbox"]').length).toBe(6);
   // Select all categories so we get every food/fuel_parking marker back; the
   // focus-area filter should still keep the 55.5/-25.0 marker off-screen.
@@ -2757,13 +2975,15 @@ test("fullscreen targets the video box and locks orientation to the media aspect
     mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
     render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
     await screen.findByLabelText("Seek video");
-    fireEvent.click(screen.getByRole("button", {name:"Full screen"}));
+    fireEvent.click(document.querySelector('.video-controls button[aria-label="Full screen"]')!);
     await waitFor(() => expect(lock).toHaveBeenCalledWith("landscape"));
     expect(Element.prototype.requestFullscreen).toHaveBeenCalledTimes(1);
     expect((Element.prototype.requestFullscreen as ReturnType<typeof vi.fn>).mock.instances[0]).toHaveClass("viewer-media");
     // waitFor(lock) resolves before the fullscreenchange re-render swaps the
     // button label; wait for the label itself so this is not order-dependent.
-    fireEvent.click(await screen.findByRole("button", {name:"Exit full screen"}));
+    const exitButton = () => document.querySelector('.video-controls button[aria-label="Exit full screen"]');
+    await waitFor(() => expect(exitButton()).toBeTruthy());
+    fireEvent.click(exitButton()!);
     await waitFor(() => expect(unlock).toHaveBeenCalled());
     fireEvent.keyDown(window, {key:"f"});
     await waitFor(() => expect(Element.prototype.requestFullscreen).toHaveBeenCalledTimes(2));
@@ -2841,9 +3061,10 @@ test("navigating between media while fullscreen does not re-lock orientation", a
     mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
     render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
     await screen.findByLabelText("Seek video");
-    fireEvent.click(screen.getByRole("button", {name:"Full screen"}));
+    fireEvent.click(document.querySelector('.video-controls button[aria-label="Full screen"]')!);
     await waitFor(() => expect(lock).toHaveBeenCalledTimes(1));
     expect(lock).toHaveBeenCalledWith("landscape");
+    fireEvent.pause(document.querySelector(".video-stack video") as HTMLVideoElement);
     fireEvent.keyDown(window, {key:"ArrowRight"});
     await waitFor(() => expect(screen.getByLabelText("three.jpg")).toBeInTheDocument());
     await waitFor(() => expect(lock).toHaveBeenCalledTimes(1));
@@ -2857,6 +3078,42 @@ test("navigating between media while fullscreen does not re-lock orientation", a
     if (originalFullscreenElement) Object.defineProperty(document, "fullscreenElement", originalFullscreenElement);
     else Object.defineProperty(document, "fullscreenElement", {value:undefined, configurable:true});
   }
+});
+
+test("video mode shows fullscreen like image mode plus sound controls after play", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}, streams:[{codec_type:"video", codec_name:"h264", width:1920, height:1080}]}}, gps:"", takenAt:""}}
+  ], chain: []});
+  mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Seek video");
+  // The overlay fullscreen button is available in video mode too (same spot as
+  // for images) while the one in the time panel stays.
+  expect(document.querySelector(".viewer-media > .viewer-fullscreen")).toBeInTheDocument();
+  expect(document.querySelector('.video-controls button[aria-label="Full screen"]')).toBeInTheDocument();
+  // Sound controls sit directly after the play button in the control bar.
+  const play = screen.getByRole("button", {name:"Pause"});
+  const volumeControl = screen.getByRole("button", {name:"Volume control"});
+  expect(play.compareDocumentPosition(volumeControl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The volume slider and mute live in a vertical drop-up that only appears
+  // after the audio button is pressed; the slider is no longer in the bar.
+  fireEvent.click(volumeControl);
+  const popover = document.querySelector(".video-volume-popover") as HTMLElement;
+  expect(popover).toBeInTheDocument();
+  const volume = within(popover).getByLabelText("Volume");
+  const video = document.querySelector(".video-stack video") as HTMLVideoElement;
+  fireEvent.change(volume, {target:{value:"0.5"}});
+  await waitFor(() => expect(video.volume).toBeCloseTo(0.5));
+  fireEvent.click(within(popover).getByRole("button", {name:"Mute"}));
+  await waitFor(() => expect(video.muted).toBe(true));
+  expect(within(popover).getByRole("button", {name:"Unmute"})).toBeInTheDocument();
+  fireEvent.click(within(popover).getByRole("button", {name:"Unmute"}));
+  await waitFor(() => expect(video.muted).toBe(false));
+  expect(within(popover).getByRole("button", {name:"Mute"})).toBeInTheDocument();
+  // The drop-up closes on outside clicks.
+  fireEvent.pointerDown(document.body);
+  expect(document.querySelector(".video-volume-popover")).not.toBeInTheDocument();
 });
 
 test("library editor supports adding and browsing root folders", async () => {
@@ -2993,7 +3250,7 @@ test("transcoded viewer stop replay and jump controls drive the transport state"
   document.querySelectorAll("video").forEach(video => { (video as unknown as {_paused?:boolean})._paused = false; });
 
   fireEvent.dblClick(document.querySelector(".video-stack") as HTMLElement, {clientX:200});
-  fireEvent.click(screen.getByLabelText("Full screen"));
+  fireEvent.click(document.querySelector('.video-controls button[aria-label="Full screen"]')!);
   fireEvent.click(screen.getByRole("button", {name:"Stop"}));
   expect(screen.getByRole("button", {name:"Play"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Play"}));
@@ -3047,6 +3304,52 @@ test("clicking the map picks a point whose popup can set a new coordinate", asyn
   fireEvent.change(within(popup).getByLabelText("Picked GPS coordinates"), {target:{value:"60.1,30.2"}});
   fireEvent.click(within(popup).getByRole("button", {name:"Set point"}));
   await waitFor(() => expect(document.querySelector(".picked-point-popup")).not.toBeNull(), {timeout:3000});
+});
+
+test("map marker and cluster popups copy GPS with the same form as a picked point", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {value:{writeText}, configurable:true});
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    left:0, top:0, right:800, bottom:600, width:800, height:600, x:0, y:0,
+    toJSON:() => ({})
+  } as DOMRect);
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:""},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:""},
+    {id:102, libraryId:1, folderId:20, relativePath:"c.jpg", name:"c.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""}
+  ]);
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  await screen.findByText("2");
+
+  await waitFor(() => {
+    const cluster = document.querySelector(".cluster-marker");
+    if (!cluster) throw new Error("cluster marker not rendered");
+    fireEvent.click(cluster);
+    const popup = document.querySelector(".picked-point-popup");
+    if (!popup) throw new Error("cluster popup not opened");
+    expect(within(popup as HTMLElement).getByLabelText("GPS coordinates")).toHaveValue("10,20");
+  });
+  const clusterPopup = document.querySelector(".picked-point-popup") as HTMLElement;
+  expect(within(clusterPopup).getByText(/first item/)).toBeInTheDocument();
+  fireEvent.click(within(clusterPopup).getByRole("button", {name:"Copy"}));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("10,20"));
+
+  // Clicking a single photo tag opens its own copy form; the previous popup closes.
+  await waitFor(() => {
+    const marker = document.querySelector(".media-point-marker");
+    if (!marker) throw new Error("single marker not rendered");
+    fireEvent.click(marker);
+    const popup = document.querySelector(".picked-point-popup");
+    if (!popup) throw new Error("marker popup not opened");
+    expect(within(popup as HTMLElement).getByText("c.jpg")).toBeInTheDocument();
+  });
+  const markerPopup = document.querySelector(".picked-point-popup") as HTMLElement;
+  expect(within(markerPopup).getByLabelText("GPS coordinates")).toHaveValue("50.45,30.52");
+  fireEvent.click(within(markerPopup).getByRole("button", {name:"Copy"}));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("50.45,30.52"));
 });
 
 test("map menu coordinate input drops a point marker at the entered lat/lng", async () => {

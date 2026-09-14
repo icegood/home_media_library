@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -87,8 +88,8 @@ func DefaultServerSettings() ServerSettings {
 		HTTPSEnabled:                     false,
 		PublicDNS:                        "",
 		ACMEEmail:                        "",
-		ThumbnailWidth:                   480,
-		ThumbnailHeight:                  360,
+		ThumbnailWidth:                   640,
+		ThumbnailHeight:                  480,
 		WorkerPoolSize:                   4,
 		VideoThumbnailFirstSeconds:       5,
 		VideoThumbnailMaxCount:           MaxVideoThumbnailCount,
@@ -145,6 +146,15 @@ type UserSettings struct {
 	// (keys, custom endpoint) lives in ServerSettings.POIProviders.
 	POIProviderLight string `json:"poiProviderLight"`
 	POIProviderDark  string `json:"poiProviderDark"`
+	// ThumbMin is the smallest width, in CSS px, thumbnails may get — the lower
+	// bound of the UI size bar and of the growable map side panels (Selected
+	// area and No GPS). When ThumbMax is 0 the panels' tiles grow freely to
+	// fill them; setting both to the same value freezes the tile size so
+	// widening a panel only adds columns.
+	ThumbMin int `json:"thumbMin"`
+	// ThumbMax caps how wide thumbnails may grow, in CSS px. 0 means no cap
+	// (map-panel tiles scale with the panel; the UI size bar caps at 640).
+	ThumbMax int `json:"thumbMax"`
 }
 
 func DefaultUserSettings() UserSettings {
@@ -153,7 +163,33 @@ func DefaultUserSettings() UserSettings {
 		DefaultThumbImage: "mountains", DefaultThumbVideo: "mountains", DefaultThumbFolder: "mountains",
 		MapTileProviderLight: "osm", MapTileProviderDark: "osm",
 		MapMaxZoom: 19,
+		ThumbMin: 90, ThumbMax: 0,
 	}
+}
+
+// UnmarshalJSON keeps reading persisted settings written by older builds: the
+// thumbnail bounds used to be called mapThumbMin/mapThumbMax. It always starts
+// from the defaults, overlays the stored fields, and lets legacy keys fill in
+// only when their new counterparts are absent.
+func (u *UserSettings) UnmarshalJSON(data []byte) error {
+	*u = DefaultUserSettings()
+	type userSettings UserSettings
+	var plain struct {
+		*userSettings
+		LegacyThumbMin *int `json:"mapThumbMin"`
+		LegacyThumbMax *int `json:"mapThumbMax"`
+	}
+	plain.userSettings = (*userSettings)(u)
+	if err := json.Unmarshal(data, &plain); err != nil {
+		return err
+	}
+	if u.ThumbMin == 0 && plain.LegacyThumbMin != nil && *plain.LegacyThumbMin > 0 {
+		u.ThumbMin = *plain.LegacyThumbMin
+	}
+	if u.ThumbMax == 0 && plain.LegacyThumbMax != nil && *plain.LegacyThumbMax > 0 {
+		u.ThumbMax = *plain.LegacyThumbMax
+	}
+	return nil
 }
 
 type ScheduledTask struct {
@@ -302,12 +338,21 @@ type Media struct {
 	Metadata        map[string]any `json:"metadata"`
 	GPS             string         `json:"gps"`
 	TakenAt         string         `json:"takenAt"`
+	Notes           string         `json:"notes"`
 	MetadataError   string         `json:"metadataError,omitempty"`
 	ThumbnailError  string         `json:"thumbnailError,omitempty"`
 	Favorite        bool           `json:"favorite,omitempty"`
 	TrajectoryStart bool           `json:"trajectoryStart,omitempty"`
 	TrajectoryEnd   bool           `json:"trajectoryEnd,omitempty"`
 	TrajectoryName  string         `json:"trajectoryName,omitempty"`
+}
+
+// MediaNeighbors is the anchor media plus its before/after window in a
+// time- or name-sorted scope (the viewer's `root=` navigation).
+type MediaNeighbors struct {
+	Anchor Media   `json:"anchor"`
+	Before []Media `json:"before"`
+	After  []Media `json:"after"`
 }
 
 type MapMedia struct {
@@ -380,6 +425,26 @@ type MediaDetailsPatch struct {
 	Name    *string `json:"name"`
 	GPS     *string `json:"gps"`
 	TakenAt *string `json:"takenAt"`
+	Notes   *string `json:"notes"`
+}
+
+// MediaAdjust stores per-media display values the viewer applies when showing
+// a media item, so a user can brighten, recolor, or rotate a clip without
+// touching the source file. Brightness/Contrast/Saturation/Gamma are multipliers
+// around 1.0 (1.0 = unchanged); Hue is a CSS hue-rotate angle in degrees (0 =
+// unchanged); Rotation is a CSS rotation in degrees (0/90/180/270).
+// DefaultMediaAdjust returns the identity (nothing changed).
+type MediaAdjust struct {
+	Brightness float64 `json:"brightness"`
+	Hue        float64 `json:"hue"`
+	Saturation float64 `json:"saturation"`
+	Gamma      float64 `json:"gamma"`
+	Contrast   float64 `json:"contrast"`
+	Rotation   int     `json:"rotation"`
+}
+
+func DefaultMediaAdjust() MediaAdjust {
+	return MediaAdjust{Brightness: 1, Saturation: 1, Gamma: 1, Contrast: 1}
 }
 
 type BulkMediaPatch struct {

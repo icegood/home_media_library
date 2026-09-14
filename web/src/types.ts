@@ -11,6 +11,7 @@ export interface Media {
   id:ID; folderId:ID; relativePath:string; name:string;
   kind:"image"|"video"|"document"; mimeType:string; size:number;
   metadata:Record<string, unknown>; gps:string; takenAt:string;
+  notes?:string;
   metadataError?:string; thumbnailError?:string;
   favorite?:boolean;
   trajectoryStart?:boolean;

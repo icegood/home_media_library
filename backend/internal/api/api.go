@@ -123,6 +123,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}", a.auth(http.HandlerFunc(a.folder)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}/entries", a.auth(http.HandlerFunc(a.folderEntries)))
 	mux.Handle("GET /api/v1/libraries/{id}/folders/{folderId}/media", a.auth(http.HandlerFunc(a.folderMedia)))
+	mux.Handle("GET /api/v1/libraries/{id}/media/neighbors", a.auth(http.HandlerFunc(a.mediaNeighbors)))
 	mux.Handle("GET /api/v1/libraries/{id}/media", a.auth(http.HandlerFunc(a.libraryMedia)))
 	mux.Handle("GET /api/v1/favorite-views", a.auth(http.HandlerFunc(a.favoriteViews)))
 	mux.Handle("POST /api/v1/favorite-views", a.auth(http.HandlerFunc(a.createFavoriteView)))
@@ -145,6 +146,8 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/folders/{id}/thumbnail", a.auth(http.HandlerFunc(a.folderThumbnail)))
 	mux.Handle("PATCH /api/v1/media/{id}/gps", a.auth(http.HandlerFunc(a.gps)))
 	mux.Handle("PATCH /api/v1/media/{id}/details", a.auth(http.HandlerFunc(a.mediaDetails)))
+	mux.Handle("GET /api/v1/media/{id}/adjust", a.auth(http.HandlerFunc(a.getMediaAdjust)))
+	mux.Handle("PUT /api/v1/media/{id}/adjust", a.auth(http.HandlerFunc(a.saveMediaAdjust)))
 	mux.Handle("PATCH /api/v1/media/{id}/trajectory-start", a.auth(http.HandlerFunc(a.trajectoryStart)))
 	mux.Handle("PATCH /api/v1/media/{id}/trajectory-end", a.auth(http.HandlerFunc(a.trajectoryEnd)))
 	mux.Handle("PATCH /api/v1/media/{id}/trajectory-name", a.auth(http.HandlerFunc(a.trajectoryName)))
@@ -492,6 +495,8 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 		"poiProviderLight":      settings.POIProviderLight,
 		"poiProviderDark":       settings.POIProviderDark,
 		"poiProviders":          a.poiProvidersJSON(r.Context()),
+		"thumbMin":           settings.ThumbMin,
+		"thumbMax":           settings.ThumbMax,
 	})
 }
 
@@ -549,6 +554,10 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		MapMaxZoom           int    `json:"mapMaxZoom"`
 		POIProviderLight     string `json:"poiProviderLight"`
 		POIProviderDark      string `json:"poiProviderDark"`
+		ThumbMin             int    `json:"thumbMin"`
+		ThumbMax             int    `json:"thumbMax"`
+		LegacyThumbMin       int    `json:"mapThumbMin"`
+		LegacyThumbMax       int    `json:"mapThumbMax"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		problem(w, http.StatusBadRequest, "invalid JSON")
@@ -624,10 +633,34 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "dark POI source must be overpass, geoapify, or mapbox")
 		return
 	}
+	thumbMin := input.ThumbMin
+	if thumbMin == 0 {
+		thumbMin = input.LegacyThumbMin
+	}
+	if thumbMin == 0 {
+		thumbMin = domain.DefaultUserSettings().ThumbMin
+	}
+	if thumbMin < 40 || thumbMin > 640 {
+		problem(w, http.StatusBadRequest, "thumbnail min must be between 40 and 640")
+		return
+	}
+	thumbMax := input.ThumbMax
+	if thumbMax == 0 {
+		thumbMax = input.LegacyThumbMax
+	}
+	if thumbMax < 0 || thumbMax > 640 {
+		problem(w, http.StatusBadRequest, "thumbnail max must be 0 (no cap) or between 40 and 640")
+		return
+	}
+	if thumbMax > 0 && thumbMax < thumbMin {
+		problem(w, http.StatusBadRequest, "thumbnail max must not be below the min")
+		return
+	}
 	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat, StreamChunkSize: chunk,
 		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder, Language: input.Language,
 		MapTileProviderLight: lightSource, MapTileProviderDark: darkSource, MapMaxZoom: maxZoom,
-		POIProviderLight: lightPOI, POIProviderDark: darkPOI}
+		POIProviderLight: lightPOI, POIProviderDark: darkPOI,
+		ThumbMin: thumbMin, ThumbMax: thumbMax}
 	settings.DateFormat = normalizeDateFormat(settings.DateFormat)
 	settings.Language = normalizeLanguage(settings.Language)
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {
@@ -732,6 +765,86 @@ func (a *API) folderMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+// mediaNeighbors returns an anchor media plus a bounded before/after window in
+// a name- or date-sorted scope. It backs the viewer's root= navigation so the
+// client never has to fetch an entire subtree to walk the list one item at a
+// time. Scopes: folder=0/"all" (whole library) or a folder subtree. The sort
+// keyset mirrors the client sortMedia ordering.
+func (a *API) mediaNeighbors(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if !a.requireRead(w, r, p, id) {
+		return
+	}
+	query := r.URL.Query()
+	anchorID, err := strconv.Atoi(query.Get("anchor"))
+	if err != nil || anchorID <= 0 {
+		problem(w, 400, "anchor media id is required")
+		return
+	}
+	folderID := 0
+	if raw := query.Get("folder"); raw != "" && raw != "0" && raw != "all" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed <= 0 {
+			problem(w, 400, "folder must be a positive folder id, 0, or \"all\"")
+			return
+		}
+		folderID = parsed
+	}
+	sort := query.Get("sort")
+	switch sort {
+	case "", "name", "date", "date-asc":
+	default:
+		problem(w, 400, "sort must be one of: name, date, date-asc")
+		return
+	}
+	if sort == "" {
+		sort = "name"
+	}
+	kind := query.Get("kind")
+	switch kind {
+	case "", "image", "video", "document":
+	default:
+		problem(w, 400, "kind must be one of: image, video, document")
+		return
+	}
+	gps := query.Get("gps")
+	switch gps {
+	case "", "gps", "nogps":
+	default:
+		problem(w, 400, "gps must be one of: gps, nogps")
+		return
+	}
+	before, after := 1, 1
+	if raw := query.Get("before"); raw != "" {
+		before, err = strconv.Atoi(raw)
+		if err != nil || before < 0 || before > 50 {
+			problem(w, 400, "before must be an integer between 0 and 50")
+			return
+		}
+	}
+	if raw := query.Get("after"); raw != "" {
+		after, err = strconv.Atoi(raw)
+		if err != nil || after < 0 || after > 50 {
+			problem(w, 400, "after must be an integer between 0 and 50")
+			return
+		}
+	}
+	result, err := a.Store.MediaNeighbors(r.Context(), p.ID, id, folderID, anchorID, sort, kind, gps, before, after)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "media not found")
+			return
+		}
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, result)
 }
 
 func (a *API) libraryStats(w http.ResponseWriter, r *http.Request) {
@@ -1222,6 +1335,75 @@ func (a *API) mediaDetails(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, item)
 }
 
+func (a *API) getMediaAdjust(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.Store.Media(r.Context(), id)
+	if err != nil {
+		problem(w, 404, "media not found")
+		return
+	}
+	if !a.requireMediaRead(w, r, p, item.ID) {
+		return
+	}
+	adjust, err := a.Store.MediaAdjust(r.Context(), id)
+	if err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, adjust)
+}
+
+func (a *API) saveMediaAdjust(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.Store.Media(r.Context(), id)
+	if err != nil {
+		problem(w, 404, "media not found")
+		return
+	}
+	if !a.requireMediaRead(w, r, p, item.ID) {
+		return
+	}
+	var adjust domain.MediaAdjust
+	if json.NewDecoder(r.Body).Decode(&adjust) != nil {
+		problem(w, 400, "invalid JSON")
+		return
+	}
+	adjust.Brightness = clamp64(adjust.Brightness, 0.2, 3.0)
+	adjust.Hue = clamp64(adjust.Hue, -360, 360)
+	adjust.Saturation = clamp64(adjust.Saturation, 0, 4)
+	adjust.Gamma = clamp64(adjust.Gamma, 0.2, 3.0)
+	adjust.Contrast = clamp64(adjust.Contrast, 0.2, 3.0)
+	switch adjust.Rotation {
+	case 0, 90, 180, 270:
+	default:
+		adjust.Rotation = ((adjust.Rotation % 360) + 360) % 360
+		adjust.Rotation = (adjust.Rotation / 90) * 90
+	}
+	if err := a.Store.SaveMediaAdjust(r.Context(), id, adjust); err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, adjust)
+}
+
+func clamp64(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
 func (a *API) trajectoryStart(w http.ResponseWriter, r *http.Request) {
 	p := current(r)
 	id, ok := pathID(w, r, "id")
@@ -1449,6 +1631,11 @@ func (a *API) content(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", item.MIMEType)
+	// The viewer prefetches prev/next media bytes to keep play-mode paging
+	// instant; this header guarantees the browser actually reuses the warmed
+	// response from its private cache. The file can change on a rescan, so the
+	// lease is short and revalidation (Last-Modified) still applies.
+	w.Header().Set("Cache-Control", "private, max-age=86400")
 	if r.URL.Query().Get("download") != "" {
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": item.Name}))
 	}

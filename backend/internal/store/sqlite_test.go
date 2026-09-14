@@ -1059,8 +1059,10 @@ func TestSQLiteFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 	if _, err := repository.UpdateMediaDetails(ctx, media.ID, domain.MediaDetailsPatch{GPS: &gps}); err != nil {
 		t.Fatal(err)
 	}
-	// The media card attaches trajectory markers to the media's own folder; the
-	// map view may be scoped to an ancestor folder that must still surface them.
+	// The media card attaches trajectory markers to the (media, folder) pair —
+	// here the subfolder. When the map is scoped to that same folder the marker
+	// surfaces; when it is scoped to the ancestor root it must not, because the
+	// marker belongs to the child folder's trajectory.
 	if err := repository.SetTrajectoryStart(ctx, sub.ID, media.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -1069,7 +1071,7 @@ func TestSQLiteFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1077,14 +1079,111 @@ func TestSQLiteFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 		t.Fatalf("expected one map item, got %#v", items)
 	}
 	if !items[0].TrajectoryStart || items[0].TrajectoryName != name {
-		t.Fatalf("expected start flag + name on folder map, got start=%v name=%q", items[0].TrajectoryStart, items[0].TrajectoryName)
+		t.Fatalf("expected start flag + name on the marker's own folder map, got start=%v name=%q", items[0].TrajectoryStart, items[0].TrajectoryName)
 	}
-	area, err := repository.MediaInArea(ctx, 1, true, library.ID, library.Roots[0].ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	// The same media still appears on the ancestor map (the trajectory is built
+	// from all media inside the folder) but carries no start/end flag.
+	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parentItems) != 1 || parentItems[0].ID != media.ID {
+		t.Fatalf("expected the media on the ancestor map, got %#v", parentItems)
+	}
+	if parentItems[0].TrajectoryStart {
+		t.Fatalf("marker bound to a child folder must not surface on the ancestor map, got %#v", parentItems[0])
+	}
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(area) != 1 || !area[0].TrajectoryStart || area[0].TrajectoryName != name {
 		t.Fatalf("expected area item with start flag, got %#v", area)
+	}
+}
+
+func TestSQLiteMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Trails", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(root, "day1"), RelativePath: "day1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gpsMedia, err := repository.UpsertMedia(ctx, domain.Media{
+		ID: domain.InvalidID, FolderID: sub.ID, Path: filepath.Join(root, "day1", "a.jpg"), Name: "a.jpg",
+		Kind: domain.KindImage, MIMEType: "image/jpeg", Size: 10, Metadata: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gps := "50.45,30.52"
+	if _, err := repository.UpdateMediaDetails(ctx, gpsMedia.ID, domain.MediaDetailsPatch{GPS: &gps}); err != nil {
+		t.Fatal(err)
+	}
+	// A trajectory start on an item with NO GPS must still surface on the map:
+	// the frontend uses the flags to segment tracks even when the marker itself
+	// has no coordinates. The map is scoped to the marker's own folder.
+	marker, err := repository.UpsertMedia(ctx, domain.Media{
+		ID: domain.InvalidID, FolderID: sub.ID, Path: filepath.Join(root, "day1", "b.jpg"), Name: "b.jpg",
+		Kind: domain.KindImage, MIMEType: "image/jpeg", Size: 10, Metadata: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetTrajectoryStart(ctx, sub.ID, marker.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int]domain.MapMedia{}
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	if !byID[marker.ID].TrajectoryStart {
+		t.Fatalf("map should include the GPS-less trajectory marker with its start flag, got %#v", items)
+	}
+	if byID[gpsMedia.ID].TrajectoryStart {
+		t.Fatalf("geotagged media must not pick up a start flag from a different item, got %#v", byID[gpsMedia.ID])
+	}
+	// Scoped to the ancestor root the same items appear but the marker's flag is
+	// suppressed, because the marker belongs to the child folder.
+	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentByID := map[int]domain.MapMedia{}
+	for _, item := range parentItems {
+		parentByID[item.ID] = item
+	}
+	if parentByID[marker.ID].TrajectoryStart {
+		t.Fatalf("child-folder marker must not surface on the ancestor map, got %#v", parentByID[marker.ID])
+	}
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(area) != 2 {
+		t.Fatalf("expected both the geotagged item and the GPS-less marker in area result, got %#v", area)
+	}
+	markerSeen := false
+	for _, item := range area {
+		if item.ID == marker.ID {
+			markerSeen = true
+			if !item.TrajectoryStart {
+				t.Fatalf("GPS-less marker in area result lost its trajectory start flag: %#v", item)
+			}
+		}
+	}
+	if !markerSeen {
+		t.Fatalf("area result is missing the GPS-less trajectory marker: %#v", area)
 	}
 }
 
@@ -1220,5 +1319,57 @@ func TestSQLiteBulkUpdateMediaSetTimeAndGPSByFolder(t *testing.T) {
 		if got.GPS != "50.45,30.52" {
 			t.Fatalf("media %d gps = %q, want 50.45,30.52", id, got.GPS)
 		}
+	}
+}
+
+func TestSQLiteMediaAdjust(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := openSQLite(t)
+	admin, err := repository.CreateInitialAdmin(ctx, domain.User{ID: domain.InvalidID, Login: "admin"}, "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Lib",
+		Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: t.TempDir()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := repository.UpsertMedia(ctx, domain.Media{
+		ID: domain.InvalidID, FolderID: lib.Roots[0].ID,
+		Path: filepath.Join(t.TempDir(), "v.mp4"), Name: "v.mp4",
+		Kind: domain.KindVideo, MIMEType: "video/mp4", Size: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = admin
+	defaults, err := repository.MediaAdjust(ctx, media.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Brightness != 1 || defaults.Saturation != 1 || defaults.Gamma != 1 || defaults.Contrast != 1 || defaults.Hue != 0 || defaults.Rotation != 0 {
+		t.Fatalf("defaults = %+v", defaults)
+	}
+	saved := domain.MediaAdjust{Brightness: 1.4, Hue: 20, Saturation: 0.5, Gamma: 2.0, Contrast: 1.1, Rotation: 90}
+	if err := repository.SaveMediaAdjust(ctx, media.ID, saved); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repository.MediaAdjust(ctx, media.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Brightness != 1.4 || got.Hue != 20 || got.Saturation != 0.5 || got.Gamma != 2.0 || got.Contrast != 1.1 || got.Rotation != 90 {
+		t.Fatalf("read back = %+v", got)
+	}
+	overwritten := domain.MediaAdjust{Brightness: 0.9, Hue: -10, Saturation: 2, Gamma: 0.6, Contrast: 0.8, Rotation: 270}
+	if err := repository.SaveMediaAdjust(ctx, media.ID, overwritten); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := repository.MediaAdjust(ctx, media.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Brightness != 0.9 || got2.Hue != -10 || got2.Saturation != 2 || got2.Gamma != 0.6 || got2.Contrast != 0.8 || got2.Rotation != 270 {
+		t.Fatalf("overwrite = %+v", got2)
 	}
 }

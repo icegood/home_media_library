@@ -99,6 +99,75 @@ func verifyMetadataRenewOptions(t *testing.T, repository store.Store) {
 	}
 }
 
+// verifyNotesSurviveRefreshJobs locks in the guarantee that notes — the only
+// field requiring explicit user input — can never be emptied by a background
+// refresh job (metadata renew, rescan upsert, thumbnail/metadata error flags).
+func verifyNotesSurviveRefreshJobs(t *testing.T, repository store.Store) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "photos")
+	library, err := repository.CreateLibrary(context.Background(), domain.Library{ID: domain.InvalidID, Name: "Photos", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	folderID := library.Roots[0].ID
+	path := filepath.Join(root, "photo.jpg")
+	media, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folderID,
+		Path: path, Name: "photo.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg", Metadata: map[string]any{}, GPS: "10,20", TakenAt: "2020-01-01T00:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userNotes := "user-only note"
+	media, err = repository.UpdateMediaDetails(context.Background(), media.ID, domain.MediaDetailsPatch{Notes: &userNotes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(stage string) {
+		t.Helper()
+		list, err := repository.MediaBatch(context.Background(), []int{media.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 1 || list[0].Notes != userNotes {
+			t.Fatalf("%s must keep the user notes, got %#v", stage, list)
+		}
+	}
+	check("initial")
+
+	// Metadata renew overwrites metadata, gps and taken_at; notes is untouched
+	// even when every overwrite option is on.
+	if err := repository.UpdateMediaMetadata(context.Background(), media.ID, map[string]any{"fresh": true}, "3,4", "2021-02-03T04:05:06Z", "new error",
+		domain.MetadataWriteOptions{RecreateExisting: true, UpdateGPS: true, UpdateTakenAt: true}); err != nil {
+		t.Fatal(err)
+	}
+	check("metadata renew")
+
+	// A rescan upsert writes no notes for an existing row and must not blank it.
+	if _, err := repository.UpsertMedia(context.Background(), domain.Media{ID: media.ID, FolderID: folderID,
+		Path: path, Name: "photo.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg", Metadata: map[string]any{}, GPS: "", TakenAt: ""}); err != nil {
+		t.Fatal(err)
+	}
+	check("rescan upsert")
+
+	// Thumbnail and metadata error flags written by those jobs stay clear of notes.
+	if err := repository.SetMediaActionError(context.Background(), media.ID, "thumbnail", "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetMediaActionError(context.Background(), media.ID, "metadata", "boom"); err != nil {
+		t.Fatal(err)
+	}
+	check("action error")
+}
+
+func TestSQLiteNotesSurviveRefreshJobs(t *testing.T) {
+	repository, _ := openSQLite(t)
+	verifyNotesSurviveRefreshJobs(t, repository)
+}
+
+func TestPostgresNotesSurviveRefreshJobs(t *testing.T) {
+	repository := openPostgres(t, true)
+	verifyNotesSurviveRefreshJobs(t, repository)
+}
+
 func TestSQLiteUpdateMediaMetadataOptionPolicy(t *testing.T) {
 	repository, _ := openSQLite(t)
 	verifyMetadataRenewOptions(t, repository)

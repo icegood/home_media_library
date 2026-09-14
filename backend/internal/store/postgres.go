@@ -27,9 +27,9 @@ var postgresMigrations embed.FS
 
 // folderEntriesPGSQL mirrors folderEntriesSQL for Postgres. Same column order:
 // entry_kind, id, parent/folder_id, path, name, mime_type, size, metadata_json,
-// gps, taken_at, metadata_error, thumbnail_error, favorite.
+// gps, taken_at, metadata_error, thumbnail_error, notes, favorite.
 // Query arguments: parentID, userID, parentID.
-const folderEntriesPGSQL = `SELECT 'folder' AS entry_kind, f.id, f.parent_id, f.path, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false
+const folderEntriesPGSQL = `SELECT 'folder' AS entry_kind, f.id, f.parent_id, f.path, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false
 	FROM media_folders f WHERE f.parent_id = $1
 	UNION ALL
 	SELECT 'media' AS entry_kind, ` + mediaColumns + `, EXISTS(SELECT 1 FROM favorite_view_items fvi
@@ -1101,7 +1101,7 @@ func (s *Postgres) Media(ctx context.Context, id int) (domain.Media, error) {
 	}
 	item.RelativePath = s.relativePath(ctx, item.FolderID, item.Path)
 	tmp := []domain.Media{item}
-	if err := s.enrichMediaTrajectory(ctx, tmp); err == nil {
+	if err := s.enrichMediaTrajectory(ctx, tmp, 0); err == nil {
 		item = tmp[0]
 	}
 	return item, nil
@@ -1135,7 +1135,7 @@ func (s *Postgres) MediaBatch(ctx context.Context, ids []int) ([]domain.Media, e
 		return nil, err
 	}
 	s.attachRelativePaths(ctx, out)
-	_ = s.enrichMediaTrajectory(ctx, out)
+	_ = s.enrichMediaTrajectory(ctx, out, 0)
 	return out, nil
 }
 // MediaInFolders returns every media item inside the given folders,
@@ -1479,6 +1479,10 @@ func (s *Postgres) UpdateMediaDetails(ctx context.Context, id int, patch domain.
 		sets = append(sets, "taken_at = "+next())
 		args = append(args, strings.TrimSpace(*patch.TakenAt))
 	}
+	if patch.Notes != nil {
+		sets = append(sets, "notes = "+next())
+		args = append(args, strings.TrimSpace(*patch.Notes))
+	}
 	if len(sets) > 0 {
 		args = append(args, id)
 		if _, err := s.db.ExecContext(ctx, `UPDATE media SET `+strings.Join(sets, ", ")+` WHERE id = $`+strconv.Itoa(len(args)), args...); err != nil {
@@ -1486,6 +1490,32 @@ func (s *Postgres) UpdateMediaDetails(ctx context.Context, id int, patch domain.
 		}
 	}
 	return s.Media(ctx, id)
+}
+
+func (s *Postgres) MediaAdjust(ctx context.Context, mediaID int) (domain.MediaAdjust, error) {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return domain.MediaAdjust{}, err
+	}
+	var adjust domain.MediaAdjust
+	err := s.db.QueryRowContext(ctx, `SELECT brightness, hue, saturation, gamma, contrast, rotation FROM video_adjust WHERE media_id = $1`, mediaID).
+		Scan(&adjust.Brightness, &adjust.Hue, &adjust.Saturation, &adjust.Gamma, &adjust.Contrast, &adjust.Rotation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DefaultMediaAdjust(), nil
+	}
+	if err != nil {
+		return domain.MediaAdjust{}, err
+	}
+	return adjust, nil
+}
+
+func (s *Postgres) SaveMediaAdjust(ctx context.Context, mediaID int, adjust domain.MediaAdjust) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO video_adjust(media_id, brightness, hue, saturation, gamma, contrast, rotation) VALUES($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT(media_id) DO UPDATE SET brightness = EXCLUDED.brightness, hue = EXCLUDED.hue, saturation = EXCLUDED.saturation, gamma = EXCLUDED.gamma, contrast = EXCLUDED.contrast, rotation = EXCLUDED.rotation`,
+		mediaID, adjust.Brightness, adjust.Hue, adjust.Saturation, adjust.Gamma, adjust.Contrast, adjust.Rotation)
+	return err
 }
 
 func (s *Postgres) SetTrajectoryStart(ctx context.Context, folderID, mediaID int, start bool) error {
@@ -1731,7 +1761,8 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND ($3 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $4))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND ($3 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $4))
 		GROUP BY m.id`
 	case libraryID > 0:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
@@ -1740,7 +1771,8 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND ($2 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $3))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND ($2 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $3))
 		GROUP BY m.id`
 	default:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
@@ -1749,7 +1781,8 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
 		GROUP BY m.id`
 	}
 	args := []any{}
@@ -1796,10 +1829,10 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 		}
 		out = append(out, domain.MapMedia{Media: item, LibraryID: libraryID})
 	}
-	if err := s.enrichMapMediaTrajectory(ctx, out); err != nil {
+	if err := s.enrichMapMediaTrajectory(ctx, out, folderID); err != nil {
 		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // MediaInArea returns geotagged media the user may read whose point falls inside
@@ -1815,7 +1848,8 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
+		WHERE (m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
+			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND ($7 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $8))
 		GROUP BY m.id`
 	case libraryID > 0:
@@ -1825,7 +1859,8 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
+		WHERE (m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
+			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND ($6 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $7))
 		GROUP BY m.id`
 	default:
@@ -1835,7 +1870,8 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+		WHERE (m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND ($5 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $6))
 		GROUP BY m.id`
 	}
@@ -1875,16 +1911,19 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 		}
 		out = append(out, domain.MapMedia{Media: item, LibraryID: libraryID})
 	}
-	if err := s.enrichMapMediaTrajectory(ctx, out); err != nil {
+	if err := s.enrichMapMediaTrajectory(ctx, out, folderID); err != nil {
 		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // enrichMediaTrajectory applies trajectory start/end flags and names to a batch
-// of media rows. It matches only rows whose own folder_id owns the marker, so
-// the same media can carry different markers in different folders.
-func (s *Postgres) enrichMediaTrajectory(ctx context.Context, items []domain.Media) error {
+// of media rows. A marker is keyed by the (media_id, folder_id) pair the user
+// set it in — that folder is the trajectory's owning context and need not be the
+// media's own folder. When scopeFolderID is > 0, only markers bound to exactly
+// that folder are flagged (so a marker set while viewing a child folder is not
+// surfaced in a parent); otherwise the flag follows the media's own folder.
+func (s *Postgres) enrichMediaTrajectory(ctx context.Context, items []domain.Media, scopeFolderID int) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -1892,6 +1931,13 @@ func (s *Postgres) enrichMediaTrajectory(ctx context.Context, items []domain.Med
 	idToIdx := make(map[int]int, len(items))
 	for i, m := range items {
 		idToIdx[m.ID] = i
+	}
+	match := func(fid, mid int) bool {
+		if scopeFolderID > 0 {
+			return fid == scopeFolderID
+		}
+		idx, ok := idToIdx[mid]
+		return ok && items[idx].FolderID == fid
 	}
 	for start := 0; start < len(items); start += batchSize {
 		end := start + batchSize
@@ -1918,9 +1964,11 @@ func (s *Postgres) enrichMediaTrajectory(ctx context.Context, items []domain.Med
 				rows.Close()
 				return err
 			}
-			if idx, ok := idToIdx[mid]; ok && items[idx].FolderID == fid {
-				items[idx].TrajectoryStart = true
-				items[idx].TrajectoryName = name
+			if match(fid, mid) {
+				if idx, ok := idToIdx[mid]; ok {
+					items[idx].TrajectoryStart = true
+					items[idx].TrajectoryName = name
+				}
 			}
 		}
 		rows.Close()
@@ -1937,8 +1985,10 @@ func (s *Postgres) enrichMediaTrajectory(ctx context.Context, items []domain.Med
 				rows.Close()
 				return err
 			}
-			if idx, ok := idToIdx[mid]; ok && items[idx].FolderID == fid {
-				items[idx].TrajectoryEnd = true
+			if match(fid, mid) {
+				if idx, ok := idToIdx[mid]; ok {
+					items[idx].TrajectoryEnd = true
+				}
 			}
 		}
 		rows.Close()
@@ -1961,7 +2011,7 @@ func (s *Postgres) enrichEntriesTrajectory(ctx context.Context, out []domain.Ent
 	if len(medias) == 0 {
 		return nil
 	}
-	if err := s.enrichMediaTrajectory(ctx, medias); err != nil {
+	if err := s.enrichMediaTrajectory(ctx, medias, 0); err != nil {
 		return err
 	}
 	mediaIdx := 0
@@ -1983,12 +2033,13 @@ func (s *Postgres) enrichEntriesTrajectory(ctx context.Context, out []domain.Ent
 
 // enrichMapMediaTrajectory applies trajectory flags to geotagged map items so
 // library-level and global maps draw the same segments as folder-scoped ones.
-func (s *Postgres) enrichMapMediaTrajectory(ctx context.Context, out []domain.MapMedia) error {
+// scopeFolderID scopes start/end markers to the folder being viewed.
+func (s *Postgres) enrichMapMediaTrajectory(ctx context.Context, out []domain.MapMedia, scopeFolderID int) error {
 	medias := make([]domain.Media, len(out))
 	for i, m := range out {
 		medias[i] = m.Media
 	}
-	if err := s.enrichMediaTrajectory(ctx, medias); err != nil {
+	if err := s.enrichMediaTrajectory(ctx, medias, scopeFolderID); err != nil {
 		return err
 	}
 	for i := range out {
@@ -2018,7 +2069,7 @@ func (s *Postgres) scopedMedia(ctx context.Context, rows *sql.Rows) ([]domain.Me
 		item.Favorite = favorite
 		out = append(out, item)
 	}
-	_ = s.enrichMediaTrajectory(ctx, out)
+	_ = s.enrichMediaTrajectory(ctx, out, 0)
 	return out, rows.Err()
 }
 

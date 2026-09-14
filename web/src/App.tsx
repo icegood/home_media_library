@@ -14,6 +14,10 @@ import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembersh
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
 export const StreamChunkSizeCtx = createContext(10000);
 export const DEFAULT_STREAM_CHUNK_SIZE = 10000;
+export const THUMB_MIN_DEFAULT = 90;
+export const THUMB_MAX_DEFAULT = 0;
+export const THUMB_SIZE_DEFAULT = 190;
+export const ThumbCtx = createContext<{min:number; max:number; size:number; setSize:(size:number)=>void}>({min:THUMB_MIN_DEFAULT, max:THUMB_MAX_DEFAULT, size:THUMB_SIZE_DEFAULT, setSize:()=>{}});
 
 // ---------------------------------------------------------------- native chrome
 // The Android build runs edge-to-edge (media keeps the whole screen, including
@@ -91,6 +95,8 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [zoom, setZoom] = useState(100);
   const [streamChunkSize, setStreamChunkSize] = useState(DEFAULT_STREAM_CHUNK_SIZE);
+  const [thumb, setThumb] = useState<{min:number; max:number}>({min:THUMB_MIN_DEFAULT, max:THUMB_MAX_DEFAULT});
+  const [thumbSize, setThumbSize] = useState(THUMB_SIZE_DEFAULT);
   const [mapTileSettings, setMapTileSettings] = useState<{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number}>({providerLight:"osm", providerDark:"osm", mapProviders:{carto:{apiKey:""}}, maxZoom:19});
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -163,8 +169,15 @@ export function App() {
   }, [overlayLocation.pathname]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}, maxZoom: settings.mapMaxZoom || 19}); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}, maxZoom: settings.mapMaxZoom || 19}); setThumb(normalizeThumb(settings.thumbMin, settings.thumbMax)); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
   }, [user?.id]);
+  useEffect(() => {
+    setThumbSize(current => {
+      const effMax = thumb.max > 0 ? thumb.max : 640;
+      const clamped = Math.max(thumb.min, Math.min(effMax, current));
+      return clamped !== current ? clamped : current;
+    });
+  }, [thumb.min, thumb.max]);
   useEffect(() => {
     function closeTopMenus(event:PointerEvent) {
       const target = event.target instanceof Node ? event.target : null;
@@ -203,10 +216,10 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
+  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={{min:thumb.min, max:thumb.max, size:thumbSize, setSize:setThumbSize}}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     {settingsWarn && <div className="shell-warning" role="alert">Couldn't load your account preferences (theme, zoom, …) — showing defaults. <button type="button" className="secondary" onClick={() => setSettingsWarn(false)}>Dismiss</button></div>}
-    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
+    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to} state={crumb.returnToFolderId != null ? {returnToFolderId: crumb.returnToFolderId} : undefined}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
         <div className="nav-submenu" role="menu" onClick={closeParentDetails}>
@@ -224,7 +237,7 @@ export function App() {
         </div>
       </details></header>
     <LanguageWatcher/>
-    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} streamChunkSize={streamChunkSize} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onStreamChunkSizeChange={setStreamChunkSize} mapTileSettings={mapTileSettings} onMapTileChange={setMapTileSettings} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
+    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} streamChunkSize={streamChunkSize} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onStreamChunkSizeChange={setStreamChunkSize} mapTileSettings={mapTileSettings} onMapTileChange={setMapTileSettings} thumb={thumb} onThumbChange={setThumb} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
     {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)}/>}
     <Routes>
       <Route path="/" element={<Libraries/>}/>
@@ -242,7 +255,7 @@ export function App() {
       <Route path="/admin/settings" element={<Navigate to="/admin"/>}/>
       <Route path="*" element={<NotFound/>}/>
     </Routes>
-  </div></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
+  </div></ThumbCtx.Provider></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
 }
 
 // Applies DOM translations for the active language and re-installs them when
@@ -267,7 +280,7 @@ function NotFound() {
   </main>;
 }
 
-interface Crumb { label:string; to:string|null; current?:boolean }
+interface Crumb { label:string; to:string|null; current?:boolean; returnToFolderId?:ID }
 
 function folderCrumbName(folder:MediaFolder) {
   if (folder.name) return folder.name;
@@ -418,9 +431,10 @@ function useBreadcrumb(): Crumb[] | null {
     const favSuffix = favParam ? `?fav=${encodeURIComponent(favParam)}` : "";
     const base: Crumb[] = [{label: timeline ? "Timeline of Libraries" : "Libraries", to:"/"}];
     if (favParam) base.push({label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:`/favorites/${favParam}`});
-    if (library) base.push({label:library.name, to:(timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`) + favSuffix});
+    if (library) base.push({label:library.name, to:(timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`) + favSuffix, ...(!timeline && folderID != null && folderData?.chain?.length ? {returnToFolderId: folderData.chain[0].id} : {})});
     if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
-      base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:(timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`) + favSuffix})));
+      const chain = folderData.chain;
+      base.push(...chain.map((folder, index) => ({label:folderCrumbName(folder), to:(timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`) + favSuffix, ...(!timeline && chain[index + 1] ? {returnToFolderId: chain[index + 1].id} : {})})));
     }
     if (viewerMatch && favParam && viewerItemName) {
       base.push({label:viewerItemName, to:null, current:true});
@@ -1531,13 +1545,15 @@ function ResetPassword() {
   </form></main>;
 }
 
-function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, onThemeChange, onZoomChange, onStreamChunkSizeChange, mapTileSettings, onMapTileChange, onUserChanged, onClose}:{
+function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, onThemeChange, onZoomChange, onStreamChunkSizeChange, mapTileSettings, onMapTileChange, thumb, onThumbChange, onUserChanged, onClose}:{
   user:User; theme:"light"|"dark"|"forest"|"system"; zoom:number; streamChunkSize:number; resolvedTheme:"light"|"dark"|"forest";
   onThemeChange:(theme:"light"|"dark"|"forest"|"system")=>void;
   onZoomChange:(zoom:number)=>void;
   onStreamChunkSizeChange:(size:number)=>void;
   mapTileSettings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number};
   onMapTileChange:(settings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number})=>void;
+  thumb:{min:number; max:number};
+  onThumbChange:(thumb:{min:number; max:number})=>void;
   onUserChanged:(user:User)=>void; onClose:()=>void;
 }) {
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"forest"|"system">(theme);
@@ -1554,6 +1570,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   const [mapTileProviderLight, setMapTileProviderLight] = useState<MapTileSource>("osm");
   const [mapTileProviderDark, setMapTileProviderDark] = useState<MapTileSource>("osm");
   const [mapMaxZoom, setMapMaxZoom] = useState(19);
+  const [draftThumbMin, setDraftThumbMin] = useState(thumb.min);
+  const [draftThumbMax, setDraftThumbMax] = useState(thumb.max);
   const [poiProviderLight, setPoiProviderLight] = useState<POISource>("overpass");
   const [poiProviderDark, setPoiProviderDark] = useState<POISource>("overpass");
   const [poiProviders, setPoiProviders] = useState<Record<string, Record<string, string>>>({overpass:{}});
@@ -1581,6 +1599,9 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       setPoiProviderLight(normalizePOISource(settings.poiProviderLight));
       setPoiProviderDark(normalizePOISource(settings.poiProviderDark));
       setPoiProviders(settings.poiProviders ?? {overpass:{}});
+      const thumbPrefs = normalizeThumb(settings.thumbMin, settings.thumbMax);
+      setDraftThumbMin(thumbPrefs.min);
+      setDraftThumbMax(thumbPrefs.max);
       setLoaded(true);
     }).catch((cause: unknown) => setLoadError((cause as Error).message));
   }, [user.id]);
@@ -1606,13 +1627,16 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   async function saveSettings() {
     setSaving(true); setError(""); setSaved(false);
     try {
-      await api.updateUserSettings({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders});
+      const thumbPrefs = normalizeThumb(draftThumbMin, draftThumbMax);
+      const payload = {theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders, thumbMin: thumbPrefs.min, thumbMax: thumbPrefs.max};
+      await api.updateUserSettings(payload);
       applyUserLanguage(draftLanguage);
-      syncUserDefaultThumbs({theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders});
+      syncUserDefaultThumbs(payload);
       onThemeChange(draftTheme);
       onZoomChange(draftZoom);
       onStreamChunkSizeChange(normalizeStreamChunkSize(draftStreamChunkSize));
       onMapTileChange({providerLight: mapTileProviderLight, providerDark: mapTileProviderDark, mapProviders: mapTileSettings.mapProviders, maxZoom: mapMaxZoom});
+      onThumbChange(thumbPrefs);
       setSaved(true);
     } catch (cause) { setError(notify(cause)); } finally { setSaving(false); }
   }
@@ -1662,6 +1686,13 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
         <label>Items per request<input type="number" min={1} max={10000} value={draftStreamChunkSize}
           onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftStreamChunkSize(next); setSaved(false); } }}/></label>
         <small>Folder items are fetched in chunks of this size. A value above your largest folder (for example 10000) loads every folder with a single request. Lower values (about 10) show the first pictures sooner on slow connections; thumbnails always appear independently as they load.</small>
+      </fieldset>
+      <fieldset><legend>Thumbnails</legend>
+        <label>Minimum size, px<input type="number" min={40} max={640} value={draftThumbMin}
+          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftThumbMin(next); setSaved(false); } }}/></label>
+        <label>Maximum size, px<input type="number" min={0} max={640} value={draftThumbMax}
+          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftThumbMax(next); setSaved(false); } }}/></label>
+        <small>These bounds drive the size bar shown on the timeline and folder views, and the growable tiles of the map's Selected area and No GPS panels. Equal values keep the tiles fixed; max 0 lets map tiles fill the panel and caps the size bar at 640.</small>
       </fieldset>
       <fieldset><legend>Video fallback profile</legend>
         <span className="settings-label">Transcode schema</span>
@@ -1842,7 +1873,7 @@ function InlineStatsLine({load}:{load:()=>Promise<{images:number; videos:number;
 // and favorite-view rows: one trigger style, one portal popup, all themes.
 function CardMenu({ariaLabel, children}:{ariaLabel:string; children:ReactNode}) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({top:0, right:20, maxWidth:220});
+  const [menuPos, setMenuPos] = useState({top:0, left:20, maxWidth:220});
   const menuRef = useRef<HTMLButtonElement>(null);
   const menuPopupRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1853,8 +1884,8 @@ function CardMenu({ariaLabel, children}:{ariaLabel:string; children:ReactNode}) 
       // Constrain the dropdown to the width of the folder/library item it opens
       // from, so a wide statistics line never pushes menu items off-screen.
       const card = btn.closest<HTMLElement>(".card, .folder-entry, .library-tile, li, .item-menu");
-      const cardWidth = card ? card.getBoundingClientRect().width : 220;
-      setMenuPos({top: r.bottom + 4, right: window.innerWidth - r.right, maxWidth: Math.max(160, cardWidth)});
+      const maxWidth = Math.max(160, card ? card.getBoundingClientRect().width : 220);
+      setMenuPos({top: r.bottom + 4, left: dropdownBelow(btn, maxWidth).left, maxWidth});
     }
     function handle(e:Event) {
       if (menuPopupRef.current && !menuPopupRef.current.contains(e.target as Node) && menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -1866,7 +1897,7 @@ function CardMenu({ariaLabel, children}:{ariaLabel:string; children:ReactNode}) 
   }, [menuOpen]);
   return <div className="item-menu folder-menu">
     <button type="button" className="menu-summary" aria-label={ariaLabel} ref={menuRef} onClick={() => setMenuOpen(open => !open)}><span className="menu-dots"/></button>
-    {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef} style={{top: menuPos.top, right: menuPos.right, maxWidth: menuPos.maxWidth}}
+    {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef} style={{top: menuPos.top, left: menuPos.left, maxWidth: menuPos.maxWidth}}
       onClick={event => { if ((event.target as HTMLElement).closest('button[role="menuitem"]')) setMenuOpen(false); }}>
       {children}
     </div>, document.body)}
@@ -2037,6 +2068,17 @@ function Browser() {
       else setFavItem(entry.media ?? null);
     }
   });
+  // A breadcrumb link back to an ancestor folder carries the folder it was
+  // opened from in the navigation state: highlight it and scroll it into view
+  // so the user sees where they came back from without scrolling themselves.
+  const returnToFolderId = (location.state as {returnToFolderId?:ID} | null)?.returnToFolderId ?? null;
+  const consumedReturnKey = useRef<string|null>(null);
+  useEffect(() => {
+    if (returnToFolderId == null || consumedReturnKey.current === location.key) return;
+    if (!entries.some(entry => entry.type === "folder" && entry.id === returnToFolderId)) return;
+    consumedReturnKey.current = location.key;
+    kb.focus(`f${returnToFolderId}`);
+  }, [entries, returnToFolderId, location.key, kb.focus]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
@@ -2059,6 +2101,8 @@ function Browser() {
     <span className="bar-sep"/>
     <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}, {value:"document", label:"Documents"}]} onChange={v => setKind(v as "all"|"image"|"video"|"document")}/>
     <span className="bar-sep"/>
+    <ThumbSizeBar/>
+    <span className="bar-sep"/>
     <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
     <VirtualEntries entries={visibleEntries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam, ...(kind !== "all" ? {kind} : {})} : kind !== "all" ? {kind} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone} kbFocusId={kb.focusId} kbBand={kb.bandIds} kbFocus={kb.focus}/>
     {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
@@ -2079,6 +2123,7 @@ function LibraryTimeline() {
   const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
   const [sort, setSort] = useState<"desc"|"asc">("asc");
   const [gpsFilter, setGpsFilter] = useState<"all"|"gps"|"nogps">("all");
+  const {size:thumbSize} = useContext(ThumbCtx);
   useEffect(() => {
     if (!Number.isFinite(libraryId)) return;
     let cancelled = false;
@@ -2124,23 +2169,134 @@ function LibraryTimeline() {
       <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
       <BarSelect ariaLabel="GPS" value={gpsFilter} options={[{value:"all", label:"All"}, {value:"gps", label:"Geotagged"}, {value:"nogps", label:"No GPS"}]} onChange={v => setGpsFilter(v as "all"|"gps"|"nogps")}/>
       <span className="bar-sep"/>
+      <ThumbSizeBar/>
+      <span className="bar-sep"/>
     <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
     {loading ? <div className="empty-state">
       <p>Loading this folder’s timeline…</p>
       <button type="button" className="button-like active" onClick={() => navigate(-1)}>Cancel and go back</button>
     </div> :
     sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
-      <div className="timeline-grid">{groupByDate(sorted).map(group =>
+      <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{groupByDate(sorted).map(group =>
         <div className="timeline-group" key={group.label}>
-          <span className="timeline-group-date">{group.label}</span>
-          <span className="timeline-group-dot" aria-hidden="true"/>
+          <div className="timeline-group-caption">{group.label}</div>
           <div className="timeline-group-grid">{group.items.map(item =>
             <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(gpsFilter !== "all" ? {gps:gpsFilter} : {}), ...(favParam ? {fav:favParam} : {})}} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
           )}</div>
         </div>
       )}</div>}
+    {!loading && sorted.length > 0 && <TimelineDateRail containerRef={gridRef}/>}
     {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
   </main>;
+}
+
+// A slim vertical scrollbar on the left edge of the timeline page. Its track
+// carries one tick per date group, so hovering anywhere on it reveals which
+// date that scroll position belongs to; clicking jumps there, dragging the
+// thumb scrubs the page.
+function TimelineDateRail({containerRef}:{containerRef:React.RefObject<HTMLDivElement|null>}) {
+  const railRef = useRef<HTMLDivElement|null>(null);
+  const [layout, setLayout] = useState<{docH:number; viewH:number; scrollH:number; ticks:{absTop:number; label:string}[]}|null>(null);
+  const [scrollY, setScrollY] = useState(0);
+  const [hover, setHover] = useState<{pct:number; label:string}|null>(null);
+  const dragging = useRef(false);
+  useEffect(() => {
+    const page = containerRef.current;
+    if (!page) return;
+    let raf = 0;
+    let scrolled = false;
+    function measure() {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const docH = Math.max(1, document.documentElement.scrollHeight);
+        const viewH = Math.max(1, window.innerHeight);
+        const scrollH = Math.max(1, docH - viewH);
+        const ticks = Array.from((page as HTMLElement).querySelectorAll<HTMLElement>(".timeline-group")).map(el => {
+          const absTop = el.getBoundingClientRect().top + window.scrollY;
+          const caption = el.querySelector(".timeline-group-caption");
+          return {absTop, label: caption?.textContent?.trim() ?? ""};
+        });
+        setLayout({docH, viewH, scrollH, ticks});
+        setScrollY(window.scrollY);
+      });
+    }
+    function onScroll() {
+      if (scrolled) return;
+      scrolled = true;
+      requestAnimationFrame(() => { scrolled = false; setScrollY(window.scrollY); });
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", onScroll, {passive:true});
+    let observer: ResizeObserver|null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(measure);
+      observer.observe(page);
+    }
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", onScroll);
+      observer?.disconnect();
+    };
+  }, [containerRef]);
+  if (!layout || layout.docH <= layout.viewH) return null;
+  const {docH, viewH, scrollH, ticks} = layout;
+  const frac = Math.max(0, Math.min(1, scrollY / scrollH));
+  const thumbPct = Math.max((viewH / docH) * 100, 6);
+  const thumbTopPct = frac * (100 - thumbPct);
+  const targetFracAt = (pointerY:number, trackH:number) => {
+    const thumbH = (thumbPct / 100) * trackH;
+    return Math.max(0, Math.min(1, (pointerY - thumbH / 2) / Math.max(1, trackH - thumbH)));
+  };
+  const nearestLabel = (pos:number) => {
+    let best = ticks[0], bestDist = Infinity;
+    for (const tick of ticks) {
+      const dist = Math.abs(tick.absTop - pos);
+      if (dist < bestDist) { bestDist = dist; best = tick; }
+    }
+    return best.label;
+  };
+  function scrub(pointerY:number, trackH:number) {
+    const target = targetFracAt(pointerY, trackH) * scrollH;
+    window.scrollTo(0, target);
+    setHover({pct: (targetFracAt(pointerY, trackH)) * 100, label: nearestLabel(target)});
+  }
+  return <div ref={railRef} className="timeline-rail"
+    onMouseMove={event => {
+      const rail = railRef.current;
+      if (!rail || dragging.current) return;
+      const rect = rail.getBoundingClientRect();
+      const pointer = event.clientY - rect.top;
+      const target = targetFracAt(pointer, rect.height) * scrollH;
+      setHover({pct: (targetFracAt(pointer, rect.height)) * 100, label: nearestLabel(target)});
+    }}
+    onMouseLeave={() => { if (!dragging.current) setHover(null); }}
+    onPointerDown={event => {
+      const rail = railRef.current;
+      if (!rail) return;
+      dragging.current = true;
+      scrub(event.clientY - rail.getBoundingClientRect().top, rail.getBoundingClientRect().height);
+      rail.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    }}
+    onPointerMove={event => {
+      if (!dragging.current) return;
+      const rail = railRef.current;
+      if (!rail) return;
+      const rect = rail.getBoundingClientRect();
+      scrub(event.clientY - rect.top, rect.height);
+    }}
+    onPointerUp={event => {
+      dragging.current = false;
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }}
+    onPointerCancel={() => { dragging.current = false; }}
+  >
+    {ticks.map((tick, index) => <span key={`${tick.label}-${index}`} className="timeline-rail-tick" style={{top: `${Math.max(0, Math.min(100, tick.absTop / scrollH * 100))}%`}}/>)}
+    <div className="timeline-rail-thumb" style={{top: `${thumbTopPct}%`, height: `${thumbPct}%`}}/>
+    {hover && <div className="timeline-rail-pop" style={{top: `${hover.pct}%`}}>{hover.label}</div>}
+  </div>;
 }
 
 function Favorites() {
@@ -2290,6 +2446,7 @@ function FavoriteViewPage() {
   const [displayMode, setDisplayMode] = useState<"folders"|"timeline"|"map">("folders");
   const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
   const [sort, setSort] = useState<"desc"|"asc">("desc");
+  const {size:thumbSize} = useContext(ThumbCtx);
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   const [error, setError] = useState("");
@@ -2367,13 +2524,15 @@ function FavoriteViewPage() {
         <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
       </>}
       <span className="bar-sep"/>
+      <ThumbSizeBar/>
+      <span className="bar-sep"/>
       <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
     </div></div>
     {error && <p className="error">{error}</p>}
     {!loaded && <div className="empty-state"><p>Loading…</p></div>}
     {loaded && displayMode === "folders" && <>
       {orderedItems.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
-        <div className={view === "tile" ? "grid" : "list-view"}>{orderedItems.map(item =>
+        <div className={view === "tile" ? "grid" : "list-view"} style={view === "tile" ? {["--thumb-tile" as string]: `${thumbSize}px`} : undefined}>{orderedItems.map(item =>
           item.isFolder
             ? <FavoriteFolderCard key={`f-${item.id}`} id={item.id} name={item.name} view={view} favoriteViewId={favoriteViewId} onRemove={removedId => setItems(current => current.filter(i => i.id !== removedId || !i.isFolder))} selected={selectedFolders.includes(item.id)} onToggleSelected={toggleSelected(setSelectedFolders)} kbFocused={kb.focusId === `f${item.id}`} kbRange={kb.bandIds.includes(`f${item.id}`)} kbFocus={() => kb.focus(`f${item.id}`)}/>
             : <MediaCard key={item.id} item={{id:item.id, name:item.name, mimeType:item.mimeType??"", favorite:true} as Media} view={view} favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} onFavoriteChange={updated => setItems(current => current.filter(i => i.id !== updated.id || i.isFolder))} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
@@ -2382,10 +2541,9 @@ function FavoriteViewPage() {
     {loaded && displayMode === "timeline" && <>
       {!mediaLoaded ? <div className="empty-state"><p>Loading…</p></div> :
         sortedMedia.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
-        <div className="timeline-grid">{groupByDate(sortedMedia).map(group =>
+        <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{groupByDate(sortedMedia).map(group =>
           <div className="timeline-group" key={group.label}>
-            <span className="timeline-group-date">{group.label}</span>
-            <span className="timeline-group-dot" aria-hidden="true"/>
+            <div className="timeline-group-caption">{group.label}</div>
             <div className="timeline-group-grid">{group.items.map((item, itemIndex) =>
               <MediaCard key={`${item.id}-${itemIndex}`} item={item} view="tile" favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "asc" : "desc"} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
             )}</div>
@@ -2794,6 +2952,23 @@ export function normalizeStreamChunkSize(value:number) {
   return Number.isFinite(value) && value >= 1 ? Math.min(Math.round(value), 10000) : DEFAULT_STREAM_CHUNK_SIZE;
 }
 
+export function normalizeThumb(min:number|undefined, max:number|undefined) {
+  const okMin = typeof min === "number" && Number.isFinite(min) && min > 0;
+  const clampedMin = Math.max(40, Math.min(640, Math.round(okMin ? min as number : THUMB_MIN_DEFAULT)));
+  const okMax = typeof max === "number" && Number.isFinite(max) && max > 0;
+  const clampedMax = okMax ? Math.max(40, Math.min(640, Math.round(max as number))) : THUMB_MAX_DEFAULT;
+  const boundedMax = clampedMax > 0 && clampedMax < clampedMin ? clampedMin : clampedMax;
+  return {min: clampedMin, max: boundedMax};
+}
+
+// The on-screen thumbnail size bar: a range input bounded by the user's
+// configured min/max, rendered directly on the timeline and folder views.
+function ThumbSizeBar() {
+  const {min, max, size, setSize} = useContext(ThumbCtx);
+  const effMax = max > 0 ? max : 640;
+  return <label className="thumb-size-bar" aria-label="Thumbnail size">Size<input type="range" min={min} max={Math.max(min, effMax)} step={10} value={size} onClick={event => event.stopPropagation()} onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) setSize(next); }}/><span className="thumb-size-value">{size}px</span></label>;
+}
+
 // Normalizes a persisted map tile source so the value always matches one of the
 // options offered in the user-settings select (legacy bare "carto" → voyager).
 export function normalizePOISource(value:string|undefined): POISource {
@@ -2886,6 +3061,7 @@ export function useBufferedFolderEntries(libraryId:number, folderId:number|null,
 
 function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onLoadMore,moreLoading,moreDone,kbFocusId=null,kbBand=[],kbFocus}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; itemNav?:ItemNav; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean; kbFocusId?:string|null; kbBand?:string[]; kbFocus?:(id:string)=>void}) {
   const sentinelRef = useRef<HTMLDivElement|null>(null);
+  const {size:thumbSize} = useContext(ThumbCtx);
   useEffect(() => {
     if (moreDone || !onLoadMore) return;
     const el = sentinelRef.current;
@@ -2899,7 +3075,7 @@ function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFold
   }, [moreDone, onLoadMore, entries.length]);
   if (entries.length === 0 && (moreDone ?? true)) return <div className="empty-state"><p>No items here.</p></div>;
   return <div className={`cv-browser ${view === "tile" ? "virtual-tile" : "virtual-list"}`}>
-    <div className={view === "tile" ? "grid" : "list-view"}>
+    <div className={view === "tile" ? "grid" : "list-view"} style={view === "tile" ? {["--thumb-tile" as string]: `${thumbSize}px`} : undefined}>
       {entries.map(entry => entry.type === "folder" ?
         <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected} kbFocused={kbFocusId === `f${entry.id}`} kbRange={kbBand.includes(`f${entry.id}`)} kbFocus={kbFocus ? () => kbFocus(`f${entry.id}`) : undefined}/> :
         <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} nav={itemNav} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date" kbFocused={kbFocusId === `m${entry.media!.id}`} kbRange={kbBand.includes(`m${entry.media!.id}`)} kbFocus={kbFocus ? () => kbFocus(`m${entry.media!.id}`) : undefined}/>
@@ -3087,76 +3263,50 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,o
 
 function TrajectoryControls({item}:{item:Media}) {
   const [start, setStart] = useState(Boolean(item.trajectoryStart));
+  const [startName, setStartName] = useState(item.trajectoryName ?? "");
   const [end, setEnd] = useState(Boolean(item.trajectoryEnd));
   const [busy, setBusy] = useState(false);
-  const [nameOpen, setNameOpen] = useState(false);
-  const [confirmUnset, setConfirmUnset] = useState<"start"|"end"|null>(null);
+  const [startOpen, setStartOpen] = useState(false);
   useEffect(() => {
     setStart(Boolean(item.trajectoryStart));
+    setStartName(item.trajectoryName ?? "");
     setEnd(Boolean(item.trajectoryEnd));
-  }, [item.id, item.trajectoryStart, item.trajectoryEnd]);
+  }, [item.id, item.trajectoryStart, item.trajectoryName, item.trajectoryEnd]);
   if (!Number.isFinite(item.folderId)) return null;
   function setFlag(kind:"start"|"end", value:boolean) {
-    if (kind === "start" && value) {
-      setNameOpen(true);
-      return;
-    }
-    if (!value) {
-      if (kind === "end") {
-        setBusy(true);
-        api.setTrajectoryEnd(item.id, item.folderId, false).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(() => setBusy(false));
-        return;
-      }
-      setConfirmUnset(kind);
+    if (kind === "start") {
+      // One button: it always opens the name form. When the start is already
+      // set the form is pre-filled with the current name and offers both Save
+      // and Remove; there is no separate confirmation step.
+      setStartOpen(true);
       return;
     }
     setBusy(true);
     const done = () => setBusy(false);
-    if (kind === "start") {
-      api.setTrajectoryStart(item.id, item.folderId, value).then(r => setStart(r.trajectoryStart)).catch(() => undefined).finally(done);
-    } else {
-      api.setTrajectoryEnd(item.id, item.folderId, value).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(done);
+    if (!value) {
+      api.setTrajectoryEnd(item.id, item.folderId, false).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(done);
+      return;
     }
-  }
-  async function confirmRemove() {
-    if (!confirmUnset) return;
-    const kind = confirmUnset;
-    setBusy(true);
-    try {
-      if (kind === "start") {
-        const r = await api.setTrajectoryStart(item.id, item.folderId, false);
-        setStart(r.trajectoryStart);
-      } else {
-        const r = await api.setTrajectoryEnd(item.id, item.folderId, false);
-        setEnd(r.trajectoryEnd);
-      }
-    } catch (_e) { void _e; }
-    finally { setBusy(false); setConfirmUnset(null); }
+    api.setTrajectoryEnd(item.id, item.folderId, value).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(done);
   }
   return <>
     <span className="trajectory-controls" role="group" aria-label={`Trajectory markers for ${item.name}`}>
-      <button type="button" className={`trajectory-start ${start ? "active" : ""}`} disabled={busy} onClick={event => { event.stopPropagation(); setFlag("start", !start); }} aria-pressed={start} aria-label={start ? "Unset trajectory start" : "Set trajectory start"} title={start ? "Unset trajectory start" : "Set trajectory start"}>⛳</button>
+      <button type="button" className={`trajectory-start ${start ? "active" : ""}`} disabled={busy} onClick={event => { event.stopPropagation(); setFlag("start", !start); }} aria-pressed={start} aria-label={start ? "Edit trajectory start" : "Set trajectory start"} title={start ? "Edit trajectory start" : "Set trajectory start"}>⛳</button>
       <button type="button" className={`trajectory-end ${end ? "active" : ""}`} disabled={busy} onClick={event => { event.stopPropagation(); setFlag("end", !end); }} aria-pressed={end} aria-label={end ? "Unset trajectory end" : "Set trajectory end"} title={end ? "Unset trajectory end" : "Set trajectory end"}>🏁</button>
     </span>
-    {nameOpen && createPortal(
-      <TrajectoryNameDialog item={item} onClose={() => setNameOpen(false)} onSave={async (newName) => {
-        const r = await api.setTrajectoryStart(item.id, item.folderId, true);
-        setStart(r.trajectoryStart);
+    {startOpen && createPortal(
+      <TrajectoryNameDialog item={item} initialName={start ? startName : ""} rename={start} onClose={() => setStartOpen(false)} onSave={async (newName) => {
+        if (!start) {
+          const r = await api.setTrajectoryStart(item.id, item.folderId, true);
+          setStart(r.trajectoryStart);
+        }
         await api.setTrajectoryName(item.id, item.folderId, newName);
-      }} />,
-      document.body
-    )}
-    {confirmUnset && createPortal(
-      <ModalBackdrop ariaLabel={`Remove trajectory ${confirmUnset}`} onClick={event => closeOnBackdropClick(event as unknown as React.MouseEvent<HTMLDivElement>, () => setConfirmUnset(null))}>
-        <div className="card settings modal" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
-          <div className="panel-title"><h2>Remove trajectory {confirmUnset}?</h2></div>
-          <p className="muted">This will remove the trajectory {confirmUnset} for <strong>{item.name}</strong>.</p>
-          <div className="action-row">
-            <button type="button" className="secondary" disabled={busy} onClick={() => setConfirmUnset(null)}>Cancel</button>
-            <button type="button" disabled={busy} onClick={() => void confirmRemove()}>Remove</button>
-          </div>
-        </div>
-      </ModalBackdrop>,
+        setStartName(newName);
+      }} onRemove={start ? async () => {
+        const r = await api.setTrajectoryStart(item.id, item.folderId, false);
+        setStart(r.trajectoryStart);
+        setStartName("");
+      } : undefined}/>,
       document.body
     )}
   </>;
@@ -3319,6 +3469,15 @@ function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{fo
 }
 
 function MediaViewerPage() {
+  // Viewer paging shows the next full media on a fresh <img>, so a cold item
+  // costs a full download before anything renders. A bounded run of neighbours
+  // is prefetched while the current item is on screen; jobs that leave the
+  // window (fast paging) are cancelled instead of being left to finish, and
+  // nothing outside the hard distance cap is ever kept.
+  const PREFETCH_FORWARD = 3;
+  const PREFETCH_BACKWARD = 1;
+  const PREFETCH_MAX_DISTANCE = 10;
+  const prefetchJobsRef = useRef<Map<number, HTMLImageElement>>(new Map());
   const {id="", folderId=""} = useParams();
   const libraryId = Number(id);
   const routeFolderId = Number(folderId);
@@ -3331,6 +3490,10 @@ function MediaViewerPage() {
   const items = (folderData?.entries ?? []).map(entry => entry.media).filter((media): media is Media => media != null);
   const [fallbackItem, setFallbackItem] = useState<Media|null>(null);
   const [fallback, setFallback] = useState<{loading:boolean; failed:boolean}>({loading:false, failed:false});
+  // While root-mode prev/next navigation is in flight the neighbors fetch has
+  // not resolved yet, so the anchor item is unknown. Remember the media being
+  // navigated to so the viewer component (and its zoom state) never unmounts.
+  const [transitionItem, setTransitionItem] = useState<Media|null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const sortParam = query.get("sort") ?? "name";
   const rootParam = query.get("root");
@@ -3371,18 +3534,36 @@ function MediaViewerPage() {
         if (!cancelled) setScopedMedia(items.filter(m => m.libraryId === libraryId));
       }).catch(() => { if (!cancelled) setScopedMedia(null); });
     } else if (rootParam != null) {
-      const load = rootParam === "all" ? api.libraryMedia(libraryId) : api.folderMedia(libraryId, Number(rootParam));
-      load.then(items => {
-        if (cancelled) return;
-        const byKind = kindParam === "image" || kindParam === "video" || kindParam === "document" ? items.filter(m => m.kind === kindParam) : items;
-        const byGPS = gpsParam === "nogps" ? byKind.filter(m => m.gps === "") : gpsParam === "gps" ? byKind.filter(m => m.gps !== "") : byKind;
-        setScopedMedia(byGPS);
-      }).catch(() => { if (!cancelled) setScopedMedia(null); });
+      // The root= (subtree) viewer no longer loads the whole set: navigation
+      // walks the scope one anchor at a time via MediaNeighbors below, so the
+      // title renders from a handful of rows instead of an entire subtree.
+      setScopedMedia(null);
     } else {
       setScopedMedia(null);
     }
     return () => { cancelled = true; };
   }, [libraryId, rootParam, kindParam, gpsParam, listParam, w, s, e, n]);
+  const rootMode = rootParam != null;
+  const [neighbors, setNeighbors] = useState<{anchor:Media; before:Media[]; after:Media[]}|null>(null);
+  useEffect(() => {
+    if (!rootMode || !Number.isFinite(currentMediaId)) {
+      setNeighbors(null);
+      return;
+    }
+    let cancelled = false;
+    const kind = kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : undefined;
+    const gps = gpsParam ?? undefined;
+    const folder = rootParam === "all" ? "all" as const : Number(rootParam);
+    api.mediaNeighbors(libraryId, folder, currentMediaId, {sort: sortParam, kind, gps, before:1, after:1})
+      .then(result => { if (!cancelled) setNeighbors(result); })
+      .catch(() => { if (!cancelled) setNeighbors(null); });
+    return () => { cancelled = true; };
+  }, [rootMode, rootParam, libraryId, currentMediaId, sortParam, kindParam, gpsParam]);
+  useEffect(() => {
+    // Once the neighbors response confirms the currently shown root-mode item,
+    // the transition placeholder is no longer needed.
+    if (rootMode && neighbors && neighbors.anchor.id === currentMediaId) setTransitionItem(null);
+  }, [rootMode, neighbors, currentMediaId]);
   const folderMedia = useMemo(() => {
     const scoped = scopedMedia
       ?? (listIds.length > 0
@@ -3397,10 +3578,66 @@ function MediaViewerPage() {
     return sortMedia(base, sortParam === "date-asc" ? "asc" : "desc");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopedMedia, items, routeFolderId, sortParam, mediaOverrides, listIds.length, listParam]);
-  const index = folderMedia.findIndex(media => media.id === currentMediaId);
-  const item = index >= 0 ? folderMedia[index] : mediaOverrides[currentMediaId] ?? fallbackItem;
-  const previous = index > 0 ? folderMedia[index - 1] : null;
-  const next = index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null;
+  const index = rootMode ? -1 : folderMedia.findIndex(media => media.id === currentMediaId);
+  const anchorItem = rootMode && neighbors && neighbors.anchor.id === currentMediaId
+    ? mediaOverrides[currentMediaId] ?? neighbors.anchor
+    : null;
+  const item = anchorItem
+    ?? (index >= 0 ? folderMedia[index] : mediaOverrides[currentMediaId] ?? transitionItem ?? fallbackItem);
+  const withOverride = (media: Media|null) => media ? mediaOverrides[media.id] ?? media : null;
+  const previous = rootMode
+    ? (anchorItem && neighbors ? withOverride(neighbors.before[0] ?? null) : null)
+    : (index > 0 ? folderMedia[index - 1] : null);
+  const next = rootMode
+    ? (anchorItem && neighbors ? withOverride(neighbors.after[0] ?? null) : null)
+    : (index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null);
+  useEffect(() => {
+    // Rebuild the desired prefetch window around the current item. In the
+    // ordered list modes the whole neighbourhood is known, so a few items
+    // ahead (and the one just passed) are warmed from their index window; in
+    // root/map mode only the immediate before/after neighbours exist, so the
+    // window degrades to those two. Images prefetch their real bytes so the
+    // swap is a cache hit; videos warm the cover frame only (the play URL
+    // would download or even transcode every neighbouring clip).
+    const jobs = prefetchJobsRef.current;
+    const desired = new Map<number, string>();
+    if (index >= 0) {
+      for (let i = Math.max(0, index - PREFETCH_BACKWARD); i <= index + PREFETCH_FORWARD && i < folderMedia.length; i++) {
+        if (i === index) continue;
+        const media = folderMedia[i];
+        if (!media) continue;
+        if (Math.abs(i - index) >= PREFETCH_MAX_DISTANCE) continue;
+        if (media.kind === "image") desired.set(media.id, api.contentUrl(media.id));
+        else if (media.kind === "video") desired.set(media.id, api.thumbnailUrl(media.id, 0));
+      }
+    } else {
+      for (const media of [previous, next]) {
+        if (!media) continue;
+        if (media.kind === "image") desired.set(media.id, api.contentUrl(media.id));
+        else if (media.kind === "video") desired.set(media.id, api.thumbnailUrl(media.id, 0));
+      }
+    }
+    // Anything that left the window is cancelled, not left to download.
+    for (const [id, image] of Array.from(jobs.entries())) {
+      if (!desired.has(id)) {
+        image.src = "";
+        jobs.delete(id);
+      }
+    }
+    for (const [id, url] of desired) {
+      if (jobs.has(id)) continue;
+      const image = new Image();
+      image.decoding = "async";
+      image.src = url;
+      jobs.set(id, image);
+    }
+  }, [folderMedia, index, previous, next]);
+  useEffect(() => () => {
+    // Only unmount aborts every in-flight prefetch; the window effect above
+    // evicts single jobs as they scroll out so forward paging never restarts.
+    for (const image of prefetchJobsRef.current.values()) image.src = "";
+    prefetchJobsRef.current.clear();
+  }, []);
   useEffect(() => {
     if (index >= 0 || !Number.isFinite(currentMediaId)) {
       setFallback({loading:false, failed:false});
@@ -3427,7 +3664,13 @@ function MediaViewerPage() {
     return fav ? {kind: kindNav, fav} : kindNav !== "all" ? {kind: kindNav} : {};
   }, [bounds, rootParam, kindParam, gpsParam, listParam, location.search]);
   function go(media:Media|null) {
-    if (media) navigate(libraryItemURL(libraryId, media, sortParam, nav));
+    if (media) {
+      // Root mode: the neighbors fetch lags behind the navigation, so hand the
+      // navigated-to media to the viewer immediately instead of unmounting it
+      // while the new anchor loads (which would drop the image zoom state).
+      if (rootMode) setTransitionItem(media);
+      navigate(libraryItemURL(libraryId, media, sortParam, nav));
+    }
   }
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
@@ -3569,11 +3812,29 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   const [imageZoom, setImageZoom] = useState(1);
   const [imagePan, setImagePan] = useState({x:0, y:0});
   const [imageRotation, setImageRotation] = useState(0);
+  const [adjust, setAdjust] = useState<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>({...defaultAdjust});
+  const [adjustReady, setAdjustReady] = useState(false);
+  const [savedNotice, setSavedNotice] = useState(false);
+  const savedNoticeTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
+  const [infoTab, setInfoTab] = useState<"details"|"metadata"|"notes">("details");
   const [drag, setDrag] = useState<{pointerId:number; startX:number; startY:number; originX:number; originY:number}|null>(null);
   const [docUrl, setDocUrl] = useState<string>("");
   const [docNative, setDocNative] = useState(false);
   const [docError, setDocError] = useState<string>("");
-  useEffect(() => { setImagePan({x:0, y:0}); setDrag(null); setImageRotation(0); }, [item.id]);
+  useEffect(() => { setImagePan({x:0, y:0}); setDrag(null); setImageRotation(0); setAdjust({...defaultAdjust}); setAdjustReady(false); }, [item.id]);
+  useEffect(() => {
+    api.getAdjust(item.id).then(saved => {
+      setImageRotation(Number.isInteger(saved.rotation) && [0, 90, 180, 270].includes(saved.rotation) ? saved.rotation : 0);
+      setAdjust(prev => ({
+        brightness: Number.isFinite(saved.brightness) ? Math.round(Math.min(300, Math.max(20, saved.brightness * 100))) : prev.brightness,
+        hue: Number.isFinite(saved.hue) ? Math.round(Math.min(360, Math.max(-360, saved.hue))) : prev.hue,
+        saturation: Number.isFinite(saved.saturation) ? Math.round(Math.min(400, Math.max(0, saved.saturation * 100))) : prev.saturation,
+        gamma: Number.isFinite(saved.gamma) ? Math.round(Math.min(300, Math.max(20, saved.gamma * 100))) : prev.gamma,
+        contrast: Number.isFinite(saved.contrast) ? Math.round(Math.min(300, Math.max(20, saved.contrast * 100))) : prev.contrast,
+      }));
+      setAdjustReady(true);
+    }).catch(() => { setImageRotation(0); setAdjustReady(true); });
+  }, [item.id]);
   useEffect(() => { if (imageZoom === 1) { setImagePan({x:0, y:0}); setDrag(null); } }, [imageZoom]);
   // Documents (PDFs, etc.) are shown in an <iframe> on desktop/iOS via a blob
   // URL fetched with credentials, so the request keeps the HttpOnly auth cookie
@@ -3606,15 +3867,69 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     };
   }, [item.id, item.kind]);
   function adjustImageZoom(delta:number) {
-    setImageZoom(value => clampZoom(Math.round((value + delta) * 100) / 100));
+    const anchor = mediaCenterInViewport() ?? {x: window.innerWidth / 2, y: window.innerHeight / 2};
+    anchoredZoom(clampZoom(Math.round((imageZoomRef.current + delta) * 100) / 100), anchor);
   }
-  function rotateImage() {
-    setImageRotation(value => (value + 90) % 360);
+  function mediaCenterInViewport():{x:number; y:number}|null {
+    const rect = mediaRef.current?.getBoundingClientRect();
+    return rect ? {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2} : null;
   }
+  // Zoom while keeping a fixed screen point in place: the image scales around
+  // that anchor instead of its own centre. With the current centre-origin
+  // transform (screen = pan + centre + zoom·rotate(p − centre)), keeping the
+  // viewport point v fixed when the zoom changes by ratio r (r = next/prev)
+  // needs only a pan correction of (1 − r)·(v − V), where V is the element's
+  // current on-screen centre (independent of rotate/scale, so the math holds
+  // for rotated images too).
+  function anchoredZoom(nextZoom:number, anchor:{x:number; y:number}) {
+    const el = mediaRef.current?.querySelector<HTMLElement>(".video-stack, .viewer-media > img") ?? null;
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const ratio = nextZoom / imageZoomRef.current;
+      setImagePan(pan => ({
+        x: pan.x + (1 - ratio) * (anchor.x - centerX),
+        y: pan.y + (1 - ratio) * (anchor.y - centerY),
+      }));
+    }
+    setImageZoom(nextZoom);
+  }
+  function rotateImage(clockwise = true, event?:React.MouseEvent) {
+    // Ctrl/Cmd+click or "rotate left" rotates counter-clockwise instead.
+    const direction = event?.ctrlKey || event?.metaKey || !clockwise ? -90 : 90;
+    const rotation = (imageRotation + direction + 360) % 360;
+    // Rotation is only persisted via "Save adjustments", never auto-saved.
+    setImageRotation(rotation);
+  }
+  function persistAdjust(rotation:number) {
+    const demo = {brightness:adjust.brightness / 100, hue:adjust.hue, saturation:adjust.saturation / 100, gamma:adjust.gamma / 100, contrast:adjust.contrast / 100, rotation};
+    api.saveAdjust(item.id, demo).then(() => {
+      setSavedNotice(true);
+      if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
+      savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 1600);
+    }).catch(() => setSavedNotice(false));
+  }
+  function saveAdjust() {
+    persistAdjust(imageRotation);
+  }
+  function resetAdjust() {
+    setAdjust({...defaultAdjust});
+    setImageRotation(0);
+    api.saveAdjust(item.id, {brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:0}).then(() => {
+      setSavedNotice(true);
+      if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
+      savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 1600);
+    }).catch(() => setSavedNotice(false));
+  }
+  useEffect(() => () => {
+    if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
+  }, []);
   function onImageWheel(event:WheelEvent<HTMLDivElement>) {
     if (item.kind !== "image" && item.kind !== "video") return;
     event.preventDefault();
-    adjustImageZoom(event.deltaY < 0 ? 0.25 : -0.25);
+    // Zoom about the cursor so the point being inspected stays put.
+    anchoredZoom(clampZoom(Math.round((imageZoomRef.current + (event.deltaY < 0 ? 0.25 : -0.25)) * 100) / 100), {x: event.clientX, y: event.clientY});
   }
   function startImagePan(event:ReactPointerEvent<HTMLElement>) {
     if ((item.kind !== "image" && item.kind !== "video") || imageZoom <= 1) return;
@@ -3809,6 +4124,16 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     window.addEventListener("keydown", onZoomKey);
     return () => window.removeEventListener("keydown", onZoomKey);
   }, [item.id]);
+  useEffect(() => {
+    if (item.kind !== "image" && item.kind !== "video") return;
+    function onRotateKey(event:KeyboardEvent) {
+      if (isEditableTarget(event.target)) return;
+      if (event.key === "l" || event.key === "L") { event.preventDefault(); rotateImage(false); }
+      else if (event.key === "r" || event.key === "R") { event.preventDefault(); rotateImage(true); }
+    }
+    window.addEventListener("keydown", onRotateKey);
+    return () => window.removeEventListener("keydown", onRotateKey);
+  }, [item.id, imageRotation]);
   function onTouchStart(event:React.TouchEvent<HTMLDivElement>) {
     const target = event.target;
     const onControl = target instanceof HTMLElement && (isEditableTarget(target) || Boolean(target.closest("button, a, .video-controls")));
@@ -3863,7 +4188,8 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     }
     event.preventDefault();
     const next = clampZoom(start.zoom * (distance / start.distance));
-    setImageZoom(Math.round(next * 100) / 100);
+    // Keep the point between the two fingers anchored while the pinch scales.
+    anchoredZoom(Math.round(next * 100) / 100, {x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2});
   }
   function onTouchEnd(event:React.TouchEvent<HTMLDivElement>) {
     if (longPressTriggered.current) {
@@ -3907,11 +4233,11 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
       }}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
-      {item.kind === "image" && <button type="button" className="viewer-fullscreen" aria-label={isFullscreen || nativeFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen || nativeFullscreen ? "⤡" : "⛶"}</button>}
+      {(item.kind === "image" || item.kind === "video") && <button type="button" className="viewer-fullscreen" aria-label={isFullscreen || nativeFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen || nativeFullscreen ? "⤡" : "⛶"}</button>}
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
-      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
+      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} adjust={adjust} ready={adjustReady} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         item.kind === "image" ?
-        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`}} src={api.contentUrl(item.id)} alt={item.name}
+        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{opacity:adjustReady ? 1 : 0, transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={api.contentUrl(item.id)} alt={item.name}
           onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         <>
           {docNative
@@ -3928,18 +4254,46 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
         <button type="button" aria-label="Reset zoom" disabled={imageZoom === 1} onClick={() => setImageZoom(1)}>{Math.round(imageZoom * 100)}%</button>
         <button type="button" aria-label="Zoom out" disabled={imageZoom <= 0.5} onClick={() => adjustImageZoom(-0.25)}>−</button>
         <div className="zoom-controls-separator" aria-hidden="true"/>
-        <button type="button" aria-label="Rotate media" onClick={rotateImage}>↻</button>
+        <button type="button" aria-label="Rotate media" title="Rotate right (Ctrl rotates left)" onClick={event => rotateImage(true, event)}>↻</button>
       </div>}
+      <svg width="0" height="0" style={{position:"absolute", width:0, height:0}} aria-hidden="true" focusable="false">
+        <filter id="ml-tone" colorInterpolationFilters="sRGB">
+          <feComponentTransfer>
+            <feFuncR type="linear" slope="1" intercept={brightnessOffset(adjust.brightness)}/>
+            <feFuncG type="linear" slope="1" intercept={brightnessOffset(adjust.brightness)}/>
+            <feFuncB type="linear" slope="1" intercept={brightnessOffset(adjust.brightness)}/>
+          </feComponentTransfer>
+          <feComponentTransfer>
+            <feFuncR type="gamma" amplitude="1" exponent={Math.max(0.3, 100 / Math.max(20, adjust.gamma))} offset="0"/>
+            <feFuncG type="gamma" amplitude="1" exponent={Math.max(0.3, 100 / Math.max(20, adjust.gamma))} offset="0"/>
+            <feFuncB type="gamma" amplitude="1" exponent={Math.max(0.3, 100 / Math.max(20, adjust.gamma))} offset="0"/>
+          </feComponentTransfer>
+        </filter>
+      </svg>
     </div>
     <button type="button" className="info-handle" aria-label={infoOpen ? "Hide info panel" : "Show info panel"} onClick={onToggleInfo}>{infoOpen ? ">>" : "<<"}</button>
     <aside className={`info-drawer ${infoOpen ? "open" : ""}`} aria-hidden={!infoOpen}>
-      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} onUpdated={onUpdated}/>}
+      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} onUpdated={onUpdated} activeTab={infoTab} onTabChange={setInfoTab} adjust={adjust} onAdjustChange={patch => setAdjust(prev => ({...prev, ...patch}))} adjustSaved={savedNotice} onSaveAdjust={saveAdjust} onResetAdjust={resetAdjust}/>}
     </aside>
   </div>;
 }
 
 function clampZoom(value:number) {
   return Math.min(10, Math.max(0.5, value));
+}
+
+const defaultAdjust = {brightness:100, hue:0, saturation:100, gamma:100, contrast:100} as const;
+// Brightness is intentionally NOT the CSS brightness() multiplier (that scales
+// highlights and clips them to white while leaving shadows untouched). Like
+// VLC's adjust filter it is an additive luma offset, applied in the SVG filter
+// chain together with gamma; contrast/saturation/hue stay CSS functions.
+function brightnessOffset(brightness:number) {
+  return (brightness - 100) / 200;
+}
+function applyAdjust(adjust: {brightness:number; hue:number; saturation:number; gamma:number; contrast:number}) {
+  let filter = `contrast(${adjust.contrast}%) saturate(${adjust.saturation}%) hue-rotate(${adjust.hue}deg)`;
+  if (adjust.gamma !== 100 || adjust.brightness !== 100) filter += ` url(#ml-tone)`;
+  return filter;
 }
 
 function eventPoint(event:ReactPointerEvent<HTMLElement>) {
@@ -4007,26 +4361,38 @@ function computePosition(anchor:HTMLElement):{top:number; right:number} {
   };
 }
 
-function MediaInfo({item, onUpdated}:{item:Media; onUpdated?:(updated:Media)=>void}) {
+// Global dropdown convention: the popup's top-left corners to the trigger's
+// bottom-left. Popups that belong to controls designed for the right edge of
+// the screen (e.g. the date picker inside the info drawer) keep the right
+// alignment of computePosition above. The left edge is nudged in only when the
+// popup would otherwise leave the viewport.
+function dropdownBelow(anchor:HTMLElement, popupWidth:number):{top:number; left:number} {
+  const rect = anchor.getBoundingClientRect();
+  return {
+    top: rect.bottom + 6,
+    left: Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(160, popupWidth) - 8)),
+  };
+}
+
+function MediaInfo({item, onUpdated, activeTab, onTabChange, adjust, onAdjustChange, adjustSaved, onSaveAdjust, onResetAdjust}:{item:Media; onUpdated?:(updated:Media)=>void; activeTab:"details"|"metadata"|"notes"; onTabChange:(tab:"details"|"metadata"|"notes")=>void; adjust?:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; onAdjustChange?:(patch:Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)=>void; adjustSaved?:boolean; onSaveAdjust?:()=>void; onResetAdjust?:()=>void}) {
   const dateFormat = useUserDateFormat();
-  const navigate = useNavigate();
   const [name, setName] = useState(item.name);
   const [gpsValue, setGPSValue] = useState(item.gps ?? "");
   const [takenAt, setTakenAt] = useState(() => formatDateTime(item.takenAt, dateFormat));
+  const [notes, setNotes] = useState(item.notes ?? "");
   const [current, setCurrent] = useState(item);
   const [saving, setSaving] = useState(false);
   const [_saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<"details"|"metadata">("details");
   const [calendarOpen, setCalendarOpen] = useState(false);
   const pickerAnchorRef = useRef<HTMLButtonElement|null>(null);
   useEffect(() => {
-    setName(item.name); setGPSValue(item.gps ?? ""); setTakenAt(formatDateTime(item.takenAt, dateFormat)); setCurrent(item); setSaved(false); setError(""); setCalendarOpen(false);
+    setName(item.name); setGPSValue(item.gps ?? ""); setTakenAt(formatDateTime(item.takenAt, dateFormat)); setCurrent(item); setNotes(item.notes ?? ""); setSaved(false); setError(""); setCalendarOpen(false);
   }, [item, dateFormat]);
   const trimmedName = name.trim();
   const trimmedGPS = gpsValue.trim();
-  const dirty = trimmedName !== current.name || trimmedGPS !== (current.gps ?? "") || takenAt.trim() !== formatDateTime(current.takenAt, dateFormat);
+  const dirty = trimmedName !== current.name || trimmedGPS !== (current.gps ?? "") || takenAt.trim() !== formatDateTime(current.takenAt, dateFormat) || notes.trim() !== (current.notes ?? "").trim();
   async function save() {
     const trimmedName = name.trim();
     const trimmedGPS = gpsValue.trim();
@@ -4045,8 +4411,8 @@ function MediaInfo({item, onUpdated}:{item:Media; onUpdated?:(updated:Media)=>vo
     }
     setSaving(true); setSaved(false); setError("");
     try {
-      const updated = await api.updateMediaDetails(item.id, {name:trimmedName, gps:trimmedGPS, takenAt:dateValue});
-      setCurrent(updated); setName(updated.name); setGPSValue(updated.gps ?? ""); setTakenAt(formatDateTime(updated.takenAt, dateFormat));
+      const updated = await api.updateMediaDetails(item.id, {name:trimmedName, gps:trimmedGPS, takenAt:dateValue, notes:notes.trim()});
+      setCurrent(updated); setName(updated.name); setGPSValue(updated.gps ?? ""); setTakenAt(formatDateTime(updated.takenAt, dateFormat)); setNotes(updated.notes ?? "");
       setSaved(true);
       // Propagate the saved row into the parent list so previous/next items
       // and future navigation show the new values instead of the stale row.
@@ -4088,19 +4454,45 @@ function MediaInfo({item, onUpdated}:{item:Media; onUpdated?:(updated:Media)=>vo
   return <div className="info-panel"><h2>{current.name}</h2>
     <p>{current.kind} · {formatBytes(current.size)}</p>
     <div className="info-tabs" role="tablist" aria-label="Media details">
-      <button type="button" role="tab" id="media-tab-details" aria-selected={activeTab === "details"} className={`info-tab${activeTab === "details" ? " active" : ""}`} onClick={() => setActiveTab("details")}>Details</button>
-      <button type="button" role="tab" id="media-tab-metadata" aria-selected={activeTab === "metadata"} className={`info-tab${activeTab === "metadata" ? " active" : ""}`} onClick={() => setActiveTab("metadata")}>Metadata</button>
+      <button type="button" role="tab" id="media-tab-details" aria-selected={activeTab === "details"} className={`info-tab${activeTab === "details" ? " active" : ""}`} onClick={() => onTabChange("details")}>Details</button>
+      <button type="button" role="tab" id="media-tab-metadata" aria-selected={activeTab === "metadata"} className={`info-tab${activeTab === "metadata" ? " active" : ""}`} onClick={() => onTabChange("metadata")}>Metadata</button>
+      <button type="button" role="tab" id="media-tab-notes" aria-selected={activeTab === "notes"} className={`info-tab${activeTab === "notes" ? " active" : ""}`} onClick={() => onTabChange("notes")}>Notes</button>
     </div>
-    {activeTab === "details" ? <div className="media-edit" role="tabpanel" aria-label="Details" aria-labelledby="media-tab-details">
+    {activeTab === "details" && <div className="media-edit" role="tabpanel" aria-label="Details" aria-labelledby="media-tab-details">
       <label className="media-edit-row"><span>Name</span><input value={name} onChange={event => setName(event.target.value)} required/></label>
       <label className="media-edit-row"><span>Date</span><span className="media-date-editor"><input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/>{currentDate && <button type="button" className="secondary media-date-icon" aria-label="Copy date" title="Copy date" onClick={() => void copyDate()}>{copied ? "✓" : "⧉"}</button>}<button ref={pickerAnchorRef} type="button" className="secondary media-date-icon media-date-picker-trigger" aria-label="Pick date and time" title="Pick date and time" aria-expanded={calendarOpen} onClick={() => setCalendarOpen(value => !value)}><span className="calendar-glyph" aria-hidden="true">📅</span></button>{calendarOpen && pickerAnchorRef.current && createPortal(<DateCalendar anchor={pickerAnchorRef.current} initialDate={pickerInitialDate()} onSelect={pickDate} onClose={() => setCalendarOpen(false)}/>, document.body)}</span></label>
       <label className="media-edit-row"><span>GPS</span><input value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/></label>
-      <div className="action-row">
-        <button type="button" disabled={saving || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
-        {gps && <button type="button" className="secondary" onClick={() => navigate(`/map?item=${current.id}`)}>Open on map</button>}
-      </div>
+      {(item.kind === "image" || item.kind === "video") && adjust && onAdjustChange && <div className="media-adjust" role="group" aria-label="Media adjustments">
+        <span className="media-adjust-title">Media adjustments</span>
+        {([
+          ["Media brightness", "brightness", adjust.brightness, 20, 300, 5] as const,
+          ["Media contrast", "contrast", adjust.contrast, 20, 300, 5] as const,
+          ["Media hue", "hue", adjust.hue, -360, 360, 5] as const,
+          ["Media saturation", "saturation", adjust.saturation, 0, 400, 5] as const,
+          ["Media gamma", "gamma", adjust.gamma, 20, 300, 5] as const,
+        ]).map(([label, key, value, min, max, step]) => (
+          <label key={key} className="media-adjust-row">
+            <span>{label}</span>
+            <input type="range" min={min} max={max} step={step} value={value} aria-label={label}
+              onChange={event => onAdjustChange({[key]: Number(event.currentTarget.value)} as Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)}/>
+          </label>
+        ))}
+        <div className="media-adjust-actions">
+          <button type="button" onClick={onSaveAdjust}>Save adjustments</button>
+          <button type="button" onClick={onResetAdjust}>Reset adjustments</button>
+        </div>
+        {adjustSaved && <span className="media-adjust-saved" role="status">Adjustments saved</span>}
+      </div>}
       {error && <p className="error">{error}</p>}
-    </div> : <div role="tabpanel" aria-label="Metadata" aria-labelledby="media-tab-metadata"><MetadataSummary metadata={current.metadata}/></div>}
+    </div>}
+    {activeTab === "metadata" && <div role="tabpanel" aria-label="Metadata" aria-labelledby="media-tab-metadata"><MetadataSummary metadata={current.metadata}/></div>}
+    {activeTab === "notes" && <div className="media-edit" role="tabpanel" aria-label="Notes" aria-labelledby="media-tab-notes">
+      <label className="media-edit-row media-notes-row"><span>Notes</span><textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Add notes about this media"/></label>
+    </div>}
+    <div className="action-row media-action-row">
+      <button type="button" disabled={saving || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+      {gps && <Link to={`/map?item=${current.id}`} className="secondary action-link" title="Open on map">Open on map</Link>}
+    </div>
   </div>;
 }
 
@@ -4193,7 +4585,7 @@ function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"
   return {mode: reasons.length > 0 ? "transcoded" : "original", reasons};
 }
 
-function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,imageRotation,imagePan,drag,onPointerDown,onPointerMove,onPointerUp,onPointerCancel}:{item:Media; supported:string[]; isFullscreen?:boolean; onToggleFullscreen?:()=>void; imageZoom?:number; imageRotation?:number; imagePan?:{x:number;y:number}; drag?:{pointerId:number}|null; onPointerDown?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerMove?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerUp?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerCancel?:(e:React.PointerEvent<HTMLElement>)=>void}) {
+function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,imageRotation,imagePan,drag,adjust,ready,onPointerDown,onPointerMove,onPointerUp,onPointerCancel}:{item:Media; supported:string[]; isFullscreen?:boolean; onToggleFullscreen?:()=>void; imageZoom?:number; imageRotation?:number; imagePan?:{x:number;y:number}; drag?:{pointerId:number}|null; adjust:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; ready?:boolean; onPointerDown?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerMove?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerUp?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerCancel?:(e:React.PointerEvent<HTMLElement>)=>void}) {
   const metadataDuration = videoMetadataDuration(item.metadata);
   const [thumbs, setThumbs] = useState<VideoThumbnail[]>([]);
   const [hover, setHover] = useState<VideoThumbnail|null>(null);
@@ -4214,6 +4606,10 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
   const [reportOpen, setReportOpen] = useState(false);
   const [seekNotice, setSeekNotice] = useState<string|null>(null);
   const seekNoticeTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [volumeOpen, setVolumeOpen] = useState(false);
+  const volumeRef = useRef<HTMLSpanElement|null>(null);
   const targetSlot = active === 0 ? 1 : 0;
   useEffect(() => { api.videoThumbnails(item.id).then(setThumbs).catch(() => setThumbs([])); }, [item.id]);
   useEffect(() => () => {
@@ -4221,10 +4617,53 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
     if (seekNoticeTimer.current !== null) clearTimeout(seekNoticeTimer.current);
   }, []);
   useEffect(() => { activeRef.current = active; }, [active]);
+  useEffect(() => {
+    // Keep the audible element in sync with the volume control. Applied
+    // imperatively because React does not manage the media `volume` property.
+    const video = activeVideo();
+    if (!video) return;
+    video.muted = muted;
+    video.volume = volume;
+  }, [muted, volume, active]);
+  useEffect(() => {
+    // The volume panel floats above the control bar; close it on outside
+    // clicks and Escape so it never needs a second tap to dismiss.
+    if (!volumeOpen) return;
+    const handler = (event:PointerEvent) => {
+      if (volumeRef.current && volumeRef.current.contains(event.target as Node)) return;
+      setVolumeOpen(false);
+    };
+    const keyHandler = (event:KeyboardEvent) => { if (event.key === "Escape") setVolumeOpen(false); };
+    document.addEventListener("pointerdown", handler);
+    document.addEventListener("keydown", keyHandler);
+    return () => {
+      document.removeEventListener("pointerdown", handler);
+      document.removeEventListener("keydown", keyHandler);
+    };
+  }, [volumeOpen]);
   const toggleRef = useRef(toggle);
   toggleRef.current = toggle;
+  const jumpRef = useRef(jump);
+  jumpRef.current = jump;
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
+  const stoppedRef = useRef(stopped);
+  stoppedRef.current = stopped;
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
+      // Arrows while a clip is playing scrub through it (holding the key scans
+      // fast via auto-repeat) instead of switching to the adjacent item; only
+      // once playback is paused/stopped do Left/Right fall through to the
+      // viewer's previous/next navigation. Modifier combos are left alone
+      // (Ctrl+arrows drive zoom).
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        if (isEditableTarget(event.target) || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+        if (stoppedRef.current || !playingRef.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        jumpRef.current(event.key === "ArrowRight" ? 5 : -5);
+        return;
+      }
       if (event.key !== " ") return;
       // Space while typing in a field should insert a space, not toggle playback.
       if (isEditableTarget(event.target)) return;
@@ -4252,6 +4691,21 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
     if (!video) return;
     if (video.paused) void video.play();
     else video.pause();
+  }
+  function toggleMuted() {
+    setMuted(value => {
+      const next = !value;
+      const video = activeVideo();
+      if (video) video.muted = next;
+      return next;
+    });
+  }
+  function changeVolume(level:number) {
+    setVolume(level);
+    const video = activeVideo();
+    if (video) video.volume = level;
+    if (level === 0) setMuted(true);
+    else if (muted) setMuted(false);
   }
   function seek(value:number) {
     if (!Number.isFinite(duration)) return;
@@ -4321,9 +4775,10 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
   function renderVideo(slot:number) {
     const isActive = active === slot;
     const offset = offsets[slot];
-    return <video key={`slot-${slot}-${offset}`} ref={videoRefs[slot]} src={api.playbackUrl(item.id, supported, offset)}
-      style={isActive ? undefined : {visibility:"hidden", position:"absolute", top:0, left:0, width:"100%"}}
-      preload="auto" muted={!isActive} autoPlay={isActive && playing} playsInline
+    const filterStyle = { filter: applyAdjust(adjust) };
+    return <video key={`slot-${slot}-${offset}`} ref={videoRefs[slot]} src={api.playbackUrl(item.id, supported, offset)} poster={api.thumbnailUrl(item.id, 0)}
+      style={isActive ? filterStyle : {...filterStyle, visibility:"hidden", position:"absolute", top:0, left:0, width:"100%"}}
+      preload="auto" muted={!isActive || muted} autoPlay={isActive && playing} playsInline
       onCanPlay={() => {
         if (isActive) return;
         if (pending === null || offsets[slot] !== pending) return;
@@ -4332,7 +4787,7 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
         setActive(slot);
         const el = videoRefs[slot].current;
         if (!el) return;
-        el.muted = false;
+        el.muted = muted;
         if (playing) {
           try { void el.play(); } catch { /* ignore */ }
         } else el.pause();
@@ -4346,7 +4801,7 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
   }
   return <div className="video-box">
     {stopped ? <div className="video-stack video-stopped" aria-label="Video stopped" onDoubleClick={onVideoDoubleClick}/> :
-    <div className={`video-stack${imageZoom != null && imageZoom > 1 ? " zoomed-image" : ""}${drag ? " panning-image" : ""}`} style={{transform:`translate(${imagePan?.x ?? 0}px, ${imagePan?.y ?? 0}px) rotate(${imageRotation}deg) scale(${imageZoom ?? 1})`}} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onDoubleClick={onVideoDoubleClick}>
+    <div className={`video-stack${imageZoom != null && imageZoom > 1 ? " zoomed-image" : ""}${drag ? " panning-image" : ""}`} style={{opacity:ready === false ? 0 : 1, transform:`translate(${imagePan?.x ?? 0}px, ${imagePan?.y ?? 0}px) rotate(${imageRotation}deg) scale(${imageZoom ?? 1})`}} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onDoubleClick={onVideoDoubleClick}>
       {renderVideo(active)}
       {transcoded && pending !== null && renderVideo(targetSlot)}
     </div>}
@@ -4369,6 +4824,15 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
       </div>
       <span className="video-time-total">{duration ? formatTime(duration) : "0:00"}</span>
       <button type="button" className="video-ctrl-icon video-ctrl-play" aria-label={playing ? "Pause" : "Play"} onClick={toggle}>{playing ? "❚❚" : "▶"}</button>
+      <span className="video-volume-control" ref={volumeRef}>
+        <button type="button" className="video-ctrl-icon video-ctrl-mute" aria-label="Volume control" aria-haspopup="true" aria-expanded={volumeOpen} onClick={() => setVolumeOpen(open => !open)}>{muted ? "🔇" : "🔊"}</button>
+        {volumeOpen && <div className="video-volume-popover" role="group">
+          <div className="video-volume-slot">
+            <input className="video-volume" type="range" min="0" max="1" step="0.05" value={volume} aria-label="Volume" onChange={event => changeVolume(Number(event.currentTarget.value))}/>
+          </div>
+          <button type="button" className="video-volume-mute" aria-label={muted ? "Unmute" : "Mute"} onClick={toggleMuted}>{muted ? "🔇" : "🔊"}</button>
+        </div>}
+      </span>
       <button type="button" className="video-ctrl-icon video-ctrl-stop" aria-label="Stop" onClick={stop}>■</button>
       {onToggleFullscreen && <button type="button" className="video-ctrl-icon video-ctrl-fullscreen" aria-label={isFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void onToggleFullscreen()}>{isFullscreen ? "⤡" : "⛶"}</button>}
     </div>
@@ -4490,6 +4954,13 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   }, [showNoGPS, folderScoped, libraryParam, folderParam]);
   const focused = items.find(item => item.id === Number(query.get("item")));
   const focusedGPS = focused ? parseGPS(focused.gps) : null;
+  // "Open on map" links to /map?item=… (no library/folder/favorite scope): show
+  // only that one item's marker instead of every marker in the whole library.
+  const displayItems = useMemo(() => {
+    if (folderScoped || libraryParam || favoriteParam || query.get("item") == null) return items;
+    const single = items.find(item => item.id === Number(query.get("item")));
+    return single ? [single] : items;
+  }, [items, query, folderScoped, libraryParam, favoriteParam]);
   function setByCoordinates() {
     const pt = parseGPS(coordinateInput.trim());
     if (!pt) { setCoordinateError("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614)."); return; }
@@ -4638,7 +5109,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <ScaleControl position="bottomleft" imperial={false}/>
         <PlaceSearch/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
-        <MapItems items={items} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo}/>
+        <MapItems items={displayItems} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo}/>
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
@@ -4812,6 +5283,7 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
   const [width, setWidth] = useState<number | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{pointer:number; width:number} | null>(null);
+  const thumb = useContext(ThumbCtx);
   const effectiveWidth = width ?? panelRef.current?.offsetWidth ?? 360;
   function startResize(event:React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -4838,7 +5310,11 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   }
-  return <aside ref={panelRef} className={`map-timeline-panel${width != null ? " resized" : ""}`} aria-label="Selected area" style={width != null ? {width} : undefined}>
+  const style = {
+    ...(width != null ? {width} : {}),
+    "--thumb-tile": mapThumbTile(thumb.min, thumb.max),
+  } as CSSProperties;
+  return <aside ref={panelRef} className={`map-timeline-panel${width != null ? " resized" : ""}`} aria-label="Selected area" style={style}>
     <div className="map-resize-handle" aria-hidden="true" onPointerDown={startResize}/>
     <div className="map-timeline-head">
       <strong>{sorted.length} {sorted.length === 1 ? "item" : "items"}</strong>
@@ -4849,14 +5325,20 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
     {sorted.length === 0 ? <div className="empty-state"><p>No media with GPS inside the selected area.</p></div> :
       <div className="timeline-grid map-area-grid">{groups.map(group =>
         <div className="timeline-group" key={group.label}>
-          <span className="timeline-group-date">{group.label}</span>
-          <span className="timeline-group-dot" aria-hidden="true"/>
+          <div className="timeline-group-caption">{group.label}</div>
           <div className="timeline-group-grid">{group.items.map(item =>
             <MapAreaItem key={item.id} item={item} sort={sort} selection={sorted}/>
           )}</div>
         </div>
       )}</div>}
   </aside>;
+}
+
+// The map side panels use the generic thumbnail min/max, and the tile grid
+// template is built here so max 0 keeps the legacy "grow with the panel"
+// behavior while min == max freezes the size.
+function mapThumbTile(min:number, max:number) {
+  return max > 0 ? `minmax(${min}px, ${max}px)` : `minmax(${min}px, 1fr)`;
 }
 
 function MapAreaItem({item,sort,selection}:{item:MapMedia; sort:"desc"|"asc"; selection:MapMedia[]}) {
@@ -4870,22 +5352,25 @@ function MapAreaItem({item,sort,selection}:{item:MapMedia; sort:"desc"|"asc"; se
 }
 
 function NoGPSPanel({items,loading,libraryId,folderId,onClose}:{items:Media[]; loading:boolean; libraryId:ID; folderId:ID; onClose:()=>void}) {
-  const sorted = useMemo(() => sortMedia(items, "desc"), [items]);
+  const thumb = useContext(ThumbCtx);
+  const style = {"--thumb-tile": mapThumbTile(thumb.min, thumb.max)} as CSSProperties;
+  const [sort, setSort] = useState<"desc"|"asc">("desc");
+  const sorted = useMemo(() => sortMedia(items, sort), [items, sort]);
   const visible = useProgressiveReveal(sorted, 100);
   const groups = useMemo(() => groupByDate(visible), [visible]);
-  return <aside className="map-timeline-panel nogps" aria-label="Media without GPS in this folder">
+  return <aside className="map-timeline-panel nogps" aria-label="Media without GPS in this folder" style={style}>
     <div className="map-timeline-head">
       <strong>{sorted.length} {sorted.length === 1 ? "item" : "items"} without GPS</strong>
+      <button className="secondary" onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
       <button className="secondary" onClick={onClose}>Close</button>
     </div>
     {loading && <p className="map-render-status inline" role="status">Loading media without GPS…</p>}
     {!loading && sorted.length === 0 ? <div className="empty-state"><p>Every item in this folder has GPS.</p></div> :
       <div className="timeline-grid map-area-grid">{groups.map(group =>
         <div className="timeline-group" key={group.label}>
-          <span className="timeline-group-date">{group.label}</span>
-          <span className="timeline-group-dot" aria-hidden="true"/>
+          <div className="timeline-group-caption">{group.label}</div>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <Link key={item.id} className="map-area-item" to={libraryItemURL(libraryId, item, "date", {root:String(folderId), gps:"nogps"})} aria-label={`Open ${item.name} in folder`}>
+            <Link key={item.id} className="map-area-item" to={libraryItemURL(libraryId, item, sort === "asc" ? "date-asc" : "date", {root:String(folderId), gps:"nogps"})} aria-label={`Open ${item.name} in folder`}>
               <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
               <small>{item.name}</small>
             </Link>
@@ -5128,7 +5613,11 @@ function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onR
       const icon = cluster.items.length === 1
         ? mediaPointIcon(trajectoryIds.has(item.id) ? (item.trajectoryStart ? "start" : item.trajectoryEnd ? "end" : "none") : "none")
         : clusterIcon(cluster.items.length);
-      return <Marker key={cluster.id} position={[cluster.lat, cluster.lng]} icon={icon} eventHandlers={{click: () => { if (selectMode) return; onSelectCluster(cluster.items); }}} />;
+      return <Marker key={cluster.id} position={[cluster.lat, cluster.lng]} icon={icon} eventHandlers={{click: () => { if (selectMode) return; onSelectCluster(cluster.items); }}}>
+        {!selectMode && <Popup>
+          <MediaGPSCopyPopup title={cluster.items.length === 1 ? item.name : `${cluster.items.length} media · first item`} gps={item.gps}/>
+        </Popup>}
+      </Marker>;
     })}
     {pickedGPS && parseGPS(pickedGPS) && <Marker position={parseGPS(pickedGPS)!} icon={pickedPointIcon()}>
       <Popup><PickedPointPopup gps={pickedGPS} onSetGPS={gps => { onPick(gps); flyToPoint(gps); }}/></Popup>
@@ -5161,14 +5650,17 @@ function poiCategoriesLabel(selected:POICategory[]) {
 
 function POICategoryPanel({anchor, selected, onChange, onClose}:{anchor:HTMLElement; selected:POICategory[]; onChange:(next:POICategory[])=>void; onClose:()=>void}) {
   const ref = useRef<HTMLDivElement|null>(null);
-  const [position, setPosition] = useState<{top:number; right:number}>(() => computePosition(anchor));
+  const [position, setPosition] = useState<{top:number; left:number}>(() => dropdownBelow(anchor, 0));
   useEffect(() => {
     const handler = (event:PointerEvent) => { if (ref.current && !ref.current.contains(event.target as Node) && !anchor.contains(event.target as Node)) onClose(); };
     const keyHandler = (event:KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    const reposition = () => setPosition(computePosition(anchor));
+    // Clamp the left edge once the real panel width is known, so the popup
+    // cannot slide past the right edge of the viewport.
+    const reposition = () => setPosition(dropdownBelow(anchor, ref.current?.offsetWidth ?? 0));
     window.addEventListener("resize", reposition);
     document.addEventListener("pointerdown", handler);
     document.addEventListener("keydown", keyHandler);
+    reposition();
     return () => {
       window.removeEventListener("resize", reposition);
       document.removeEventListener("pointerdown", handler);
@@ -5178,7 +5670,7 @@ function POICategoryPanel({anchor, selected, onChange, onClose}:{anchor:HTMLElem
   function toggle(id:POICategory, checked:boolean) {
     onChange(checked ? [...selected, id] : selected.filter(c => c !== id));
   }
-  return <div className="poi-cat-panel" ref={ref} role="dialog" aria-label="POI categories" style={{top:position.top, right:position.right}}
+  return <div className="poi-cat-panel" ref={ref} role="dialog" aria-label="POI categories" style={{top:position.top, left:position.left}}
     onKeyDown={event => event.stopPropagation()}>
     {POI_CATEGORIES.map(cat => (
       <label key={cat.id} className="poi-cat-row">
@@ -5198,14 +5690,15 @@ function POICategoryPanel({anchor, selected, onChange, onClose}:{anchor:HTMLElem
 // is shown until at least one trajectory is checked (none selected by default).
 function TrajectoryFilterPanel({anchor, segments, selected, onChange, onClose}:{anchor:HTMLElement; segments:TrajectorySegment[]; selected:number[]; onChange:(next:number[])=>void; onClose:()=>void}) {
   const ref = useRef<HTMLDivElement|null>(null);
-  const [position, setPosition] = useState<{top:number; right:number}>(() => computePosition(anchor));
+  const [position, setPosition] = useState<{top:number; left:number}>(() => dropdownBelow(anchor, 0));
   useEffect(() => {
     const handler = (event:PointerEvent) => { if (ref.current && !ref.current.contains(event.target as Node) && !anchor.contains(event.target as Node)) onClose(); };
     const keyHandler = (event:KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    const reposition = () => setPosition(computePosition(anchor));
+    const reposition = () => setPosition(dropdownBelow(anchor, ref.current?.offsetWidth ?? 0));
     window.addEventListener("resize", reposition);
     document.addEventListener("pointerdown", handler);
     document.addEventListener("keydown", keyHandler);
+    reposition();
     return () => {
       window.removeEventListener("resize", reposition);
       document.removeEventListener("pointerdown", handler);
@@ -5215,7 +5708,7 @@ function TrajectoryFilterPanel({anchor, segments, selected, onChange, onClose}:{
   function toggle(index:number, checked:boolean) {
     onChange(checked ? [...selected, index] : selected.filter(i => i !== index));
   }
-  return <div className="poi-cat-panel trajectory-filter-panel" ref={ref} role="dialog" aria-label="Trajectories" style={{top:position.top, right:position.right}}
+  return <div className="poi-cat-panel trajectory-filter-panel" ref={ref} role="dialog" aria-label="Trajectories" style={{top:position.top, left:position.left}}
     onKeyDown={event => event.stopPropagation()}>
     {segments.map((segment, index) => (
       <label key={index} className="poi-cat-row">
@@ -5258,6 +5751,29 @@ function PickedPointPopup({gps,onSetGPS}:{gps:string; onSetGPS:(gps:string)=>voi
       <button type="button" className="secondary" onClick={setPoint}>Set point</button>
     </div>
     {status && <small className={status === "Point set." || status === "Copied." ? "success" : "error"}>{status}</small>}
+  </div>;
+}
+
+function MediaGPSCopyPopup({title, gps}:{title:string; gps:string}) {
+  const [value, setValue] = useState(gps);
+  const [status, setStatus] = useState("");
+  useEffect(() => { setValue(gps); setStatus(""); }, [gps]);
+  async function copyGPS() {
+    try {
+      await copyText(value.trim());
+      setStatus("Copied.");
+    } catch {
+      setStatus("Could not copy automatically. Select and copy the field manually.");
+    }
+  }
+  return <div className="map-item picked-point-popup">
+    <strong>{title}</strong>
+    <small>Copy the GPS coordinates of this marker.</small>
+    <input aria-label="GPS coordinates" value={value} onChange={event => setValue(event.target.value)} placeholder="lat, lng e.g. 50.45,30.52"/>
+    <div className="picked-point-actions">
+      <button type="button" className="secondary" onClick={copyGPS}>Copy</button>
+    </div>
+    {status && <small className={status === "Copied." ? "success" : "error"}>{status}</small>}
   </div>;
 }
 
@@ -5313,12 +5829,12 @@ export function TrajectoryPopup(props:{item:MapMedia; onSetStart:(item:MapMedia,
   return <TrajectoryDialog item={props.item} onClose={() => {}} onSetStart={props.onSetStart} onSetEnd={props.onSetEnd} onSetName={props.onSetName}/>;
 }
 
-export function TrajectoryNameDialog({item,onClose,onSave}:{item:Media; onClose:()=>void; onSave:(name:string)=>Promise<void>}) {
-  const [value, setValue] = useState(item.trajectoryName ?? "");
+export function TrajectoryNameDialog({item,onClose,onSave,onRemove,initialName,rename=false}:{item:Media; onClose:()=>void; onSave:(name:string)=>Promise<void>; onRemove?:()=>Promise<void>; initialName?:string; rename?:boolean}) {
+  const [value, setValue] = useState(initialName ?? item.trajectoryName ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
-  useEffect(() => { setValue(item.trajectoryName ?? ""); setSaved(false); }, [item.id, item.trajectoryName]);
+  useEffect(() => { setValue(initialName ?? item.trajectoryName ?? ""); setSaved(false); }, [item.id, item.trajectoryName, initialName]);
   async function submit(event:FormEvent) {
     event.preventDefault();
     const trimmed = value.trim();
@@ -5327,14 +5843,22 @@ export function TrajectoryNameDialog({item,onClose,onSave}:{item:Media; onClose:
     catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }
   }
+  async function remove() {
+    if (!onRemove) return;
+    setBusy(true); setError(""); setSaved(false);
+    try { await onRemove(); onClose(); }
+    catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  }
   return <ModalBackdrop ariaLabel={`Name trajectory for ${item.name}`} onClick={event => closeOnBackdropClick(event as unknown as React.MouseEvent<HTMLDivElement>, onClose)}>
-    <div className="card settings modal" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
-      <div className="panel-title"><h2>New trajectory for {item.name}</h2><button type="button" className="secondary" disabled={busy} onClick={onClose}>Close</button></div>
+    <div className="card settings modal trajectory-name-modal" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
+      <div className="panel-title"><h2>{rename ? "Rename trajectory" : "New trajectory"}</h2><button type="button" className="secondary" disabled={busy} onClick={onClose}>Close</button></div>
       {error && <p className="error">{error}</p>}
       <form onSubmit={submit}>
-        <div className="form-row">
-          <label>Trajectory name<input aria-label="Trajectory name" placeholder="Trajectory name" value={value} disabled={busy} onChange={event => { setValue(event.target.value); setSaved(false); }} autoFocus /></label>
-          <button type="submit" disabled={busy}>Save</button>
+        <input aria-label="Trajectory name" placeholder="Trajectory name" value={value} disabled={busy} onChange={event => { setValue(event.target.value); setSaved(false); }} autoFocus />
+        <div className="action-row">
+          {onRemove && <button type="button" className="secondary" disabled={busy} onClick={() => void remove()}>Unset</button>}
+          <button type="submit" disabled={busy}>{rename ? "Rename" : "Save"}</button>
         </div>
         {saved && <small className="success">Saved.</small>}
       </form>

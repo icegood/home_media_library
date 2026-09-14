@@ -336,6 +336,58 @@ func TestRefreshSkipsAlreadyIndexedMedia(t *testing.T) {
 	}
 }
 
+func TestRescanKeepsUserNotes(t *testing.T) {
+	root := t.TempDir()
+	photoPath := filepath.Join(root, "one.jpg")
+	if err := os.WriteFile(photoPath, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repository := openSQLite(t)
+	library := scanner.NewLibrary("Photos", []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}})
+	var err error
+	library, err = repository.CreateLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := scanner.Scanner{Store: repository}
+	if err := subject.Scan(context.Background(), library); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := repository.EntriesForFolder(context.Background(), 0, library.ID, library.Roots[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item *domain.Media
+	for _, entry := range entries.Entries {
+		if entry.Type == "media" && entry.Media.RelativePath == "one.jpg" {
+			item = entry.Media
+			break
+		}
+	}
+	if item == nil {
+		t.Fatalf("scanned media not found: %#v", entries)
+	}
+	userNotes := "keep me across refreshes"
+	if _, err := repository.UpdateMediaDetails(context.Background(), item.ID, domain.MediaDetailsPatch{Notes: &userNotes}); err != nil {
+		t.Fatal(err)
+	}
+	// The full rescan and the incremental per-folder rescan are the refresh
+	// jobs; notes is the user-only field and neither job may blank it.
+	if err := subject.Scan(context.Background(), library); err != nil {
+		t.Fatal(err)
+	}
+	if err := subject.ScanFolder(context.Background(), library, item.FolderID); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := repository.Media(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Notes != userNotes {
+		t.Fatalf("refresh jobs cleared the user notes, got %q", loaded.Notes)
+	}
+}
+
 func TestMetadataErrorIsStoredAndPreventsRetry(t *testing.T) {
 	root := t.TempDir()
 	failingTool := filepath.Join(root, "fail-exif")
