@@ -1693,6 +1693,32 @@ func (s *SQLite) UpdateMediaDetails(ctx context.Context, id int, patch domain.Me
 	return s.Media(ctx, id)
 }
 
+func (s *SQLite) MediaAdjust(ctx context.Context, mediaID int) (domain.MediaAdjust, error) {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return domain.MediaAdjust{}, err
+	}
+	var adjust domain.MediaAdjust
+	err := s.db.QueryRowContext(ctx, `SELECT brightness, hue, saturation, gamma, contrast, rotation FROM video_adjust WHERE media_id = ?`, mediaID).
+		Scan(&adjust.Brightness, &adjust.Hue, &adjust.Saturation, &adjust.Gamma, &adjust.Contrast, &adjust.Rotation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DefaultMediaAdjust(), nil
+	}
+	if err != nil {
+		return domain.MediaAdjust{}, err
+	}
+	return adjust, nil
+}
+
+func (s *SQLite) SaveMediaAdjust(ctx context.Context, mediaID int, adjust domain.MediaAdjust) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO video_adjust(media_id, brightness, hue, saturation, gamma, contrast, rotation) VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(media_id) DO UPDATE SET brightness = excluded.brightness, hue = excluded.hue, saturation = excluded.saturation, gamma = excluded.gamma, contrast = excluded.contrast, rotation = excluded.rotation`,
+		mediaID, adjust.Brightness, adjust.Hue, adjust.Saturation, adjust.Gamma, adjust.Contrast, adjust.Rotation)
+	return err
+}
+
 func (s *SQLite) SetTrajectoryStart(ctx context.Context, folderID, mediaID int, start bool) error {
 	if _, err := s.Media(ctx, mediaID); err != nil {
 		return err
@@ -1939,7 +1965,8 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	case libraryID > 0:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
@@ -1948,7 +1975,8 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	default:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
@@ -1957,7 +1985,8 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	}
 	args := []any{}
@@ -2036,8 +2065,9 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
-		FROM media m JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
-		WHERE g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
+		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
+		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
+			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	case libraryID > 0:
@@ -2046,8 +2076,9 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
-		FROM media m JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
-		WHERE g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
+		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
+		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
+			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	default:
@@ -2056,8 +2087,9 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
-		FROM media m JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
-		WHERE g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
+		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
+		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
+			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	}

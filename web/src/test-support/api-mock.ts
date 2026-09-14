@@ -49,6 +49,7 @@ function createMockApi() {
         [100, mediaRow()],
         [999, mediaRow({id:999})]
       ]),
+      mediaAdjust:new Map<number, {brightness:number; hue:number; saturation:number; gamma:number; contrast:number; rotation:number}>(),
       libraryMedia:new Map<number, Media[]>(),
       favoriteViews:[] as FavoriteViewRow[],
       favoriteItems:new Map<number, Set<number>>(),
@@ -272,6 +273,48 @@ function createMockApi() {
       JSON.parse(JSON.stringify(state.libraryMedia.get(Number(libraryId)) ?? [...state.media.values()].filter(row => row.kind === "image")))),
     folderMedia: vi.fn(async (_libraryId:number, folderId:number) =>
       JSON.parse(JSON.stringify([...state.media.values()].filter(row => row.folderId === Number(folderId))))),
+    mediaNeighbors: vi.fn(async (_libraryId:number, folder:number|"all", anchorId:number, options?:{sort?:string; kind?:string; gps?:string; before?:number; after?:number}) => {
+      const anchor = state.media.get(Number(anchorId));
+      if (!anchor) throw new Error(`media ${anchorId} not found`);
+      // Scope: whole library when folder is "all", 0 or absent; otherwise the
+      // folder subtree (recursive walk over the parent link).
+      const scope = Number(folder);
+      const folderIds = new Set<number>();
+      if (Number.isFinite(scope) && scope > 0) {
+        const childrenOf = new Map<number, number[]>();
+        for (const row of state.folders.values()) {
+          const list = childrenOf.get(row.parentId) ?? [];
+          list.push(row.id);
+          childrenOf.set(row.parentId, list);
+        }
+        const stack = [scope];
+        while (stack.length > 0) {
+          const current = stack.pop()!;
+          if (folderIds.has(current)) continue;
+          folderIds.add(current);
+          for (const child of childrenOf.get(current) ?? []) stack.push(child);
+        }
+      }
+      const rows = [...state.media.values()].filter(row =>
+        (folderIds.size === 0 || folderIds.has(row.folderId)) &&
+        (options?.kind == null || row.kind === options.kind) &&
+        (options?.gps == null || (options.gps === "gps" ? Boolean(row.gps) : !row.gps)));
+      rows.sort((a:Media, b:Media) => {
+        if (options?.sort === "date" || options?.sort === "date-asc") {
+          const ta = a.takenAt || "", tb = b.takenAt || "";
+          if (ta !== tb) return options.sort === "date-asc" ? (ta < tb ? -1 : 1) : (ta < tb ? 1 : -1);
+        }
+        const na = a.name.toLowerCase(), nb = b.name.toLowerCase();
+        if (na !== nb) return na < nb ? -1 : 1;
+        return a.id - b.id;
+      });
+      const idx = rows.findIndex(row => row.id === Number(anchorId));
+      if (idx < 0) throw new Error(`media ${anchorId} out of scope`);
+      const beforeCount = options?.before ?? 1, afterCount = options?.after ?? 1;
+      const before = rows.slice(Math.max(0, idx - beforeCount), idx).reverse();
+      const after = rows.slice(idx + 1, idx + 1 + afterCount);
+      return JSON.parse(JSON.stringify({anchor:rows[idx], before, after}));
+    }),
     media: vi.fn(async (id:number) => {
       const row = state.media.get(Number(id));
       if (!row) throw new Error(`media ${id} not found`);
@@ -300,6 +343,26 @@ function createMockApi() {
       if (!row) throw new Error(`media ${id} not found`);
       Object.assign(row, {name:input.name, gps:input.gps ?? "", takenAt:input.takenAt ?? ""});
       return JSON.parse(JSON.stringify(row));
+    }),
+    getAdjust: vi.fn(async (id:number) => {
+      const row = state.media.get(Number(id));
+      if (!row) throw new Error(`media ${id} not found`);
+      return {...state.mediaAdjust.get(Number(id)) ?? {brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:0}};
+    }),
+    saveAdjust: vi.fn(async (id:number, adjust:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number; rotation:number}) => {
+      const row = state.media.get(Number(id));
+      if (!row) throw new Error(`media ${id} not found`);
+      const rotation = Math.round(((adjust.rotation % 360) + 360) % 360 / 90) * 90;
+      const clamped = {
+        brightness:Math.min(3, Math.max(0.2, adjust.brightness)),
+        hue:Math.min(360, Math.max(-360, adjust.hue)),
+        saturation:Math.min(4, Math.max(0, adjust.saturation)),
+        gamma:Math.min(3, Math.max(0.2, adjust.gamma)),
+        contrast:Math.min(3, Math.max(0.2, adjust.contrast)),
+        rotation
+      };
+      state.mediaAdjust.set(Number(id), clamped);
+      return {...clamped};
     }),
     setTrajectoryStart: vi.fn(async (id:number, folderId:number, start:boolean) => {
       const row = state.media.get(Number(id));

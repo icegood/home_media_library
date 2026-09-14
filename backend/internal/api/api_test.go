@@ -1114,6 +1114,118 @@ func TestVisibleUserCanReadFolderTimelineMediaRecursively(t *testing.T) {
 	}
 }
 
+func TestMediaNeighborsReturnsBoundedWindow(t *testing.T) {
+	f := setup(t)
+	photo := func(name, takenAt, mime string, gps string) domain.Media {
+		item, err := f.store.UpsertMedia(context.Background(), domain.Media{
+			ID: domain.InvalidID, FolderID: f.folderID,
+			Path: filepath.Join(f.mediaRoot, name), RelativePath: name, Name: name,
+			Kind: domain.KindFromMIME(mime), MIMEType: mime,
+			TakenAt: takenAt, GPS: gps,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	oldPhoto := photo("old.jpg", "2024-05-06T07:08:09Z", "image/jpeg", "")
+	aPhoto := photo("a.jpg", "2026-01-01T10:00:00Z", "image/jpeg", "")
+	bPhoto := photo("b.jpg", "2026-01-02T10:00:00Z", "image/jpeg", "")
+	cPhoto := photo("c.jpg", "2026-01-03T10:00:00Z", "image/jpeg", "50.0,30.0")
+	video := photo("clip.mp4", "2026-01-04T10:00:00Z", "video/mp4", "50.0,30.0")
+
+	alice := login(t, f.handler, "alice")
+	get := func(query string) domain.MediaNeighbors {
+		url := fmt.Sprintf("/api/v1/libraries/%d/media/neighbors?%s", f.libraryID, query)
+		response := request(f.handler, http.MethodGet, url, alice, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("neighbors status = %d: %s", response.Code, response.Body)
+		}
+		var result domain.MediaNeighbors
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	// date (desc, newest first): before = newer, after = older.
+	result := get(fmt.Sprintf("anchor=%d&sort=date&before=1&after=1", bPhoto.ID))
+	if result.Anchor.ID != bPhoto.ID {
+		t.Fatalf("anchor = %d, want %d", result.Anchor.ID, bPhoto.ID)
+	}
+	if len(result.Before) != 1 || result.Before[0].ID != cPhoto.ID {
+		t.Fatalf("desc before = %#v, want only newer %d", ids(result.Before), cPhoto.ID)
+	}
+	if len(result.After) != 1 || result.After[0].ID != aPhoto.ID {
+		t.Fatalf("desc after = %#v, want only older %d", ids(result.After), aPhoto.ID)
+	}
+
+	// date-asc (oldest first): before = older, after = newer.
+	result = get(fmt.Sprintf("anchor=%d&sort=date-asc&before=1&after=1", bPhoto.ID))
+	if len(result.Before) != 1 || result.Before[0].ID != aPhoto.ID {
+		t.Fatalf("asc before = %#v, want only older %d", ids(result.Before), aPhoto.ID)
+	}
+	if len(result.After) != 1 || result.After[0].ID != cPhoto.ID {
+		t.Fatalf("asc after = %#v, want only newer %d", ids(result.After), cPhoto.ID)
+	}
+
+	// Edge of the list: the oldest photo has no date-asc before, the newest no
+	// desc before; both still have neighbors on the other side.
+	if got := get(fmt.Sprintf("anchor=%d&sort=date-asc&before=2&after=2", oldPhoto.ID)); len(got.Before) != 0 || len(got.After) == 0 {
+		t.Fatalf("oldest asc edges: before=%#v after=%#v, want empty before and a non-empty after", ids(got.Before), ids(got.After))
+	}
+	if got := get(fmt.Sprintf("anchor=%d&sort=date&before=2&after=2", video.ID)); len(got.Before) != 0 || len(got.After) == 0 {
+		t.Fatalf("newest desc edges: before=%#v after=%#v, want empty before and a non-empty after", ids(got.Before), ids(got.After))
+	}
+
+	// kind filter excludes the video from date neighbors.
+	result = get(fmt.Sprintf("anchor=%d&sort=date-asc&kind=image&before=5&after=5", aPhoto.ID))
+	for _, item := range append(append([]domain.Media{}, result.Before...), result.After...) {
+		if item.ID == video.ID {
+			t.Fatalf("kind=image window leaked video %d", item.ID)
+		}
+	}
+
+	// gps=only window excludes non-geotagged media.
+	result = get(fmt.Sprintf("anchor=%d&sort=date-asc&gps=gps&before=5&after=5", cPhoto.ID))
+	for _, item := range append(append([]domain.Media{}, result.Before...), result.After...) {
+		if item.GPS == "" {
+			t.Fatalf("gps=gps window leaked non-geotagged %d", item.ID)
+		}
+	}
+
+	// Whole-library scope (folder omitted) sees the anchor and both neighbors.
+	url := fmt.Sprintf("/api/v1/libraries/%d/media/neighbors?anchor=%d&sort=date-asc&before=5&after=5", f.libraryID, bPhoto.ID)
+	response := request(f.handler, http.MethodGet, url, alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("library scope status = %d: %s", response.Code, response.Body)
+	}
+	var wide domain.MediaNeighbors
+	if err := json.Unmarshal(response.Body.Bytes(), &wide); err != nil {
+		t.Fatal(err)
+	}
+	if len(wide.Before) == 0 || len(wide.After) == 0 {
+		t.Fatalf("library scope window = before %#v after %#v, want neighbors on both sides", ids(wide.Before), ids(wide.After))
+	}
+
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/media/neighbors?anchor=999999", f.libraryID), alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("missing anchor status = %d, want 404", got)
+	}
+	bob := login(t, f.handler, "bob")
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/media/neighbors?anchor=%d", f.libraryID, bPhoto.ID), bob, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("bob neighbors status = %d, want 403", got)
+	}
+}
+
+// ids flattens a media slice to its ids for readable test failures.
+func ids(items []domain.Media) string {
+	out := make([]int, len(items))
+	for i, item := range items {
+		out[i] = item.ID
+	}
+	return fmt.Sprint(out)
+}
+
 func TestMediaContentServes(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")
@@ -2154,5 +2266,59 @@ func TestAboutExposesBuildAndRuntimeVersions(t *testing.T) {
 	}
 	if info.GatewayEnabled {
 		t.Errorf("gatewayEnabled = true, want false in the test fixture (gateway not enabled)")
+	}
+}
+
+func TestMediaAdjustDefaultsPersistAndClamp(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "admin")
+
+	// GET defaults
+	base := fmt.Sprintf("/api/v1/media/%d/adjust", f.photoID)
+	resp := request(f.handler, http.MethodGet, base, alice, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("get defaults status = %d: %s", resp.Code, resp.Body)
+	}
+	var defaults domain.MediaAdjust
+	if err := json.Unmarshal(resp.Body.Bytes(), &defaults); err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Brightness != 1 || defaults.Saturation != 1 || defaults.Gamma != 1 || defaults.Contrast != 1 || defaults.Hue != 0 || defaults.Rotation != 0 {
+		t.Fatalf("unexpected defaults: %+v", defaults)
+	}
+
+	// PUT custom
+	body, _ := json.Marshal(domain.MediaAdjust{Brightness: 1.5, Hue: -30, Saturation: 0.8, Gamma: 1.2, Contrast: 1.3, Rotation: 90})
+	saved := request(f.handler, http.MethodPut, base, alice, body)
+	if saved.Code != http.StatusOK {
+		t.Fatalf("put status = %d: %s", saved.Code, saved.Body)
+	}
+	fetched := request(f.handler, http.MethodGet, base, alice, nil)
+	var got domain.MediaAdjust
+	if err := json.Unmarshal(fetched.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Brightness != 1.5 || got.Hue != -30 || got.Saturation != 0.8 || got.Gamma != 1.2 || got.Contrast != 1.3 || got.Rotation != 90 {
+		t.Fatalf("saved mismatch: %+v", got)
+	}
+
+	// Clamp: values beyond range are stored at limits
+	clamp, _ := json.Marshal(domain.MediaAdjust{Brightness: 10, Hue: -500, Saturation: -5, Gamma: 0.01, Contrast: 10, Rotation: 45})
+	clamped := request(f.handler, http.MethodPut, base, alice, clamp)
+	if clamped.Code != http.StatusOK {
+		t.Fatalf("clamp put status = %d: %s", clamped.Code, clamped.Body)
+	}
+	clampResult := request(f.handler, http.MethodGet, base, alice, nil)
+	var clampGot domain.MediaAdjust
+	if err := json.Unmarshal(clampResult.Body.Bytes(), &clampGot); err != nil {
+		t.Fatal(err)
+	}
+	if clampGot.Brightness != 3.0 || clampGot.Hue != -360 || clampGot.Saturation != 0 || clampGot.Gamma != 0.2 || clampGot.Contrast != 3.0 || clampGot.Rotation != 0 {
+		t.Fatalf("clamped mismatch: %+v", clampGot)
+	}
+
+	// 404 on missing media
+	if got := request(f.handler, http.MethodGet, "/api/v1/media/99999/adjust", alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("missing media status = %d, want 404", got)
 	}
 }

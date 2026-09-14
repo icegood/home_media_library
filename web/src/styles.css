@@ -454,6 +454,10 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .timeline-group-date { padding: 3px 18px 0 0; text-align: right; font-size: .76rem; font-weight: 800; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-group-dot { position: absolute; left: 104px; top: 7px; width: 12px; height: 12px; border-radius: 50%; background: var(--timeline-dot); border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--timeline-dot); }
 .timeline-group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+/* The timeline grid renders every card (no windowing), so let the compositor
+   skip offscreen tiles during fast scrolls instead of dropping the whole
+   paint and leaving the shell (title/breadcrumbs) behind. */
+.timeline-grid .card { content-visibility: auto; contain: layout paint; contain-intrinsic-size: auto 214px; }
 
 /* ===== Grid & virtual scroll ===== */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 18px; }
@@ -623,7 +627,7 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .viewer-media:fullscreen .video-stack video, .viewer-media.ml-fullscreen .video-stack video { width: auto; height: auto; max-width: 100%; max-height: 100%; display: block; object-fit: contain; }
 .viewer-media:fullscreen .video-box video, .viewer-media.ml-fullscreen .video-box video { max-height: 100%; }
 .viewer-media:fullscreen.ml-controls-hidden .favorite-button, .viewer-media:fullscreen.ml-controls-hidden .viewer-download, .viewer-media:fullscreen.ml-controls-hidden .zoom-controls, .viewer-media:fullscreen.ml-controls-hidden .video-badge-wrap, .viewer-media:fullscreen.ml-controls-hidden .viewer-arrow, .viewer-media:fullscreen.ml-controls-hidden .timeline-preview, .viewer-media:fullscreen.ml-controls-hidden .video-controls, .viewer-media:fullscreen.ml-controls-hidden .viewer-fullscreen,
-.viewer-media.ml-fullscreen.ml-controls-hidden .favorite-button, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-download, .viewer-media.ml-fullscreen.ml-controls-hidden .zoom-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .video-badge-wrap, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-arrow, .viewer-media.ml-fullscreen.ml-controls-hidden .timeline-preview, .viewer-media.ml-fullscreen.ml-controls-hidden .video-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-fullscreen { display: none; }
+  .viewer-media.ml-fullscreen.ml-controls-hidden .favorite-button, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-download, .viewer-media.ml-fullscreen.ml-controls-hidden .zoom-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .video-badge-wrap, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-arrow, .viewer-media.ml-fullscreen.ml-controls-hidden .timeline-preview, .viewer-media.ml-fullscreen.ml-controls-hidden .video-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-fullscreen { display: none; }
 /* Exiting fullscreen: Android system back (popstate) or Esc in the browser;
    the "f" key still toggles. */
 body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fullscreen) .info-handle { display: none; }
@@ -713,6 +717,15 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 .video-controls { position: relative; z-index: 1; display: grid; grid-template-columns: auto minmax(180px, 1fr) auto auto auto auto; gap: 10px; align-items: center; padding: 12px calc(12px + var(--ml-safe-left, 0px)) var(--ml-safe-bottom, 0px) calc(12px + var(--ml-safe-right, 0px)); background: var(--video-bg); color: white; border-radius: 0 0 12px 12px; }
 .video-controls button { padding: 8px 12px; background: var(--overlay-btn-bg); border: 1px solid var(--video-controls-border); }
 .video-ctrl-icon { min-width: 40px; height: 38px; padding: 0 8px; display: grid; place-items: center; font-size: 16px; line-height: 1; }
+.media-adjust { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--overlay-border); }
+.media-adjust-title { font-weight: 800; }
+.media-adjust-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; }
+.media-adjust-row > span { grid-column: 1 / -1; font-size: .75rem; font-weight: 600; color: #fffc; }
+.media-adjust-row input { width: 100%; accent-color: #5da2ff; cursor: pointer; }
+.media-adjust-actions { display: flex; gap: 8px; margin-top: 8px; }
+.media-adjust-actions button { flex: 1; padding: 6px 8px; border-radius: 8px; background: var(--overlay-btn-bg); border: 1px solid var(--video-controls-border); color: #fff; cursor: pointer; font-size: .78rem; }
+.media-adjust-actions button:active { background: var(--primary-text); color: var(--primary-n); }
+.media-adjust-saved { display: block; margin-top: 8px; text-align: center; color: #8fdf9f; font-size: .75rem; }
 .timeline { position: relative; height: 34px; display: grid; align-items: center; }
 .timeline input { width: 100%; accent-color: #5da2ff; cursor: pointer; }
 .timeline-preview { position: absolute; bottom: calc(34px + var(--ml-safe-bottom, 0px)); transform: translateX(-50%); padding: 6px; background: var(--video-bg); border-radius: 8px; color: white; pointer-events: none; }

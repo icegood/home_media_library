@@ -3371,18 +3371,31 @@ function MediaViewerPage() {
         if (!cancelled) setScopedMedia(items.filter(m => m.libraryId === libraryId));
       }).catch(() => { if (!cancelled) setScopedMedia(null); });
     } else if (rootParam != null) {
-      const load = rootParam === "all" ? api.libraryMedia(libraryId) : api.folderMedia(libraryId, Number(rootParam));
-      load.then(items => {
-        if (cancelled) return;
-        const byKind = kindParam === "image" || kindParam === "video" || kindParam === "document" ? items.filter(m => m.kind === kindParam) : items;
-        const byGPS = gpsParam === "nogps" ? byKind.filter(m => m.gps === "") : gpsParam === "gps" ? byKind.filter(m => m.gps !== "") : byKind;
-        setScopedMedia(byGPS);
-      }).catch(() => { if (!cancelled) setScopedMedia(null); });
+      // The root= (subtree) viewer no longer loads the whole set: navigation
+      // walks the scope one anchor at a time via MediaNeighbors below, so the
+      // title renders from a handful of rows instead of an entire subtree.
+      setScopedMedia(null);
     } else {
       setScopedMedia(null);
     }
     return () => { cancelled = true; };
   }, [libraryId, rootParam, kindParam, gpsParam, listParam, w, s, e, n]);
+  const rootMode = rootParam != null;
+  const [neighbors, setNeighbors] = useState<{anchor:Media; before:Media[]; after:Media[]}|null>(null);
+  useEffect(() => {
+    if (!rootMode || !Number.isFinite(currentMediaId)) {
+      setNeighbors(null);
+      return;
+    }
+    let cancelled = false;
+    const kind = kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : undefined;
+    const gps = gpsParam ?? undefined;
+    const folder = rootParam === "all" ? "all" as const : Number(rootParam);
+    api.mediaNeighbors(libraryId, folder, currentMediaId, {sort: sortParam, kind, gps, before:1, after:1})
+      .then(result => { if (!cancelled) setNeighbors(result); })
+      .catch(() => { if (!cancelled) setNeighbors(null); });
+    return () => { cancelled = true; };
+  }, [rootMode, rootParam, libraryId, currentMediaId, sortParam, kindParam, gpsParam]);
   const folderMedia = useMemo(() => {
     const scoped = scopedMedia
       ?? (listIds.length > 0
@@ -3397,10 +3410,19 @@ function MediaViewerPage() {
     return sortMedia(base, sortParam === "date-asc" ? "asc" : "desc");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopedMedia, items, routeFolderId, sortParam, mediaOverrides, listIds.length, listParam]);
-  const index = folderMedia.findIndex(media => media.id === currentMediaId);
-  const item = index >= 0 ? folderMedia[index] : mediaOverrides[currentMediaId] ?? fallbackItem;
-  const previous = index > 0 ? folderMedia[index - 1] : null;
-  const next = index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null;
+  const index = rootMode ? -1 : folderMedia.findIndex(media => media.id === currentMediaId);
+  const anchorItem = rootMode && neighbors && neighbors.anchor.id === currentMediaId
+    ? mediaOverrides[currentMediaId] ?? neighbors.anchor
+    : null;
+  const item = anchorItem
+    ?? (index >= 0 ? folderMedia[index] : mediaOverrides[currentMediaId] ?? fallbackItem);
+  const withOverride = (media: Media|null) => media ? mediaOverrides[media.id] ?? media : null;
+  const previous = rootMode
+    ? (anchorItem && neighbors ? withOverride(neighbors.before[0] ?? null) : null)
+    : (index > 0 ? folderMedia[index - 1] : null);
+  const next = rootMode
+    ? (anchorItem && neighbors ? withOverride(neighbors.after[0] ?? null) : null)
+    : (index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null);
   useEffect(() => {
     if (index >= 0 || !Number.isFinite(currentMediaId)) {
       setFallback({loading:false, failed:false});
@@ -3569,11 +3591,26 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   const [imageZoom, setImageZoom] = useState(1);
   const [imagePan, setImagePan] = useState({x:0, y:0});
   const [imageRotation, setImageRotation] = useState(0);
+  const [adjust, setAdjust] = useState<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>({...defaultAdjust});
+  const [savedNotice, setSavedNotice] = useState(false);
+  const savedNoticeTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
   const [drag, setDrag] = useState<{pointerId:number; startX:number; startY:number; originX:number; originY:number}|null>(null);
   const [docUrl, setDocUrl] = useState<string>("");
   const [docNative, setDocNative] = useState(false);
   const [docError, setDocError] = useState<string>("");
-  useEffect(() => { setImagePan({x:0, y:0}); setDrag(null); setImageRotation(0); }, [item.id]);
+  useEffect(() => { setImagePan({x:0, y:0}); setDrag(null); setImageRotation(0); setAdjust({...defaultAdjust}); }, [item.id]);
+  useEffect(() => {
+    api.getAdjust(item.id).then(saved => {
+      setImageRotation(Number.isInteger(saved.rotation) && [0, 90, 180, 270].includes(saved.rotation) ? saved.rotation : 0);
+      setAdjust(prev => ({
+        brightness: Number.isFinite(saved.brightness) ? Math.round(Math.min(300, Math.max(20, saved.brightness * 100))) : prev.brightness,
+        hue: Number.isFinite(saved.hue) ? Math.round(Math.min(360, Math.max(-360, saved.hue))) : prev.hue,
+        saturation: Number.isFinite(saved.saturation) ? Math.round(Math.min(400, Math.max(0, saved.saturation * 100))) : prev.saturation,
+        gamma: Number.isFinite(saved.gamma) ? Math.round(Math.min(300, Math.max(20, saved.gamma * 100))) : prev.gamma,
+        contrast: Number.isFinite(saved.contrast) ? Math.round(Math.min(300, Math.max(20, saved.contrast * 100))) : prev.contrast,
+      }));
+    }).catch(() => setImageRotation(0));
+  }, [item.id]);
   useEffect(() => { if (imageZoom === 1) { setImagePan({x:0, y:0}); setDrag(null); } }, [imageZoom]);
   // Documents (PDFs, etc.) are shown in an <iframe> on desktop/iOS via a blob
   // URL fetched with credentials, so the request keeps the HttpOnly auth cookie
@@ -3609,8 +3646,33 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     setImageZoom(value => clampZoom(Math.round((value + delta) * 100) / 100));
   }
   function rotateImage() {
-    setImageRotation(value => (value + 90) % 360);
+    const rotation = (imageRotation + 90) % 360;
+    setImageRotation(rotation);
+    persistAdjust(rotation);
   }
+  function persistAdjust(rotation:number) {
+    const demo = {brightness:adjust.brightness / 100, hue:adjust.hue, saturation:adjust.saturation / 100, gamma:adjust.gamma / 100, contrast:adjust.contrast / 100, rotation};
+    api.saveAdjust(item.id, demo).then(() => {
+      setSavedNotice(true);
+      if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
+      savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 1600);
+    }).catch(() => setSavedNotice(false));
+  }
+  function saveAdjust() {
+    persistAdjust(imageRotation);
+  }
+  function resetAdjust() {
+    setAdjust({...defaultAdjust});
+    setImageRotation(0);
+    api.saveAdjust(item.id, {brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:0}).then(() => {
+      setSavedNotice(true);
+      if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
+      savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 1600);
+    }).catch(() => setSavedNotice(false));
+  }
+  useEffect(() => () => {
+    if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
+  }, []);
   function onImageWheel(event:WheelEvent<HTMLDivElement>) {
     if (item.kind !== "image" && item.kind !== "video") return;
     event.preventDefault();
@@ -3909,9 +3971,9 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
       {item.kind === "image" && <button type="button" className="viewer-fullscreen" aria-label={isFullscreen || nativeFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen || nativeFullscreen ? "⤡" : "⛶"}</button>}
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
-      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
+      {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} adjust={adjust} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         item.kind === "image" ?
-        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`}} src={api.contentUrl(item.id)} alt={item.name}
+        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={api.contentUrl(item.id)} alt={item.name}
           onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         <>
           {docNative
@@ -3930,16 +3992,44 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
         <div className="zoom-controls-separator" aria-hidden="true"/>
         <button type="button" aria-label="Rotate media" onClick={rotateImage}>↻</button>
       </div>}
+      <svg width="0" height="0" style={{position:"absolute", width:0, height:0}} aria-hidden="true" focusable="false">
+        <filter id="ml-tone" colorInterpolationFilters="sRGB">
+          <feComponentTransfer>
+            <feFuncR type="linear" slope="1" intercept={brightnessOffset(adjust.brightness)}/>
+            <feFuncG type="linear" slope="1" intercept={brightnessOffset(adjust.brightness)}/>
+            <feFuncB type="linear" slope="1" intercept={brightnessOffset(adjust.brightness)}/>
+          </feComponentTransfer>
+          <feComponentTransfer>
+            <feFuncR type="gamma" amplitude="1" exponent={Math.max(0.3, 100 / Math.max(20, adjust.gamma))} offset="0"/>
+            <feFuncG type="gamma" amplitude="1" exponent={Math.max(0.3, 100 / Math.max(20, adjust.gamma))} offset="0"/>
+            <feFuncB type="gamma" amplitude="1" exponent={Math.max(0.3, 100 / Math.max(20, adjust.gamma))} offset="0"/>
+          </feComponentTransfer>
+        </filter>
+      </svg>
     </div>
     <button type="button" className="info-handle" aria-label={infoOpen ? "Hide info panel" : "Show info panel"} onClick={onToggleInfo}>{infoOpen ? ">>" : "<<"}</button>
     <aside className={`info-drawer ${infoOpen ? "open" : ""}`} aria-hidden={!infoOpen}>
-      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} onUpdated={onUpdated}/>}
+      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} onUpdated={onUpdated} adjust={adjust} onAdjustChange={patch => setAdjust(prev => ({...prev, ...patch}))} adjustSaved={savedNotice} onSaveAdjust={saveAdjust} onResetAdjust={resetAdjust}/>}
     </aside>
   </div>;
 }
 
 function clampZoom(value:number) {
   return Math.min(10, Math.max(0.5, value));
+}
+
+const defaultAdjust = {brightness:100, hue:0, saturation:100, gamma:100, contrast:100} as const;
+// Brightness is intentionally NOT the CSS brightness() multiplier (that scales
+// highlights and clips them to white while leaving shadows untouched). Like
+// VLC's adjust filter it is an additive luma offset, applied in the SVG filter
+// chain together with gamma; contrast/saturation/hue stay CSS functions.
+function brightnessOffset(brightness:number) {
+  return (brightness - 100) / 200;
+}
+function applyAdjust(adjust: {brightness:number; hue:number; saturation:number; gamma:number; contrast:number}) {
+  let filter = `contrast(${adjust.contrast}%) saturate(${adjust.saturation}%) hue-rotate(${adjust.hue}deg)`;
+  if (adjust.gamma !== 100 || adjust.brightness !== 100) filter += ` url(#ml-tone)`;
+  return filter;
 }
 
 function eventPoint(event:ReactPointerEvent<HTMLElement>) {
@@ -4007,7 +4097,7 @@ function computePosition(anchor:HTMLElement):{top:number; right:number} {
   };
 }
 
-function MediaInfo({item, onUpdated}:{item:Media; onUpdated?:(updated:Media)=>void}) {
+function MediaInfo({item, onUpdated, adjust, onAdjustChange, adjustSaved, onSaveAdjust, onResetAdjust}:{item:Media; onUpdated?:(updated:Media)=>void; adjust?:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; onAdjustChange?:(patch:Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)=>void; adjustSaved?:boolean; onSaveAdjust?:()=>void; onResetAdjust?:()=>void}) {
   const dateFormat = useUserDateFormat();
   const navigate = useNavigate();
   const [name, setName] = useState(item.name);
@@ -4095,6 +4185,27 @@ function MediaInfo({item, onUpdated}:{item:Media; onUpdated?:(updated:Media)=>vo
       <label className="media-edit-row"><span>Name</span><input value={name} onChange={event => setName(event.target.value)} required/></label>
       <label className="media-edit-row"><span>Date</span><span className="media-date-editor"><input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/>{currentDate && <button type="button" className="secondary media-date-icon" aria-label="Copy date" title="Copy date" onClick={() => void copyDate()}>{copied ? "✓" : "⧉"}</button>}<button ref={pickerAnchorRef} type="button" className="secondary media-date-icon media-date-picker-trigger" aria-label="Pick date and time" title="Pick date and time" aria-expanded={calendarOpen} onClick={() => setCalendarOpen(value => !value)}><span className="calendar-glyph" aria-hidden="true">📅</span></button>{calendarOpen && pickerAnchorRef.current && createPortal(<DateCalendar anchor={pickerAnchorRef.current} initialDate={pickerInitialDate()} onSelect={pickDate} onClose={() => setCalendarOpen(false)}/>, document.body)}</span></label>
       <label className="media-edit-row"><span>GPS</span><input value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/></label>
+      {(item.kind === "image" || item.kind === "video") && adjust && onAdjustChange && <div className="media-adjust" role="group" aria-label="Media adjustments">
+        <span className="media-adjust-title">Media adjustments</span>
+        {([
+          ["Media brightness", "brightness", adjust.brightness, 20, 300, 5] as const,
+          ["Media contrast", "contrast", adjust.contrast, 20, 300, 5] as const,
+          ["Media hue", "hue", adjust.hue, -360, 360, 5] as const,
+          ["Media saturation", "saturation", adjust.saturation, 0, 400, 5] as const,
+          ["Media gamma", "gamma", adjust.gamma, 20, 300, 5] as const,
+        ]).map(([label, key, value, min, max, step]) => (
+          <label key={key} className="media-adjust-row">
+            <span>{label}</span>
+            <input type="range" min={min} max={max} step={step} value={value} aria-label={label}
+              onChange={event => onAdjustChange({[key]: Number(event.currentTarget.value)} as Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)}/>
+          </label>
+        ))}
+        <div className="media-adjust-actions">
+          <button type="button" onClick={onSaveAdjust}>Save adjustments</button>
+          <button type="button" onClick={onResetAdjust}>Reset adjustments</button>
+        </div>
+        {adjustSaved && <span className="media-adjust-saved" role="status">Adjustments saved</span>}
+      </div>}
       <div className="action-row">
         <button type="button" disabled={saving || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
         {gps && <button type="button" className="secondary" onClick={() => navigate(`/map?item=${current.id}`)}>Open on map</button>}
@@ -4193,7 +4304,7 @@ function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"
   return {mode: reasons.length > 0 ? "transcoded" : "original", reasons};
 }
 
-function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,imageRotation,imagePan,drag,onPointerDown,onPointerMove,onPointerUp,onPointerCancel}:{item:Media; supported:string[]; isFullscreen?:boolean; onToggleFullscreen?:()=>void; imageZoom?:number; imageRotation?:number; imagePan?:{x:number;y:number}; drag?:{pointerId:number}|null; onPointerDown?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerMove?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerUp?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerCancel?:(e:React.PointerEvent<HTMLElement>)=>void}) {
+function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,imageRotation,imagePan,drag,adjust,onPointerDown,onPointerMove,onPointerUp,onPointerCancel}:{item:Media; supported:string[]; isFullscreen?:boolean; onToggleFullscreen?:()=>void; imageZoom?:number; imageRotation?:number; imagePan?:{x:number;y:number}; drag?:{pointerId:number}|null; adjust:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; onPointerDown?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerMove?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerUp?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerCancel?:(e:React.PointerEvent<HTMLElement>)=>void}) {
   const metadataDuration = videoMetadataDuration(item.metadata);
   const [thumbs, setThumbs] = useState<VideoThumbnail[]>([]);
   const [hover, setHover] = useState<VideoThumbnail|null>(null);
@@ -4321,8 +4432,9 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
   function renderVideo(slot:number) {
     const isActive = active === slot;
     const offset = offsets[slot];
+    const filterStyle = { filter: applyAdjust(adjust) };
     return <video key={`slot-${slot}-${offset}`} ref={videoRefs[slot]} src={api.playbackUrl(item.id, supported, offset)}
-      style={isActive ? undefined : {visibility:"hidden", position:"absolute", top:0, left:0, width:"100%"}}
+      style={isActive ? filterStyle : {...filterStyle, visibility:"hidden", position:"absolute", top:0, left:0, width:"100%"}}
       preload="auto" muted={!isActive} autoPlay={isActive && playing} playsInline
       onCanPlay={() => {
         if (isActive) return;

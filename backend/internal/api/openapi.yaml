@@ -480,6 +480,79 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/libraries/{id}/media/neighbors:
+    get:
+      tags: [Library]
+      summary: Anchor media plus a bounded before/after window in a sorted scope
+      description: >-
+        Returns the anchor media and a window of up to `before`/`after` neighbors
+        ordered by name or by taken_at (mirroring the client's sortMedia
+        ordering). Scopes the window to the whole library (folder omitted,
+        "0", or "all") or to a folder subtree (`folder`). Backs the viewer's
+        `root=` navigation so the client fetches at most a handful of rows
+        instead of an entire subtree.
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+        - name: anchor
+          in: query
+          required: true
+          description: Media id of the anchor item.
+          schema:
+            type: integer
+        - name: folder
+          in: query
+          description: >-
+            Folder id of the subtree scope; omit, "0", or "all" for the whole
+            library.
+          schema:
+            type: string
+        - name: sort
+          in: query
+          description: Ordering ("name" is the default).
+          schema:
+            type: string
+            enum: [name, date, date-asc]
+        - name: kind
+          in: query
+          description: Restrict to a media kind.
+          schema:
+            type: string
+            enum: [image, video, document]
+        - name: gps
+          in: query
+          description: Restrict to geotagged or non-geotagged media.
+          schema:
+            type: string
+            enum: [gps, nogps]
+        - name: before
+          in: query
+          description: Maximum number of neighbors before the anchor (default 1).
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 50
+        - name: after
+          in: query
+          description: Maximum number of neighbors after the anchor (default 1).
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 50
+      responses:
+        "200":
+          description: Anchor media and its neighbor window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaNeighbors"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/libraries/{id}/media:
     get:
       tags: [Library]
@@ -2255,6 +2328,22 @@ components:
         favorite:
           type: boolean
           description: Whether the current user favorited this item.
+    MediaNeighbors:
+      type: object
+      required: [anchor, before, after]
+      properties:
+        anchor:
+          $ref: "#/components/schemas/Media"
+        before:
+          type: array
+          description: Neighbors earlier in the sort order (newer under date).
+          items:
+            $ref: "#/components/schemas/Media"
+        after:
+          type: array
+          description: Neighbors later in the sort order (older under date).
+          items:
+            $ref: "#/components/schemas/Media"
     MapMedia:
       allOf:
         - $ref: "#/components/schemas/Media"

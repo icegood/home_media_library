@@ -1452,12 +1452,15 @@ test("enter on the focused media card opens the viewer in play mode", async () =
     this.dispatchEvent(new Event("pause"));
   }) as any;
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.folderMedia.mockResolvedValue([
-    {id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}
-  ]);
+  const video103 = {id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""};
+  mockApi.folderMedia.mockResolvedValue([video103]);
   mockApi.folderEntries.mockResolvedValue({entries:[
-    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}}}, gps:"", takenAt:""}}
+    {id:103, name:"two.mp4", relativePath:"two.mp4", type:"media", media:video103}
   ], chain: []});
+  // The viewer walks the timeline scope one anchor at a time via MediaNeighbors;
+  // the timeline targets the root= (subtree) viewer, so the anchor must come
+  // back through the neighbors endpoint rather than the folder media dump.
+  mockApi.mediaNeighbors.mockResolvedValue({anchor:video103, before:[], after:[]});
   mockApi.videoThumbnails.mockResolvedValue([{index:0, timeSeconds:1, url:"/thumb0.jpg"}]);
   render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
   await screen.findByText("two.mp4");

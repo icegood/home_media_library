@@ -1488,6 +1488,32 @@ func (s *Postgres) UpdateMediaDetails(ctx context.Context, id int, patch domain.
 	return s.Media(ctx, id)
 }
 
+func (s *Postgres) MediaAdjust(ctx context.Context, mediaID int) (domain.MediaAdjust, error) {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return domain.MediaAdjust{}, err
+	}
+	var adjust domain.MediaAdjust
+	err := s.db.QueryRowContext(ctx, `SELECT brightness, hue, saturation, gamma, contrast, rotation FROM video_adjust WHERE media_id = $1`, mediaID).
+		Scan(&adjust.Brightness, &adjust.Hue, &adjust.Saturation, &adjust.Gamma, &adjust.Contrast, &adjust.Rotation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DefaultMediaAdjust(), nil
+	}
+	if err != nil {
+		return domain.MediaAdjust{}, err
+	}
+	return adjust, nil
+}
+
+func (s *Postgres) SaveMediaAdjust(ctx context.Context, mediaID int, adjust domain.MediaAdjust) error {
+	if _, err := s.Media(ctx, mediaID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO video_adjust(media_id, brightness, hue, saturation, gamma, contrast, rotation) VALUES($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT(media_id) DO UPDATE SET brightness = EXCLUDED.brightness, hue = EXCLUDED.hue, saturation = EXCLUDED.saturation, gamma = EXCLUDED.gamma, contrast = EXCLUDED.contrast, rotation = EXCLUDED.rotation`,
+		mediaID, adjust.Brightness, adjust.Hue, adjust.Saturation, adjust.Gamma, adjust.Contrast, adjust.Rotation)
+	return err
+}
+
 func (s *Postgres) SetTrajectoryStart(ctx context.Context, folderID, mediaID int, start bool) error {
 	if _, err := s.Media(ctx, mediaID); err != nil {
 		return err
@@ -1731,7 +1757,8 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND ($3 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $4))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND ($3 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $4))
 		GROUP BY m.id`
 	case libraryID > 0:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
@@ -1740,7 +1767,8 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND ($2 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $3))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND ($2 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $3))
 		GROUP BY m.id`
 	default:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
@@ -1749,7 +1777,8 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.gps <> '' AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
+		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
+			AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
 		GROUP BY m.id`
 	}
 	args := []any{}
@@ -1815,7 +1844,8 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
+		WHERE (m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
+			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND ($7 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $8))
 		GROUP BY m.id`
 	case libraryID > 0:
@@ -1825,7 +1855,8 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
+		WHERE (m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
+			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND ($6 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $7))
 		GROUP BY m.id`
 	default:
@@ -1835,7 +1866,8 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
 		SELECT ` + mediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+		WHERE (m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
 			AND ($5 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $6))
 		GROUP BY m.id`
 	}

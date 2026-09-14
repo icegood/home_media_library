@@ -1,0 +1,1 @@
+ALTER TABLE video_adjust ADD COLUMN contrast REAL NOT NULL DEFAULT 1.0;

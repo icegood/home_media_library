@@ -310,6 +310,14 @@ type Media struct {
 	TrajectoryName  string         `json:"trajectoryName,omitempty"`
 }
 
+// MediaNeighbors is the anchor media plus its before/after window in a
+// time- or name-sorted scope (the viewer's `root=` navigation).
+type MediaNeighbors struct {
+	Anchor Media   `json:"anchor"`
+	Before []Media `json:"before"`
+	After  []Media `json:"after"`
+}
+
 type MapMedia struct {
 	Media
 	LibraryID       int    `json:"libraryId"`
@@ -380,6 +388,25 @@ type MediaDetailsPatch struct {
 	Name    *string `json:"name"`
 	GPS     *string `json:"gps"`
 	TakenAt *string `json:"takenAt"`
+}
+
+// MediaAdjust stores per-media display values the viewer applies when showing
+// a media item, so a user can brighten, recolor, or rotate a clip without
+// touching the source file. Brightness/Contrast/Saturation/Gamma are multipliers
+// around 1.0 (1.0 = unchanged); Hue is a CSS hue-rotate angle in degrees (0 =
+// unchanged); Rotation is a CSS rotation in degrees (0/90/180/270).
+// DefaultMediaAdjust returns the identity (nothing changed).
+type MediaAdjust struct {
+	Brightness float64 `json:"brightness"`
+	Hue        float64 `json:"hue"`
+	Saturation float64 `json:"saturation"`
+	Gamma      float64 `json:"gamma"`
+	Contrast   float64 `json:"contrast"`
+	Rotation   int     `json:"rotation"`
+}
+
+func DefaultMediaAdjust() MediaAdjust {
+	return MediaAdjust{Brightness: 1, Saturation: 1, Gamma: 1, Contrast: 1}
 }
 
 type BulkMediaPatch struct {

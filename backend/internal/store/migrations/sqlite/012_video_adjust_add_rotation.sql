@@ -1,0 +1,1 @@
+ALTER TABLE video_adjust ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0;
