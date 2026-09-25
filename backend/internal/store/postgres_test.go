@@ -127,6 +127,64 @@ func TestPostgresLibraryStatePersistsInternalPathsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestPostgresMoveLibraryPathRewritesFolderAndMediaPrefixes(t *testing.T) {
+	repository := openPostgres(t, true)
+	ctx := context.Background()
+	oldRoot := filepath.Join(t.TempDir(), "old")
+	newRoot := filepath.Join(t.TempDir(), "new")
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Photos", Watch: true, Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: oldRoot}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(oldRoot, "Camera")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: child.ID, Path: filepath.Join(oldRoot, "Camera", "one.jpg"), Name: "one.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := repository.MoveLibraryPath(ctx, library.ID, oldRoot, newRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Folders != 2 || result.Media != 1 {
+		t.Fatalf("move result = %#v, want 2 folders and 1 media", result)
+	}
+	loaded, err := repository.Library(ctx, library.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Roots) != 1 || loaded.Roots[0].Path != newRoot {
+		t.Fatalf("moved root = %#v", loaded.Roots)
+	}
+	// Relocating a root must not disturb the library-level watch flag.
+	if !loaded.Watch {
+		t.Fatal("watch flag lost while moving a root path")
+	}
+	loadedFolder, err := repository.Folder(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedFolder.Path != filepath.Join(newRoot, "Camera") {
+		t.Fatalf("moved folder path = %q", loadedFolder.Path)
+	}
+	loadedMedia, err := repository.MediaByPath(ctx, filepath.Join(newRoot, "Camera", "one.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedMedia.ID != media.ID {
+		t.Fatalf("moved media id = %d, want %d", loadedMedia.ID, media.ID)
+	}
+	if _, err := repository.MediaByPath(ctx, filepath.Join(oldRoot, "Camera", "one.jpg")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("old media path still resolves: %v", err)
+	}
+	if _, err := repository.MoveLibraryPath(ctx, library.ID, oldRoot, newRoot); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("old root lookup error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestPostgresFolderChain(t *testing.T) {
 	repository := openPostgres(t, true)
 	ctx := context.Background()
@@ -434,31 +492,46 @@ func TestPostgresLibraryStats(t *testing.T) {
 	}
 }
 
-func TestPostgresLibraryRootWatch(t *testing.T) {
+func TestPostgresLibraryWatchIsPerLibrary(t *testing.T) {
 	repository := openPostgres(t, true)
-	rootPath := filepath.Join(t.TempDir(), "photos")
-	library := domain.Library{ID: domain.InvalidID, Name: "Watched", Roots: []domain.LibraryRoot{
-		{ID: domain.InvalidID, Path: rootPath, Watch: true},
+	base := t.TempDir()
+	firstRoot := filepath.Join(base, "photos")
+	secondRoot := filepath.Join(base, "videos")
+	otherRoot := filepath.Join(base, "other")
+	// One library flag covers every one of its roots.
+	library := domain.Library{ID: domain.InvalidID, Name: "Watched", Watch: true, Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: firstRoot},
+		{ID: domain.InvalidID, Path: secondRoot},
 	}}
 	created, err := repository.CreateLibrary(context.Background(), library)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.CreateLibrary(context.Background(), domain.Library{ID: domain.InvalidID, Name: "Plain", Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: otherRoot},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := repository.Library(context.Background(), created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Roots) != 1 || !stored.Roots[0].Watch {
-		t.Fatalf("watch flag not persisted on create: %#v", stored.Roots)
+	if !stored.Watch {
+		t.Fatal("library watch flag not persisted on create")
 	}
 	watched, err := repository.WatchedRoots(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(watched) != 1 || watched[0].LibraryID != created.ID {
-		t.Fatalf("unexpected watched roots: %#v", watched)
+	if len(watched) != 2 {
+		t.Fatalf("watched roots = %#v, want both roots of the watched library", watched)
 	}
-	stored.Roots[0].Watch = false
+	for _, root := range watched {
+		if root.LibraryID != created.ID {
+			t.Fatalf("un-watched library %d leaked into the watched set", root.LibraryID)
+		}
+	}
+	stored.Watch = false
 	if err := repository.UpdateLibrary(context.Background(), stored); err != nil {
 		t.Fatal(err)
 	}
@@ -752,6 +825,17 @@ func TestPostgresTHMExtensionMapsToImageJPEG(t *testing.T) {
 	}
 	if mimeType != "image/jpeg" {
 		t.Fatalf("THM mime = %q, want image/jpeg", mimeType)
+	}
+}
+
+func TestPostgres3GPPExtensionMapsToVideo3GPP(t *testing.T) {
+	repository := openPostgres(t, false)
+	mimeType, err := repository.MIMETypeForExtension(context.Background(), ".3gp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mimeType != "video/3gpp" {
+		t.Fatalf("3GP mime = %q, want video/3gpp", mimeType)
 	}
 }
 

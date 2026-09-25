@@ -1,4 +1,4 @@
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, KindStats, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, KindStats, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -72,10 +72,12 @@ export const api = {
   libraryStats: (id:ID) => call<KindStats>(`/libraries/${id}/stats`),
   folderStats: (id:ID, folderId:ID) => call<KindStats>(`/libraries/${id}/folders/${folderId}/stats`),
   favoriteViewStats: (id:ID) => call<KindStats>(`/favorite-views/${id}/stats`),
-  createLibrary: (input:{name:string; roots:{path:string; watch?:boolean}[]}) =>
+  createLibrary: (input:{name:string; watch?:boolean; roots:{path:string}[]}) =>
     call<Library>("/admin/libraries", {method:"POST", body:JSON.stringify(input)}),
-  updateLibrary: (id:ID, input:{name:string; roots:{path:string; watch?:boolean}[]}) =>
+  updateLibrary: (id:ID, input:{name:string; watch?:boolean; roots:{path:string}[]}) =>
     call<Library>(`/admin/libraries/${id}`, {method:"PUT", body:JSON.stringify(input)}),
+  moveLibraryPath: (id:ID, input:{oldPath:string; newPath:string}) =>
+    call<LibraryPathMoveResult>(`/admin/libraries/${id}/move-path`, {method:"POST", body:JSON.stringify(input)}),
   deleteLibrary: (id:ID) => call<void>(`/admin/libraries/${id}`, {method:"DELETE"}),
   scanLibrary: (id:ID, options:{rootId?:ID} = {}) =>
     call<JobStatus>(`/admin/libraries/${id}/scan${options.rootId ? `?root=${options.rootId}` : ""}`, {method:"POST"}),

@@ -9,7 +9,7 @@ import L from "leaflet";
 import { MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type MapTileSource, type POISource, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
 export const StreamChunkSizeCtx = createContext(10000);
@@ -87,6 +87,10 @@ function ModalBackdrop({children, ariaLabel, onClick, nested}:{children:React.Re
   </div>;
 }
 
+type LibraryDialogValue = { dialogLibrary: Library | null; setDialogLibrary: (lib: Library | null) => void; canManage: boolean };
+const LibraryDialogContext = createContext<LibraryDialogValue>({ dialogLibrary: null, setDialogLibrary: () => {}, canManage: false });
+function useLibraryDialog() { return useContext(LibraryDialogContext); }
+
 export function App() {
   const [user, setUser] = useState<User|null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
@@ -101,6 +105,7 @@ export function App() {
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsWarn, setSettingsWarn] = useState(false);
+  const [dialogLibrary, setDialogLibrary] = useState<Library|null>(null);
   const shellRef = useRef<HTMLDivElement|null>(null);
   // Subscribes App to language switches: the shell below is keyed by the
   // resolved language, so switching remounts it and every string is
@@ -216,10 +221,10 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={{min:thumb.min, max:thumb.max, size:thumbSize, setSize:setThumbSize}}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
+  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={{min:thumb.min, max:thumb.max, size:thumbSize, setSize:setThumbSize}}><LibraryDialogContext.Provider value={{ dialogLibrary, setDialogLibrary, canManage: user.role === "admin" }}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     {settingsWarn && <div className="shell-warning" role="alert">Couldn't load your account preferences (theme, zoom, …) — showing defaults. <button type="button" className="secondary" onClick={() => setSettingsWarn(false)}>Dismiss</button></div>}
-    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to} state={crumb.returnToFolderId != null ? {returnToFolderId: crumb.returnToFolderId} : undefined}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
+    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to} state={crumb.returnToFolderId != null || crumb.returnToMediaId != null ? {returnToFolderId: crumb.returnToFolderId, returnToMediaId: crumb.returnToMediaId} : undefined}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
         <div className="nav-submenu" role="menu" onClick={closeParentDetails}>
@@ -255,7 +260,8 @@ export function App() {
       <Route path="/admin/settings" element={<Navigate to="/admin"/>}/>
       <Route path="*" element={<NotFound/>}/>
     </Routes>
-  </div></ThumbCtx.Provider></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
+    {dialogLibrary && <LibraryDialog library={dialogLibrary} onClose={() => setDialogLibrary(null)}/>}
+  </div></LibraryDialogContext.Provider></ThumbCtx.Provider></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
 }
 
 // Applies DOM translations for the active language and re-installs them when
@@ -280,7 +286,7 @@ function NotFound() {
   </main>;
 }
 
-interface Crumb { label:string; to:string|null; current?:boolean; returnToFolderId?:ID }
+interface Crumb { label:string; to:string|null; current?:boolean; returnToFolderId?:ID; returnToMediaId?:ID }
 
 function folderCrumbName(folder:MediaFolder) {
   if (folder.name) return folder.name;
@@ -382,7 +388,7 @@ function useBreadcrumb(): Crumb[] | null {
   return useMemo(() => {
     if (favoritesMatch) {
       const crumbs: Crumb[] = [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}];
-      if (favViewName && searchParams.get("viewId")) crumbs.push({label:favViewName, to:`/favorites/${searchParams.get("viewId")}`});
+      if (favViewName && searchParams.get("viewId")) crumbs.push({label:favViewName, to:`/favorites/${searchParams.get("viewId")}`, returnToMediaId: viewerItemId});
       if (viewerItemName) crumbs.push({label:viewerItemName, to:null, current:true});
       return crumbs;
     }
@@ -421,6 +427,9 @@ function useBreadcrumb(): Crumb[] | null {
           base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: fromTimeline ? `/library/${libraryID}/timeline/${folder.id}${favSuffix}` : `/map?library=${libraryID}&folder=${folder.id}`})));
         }
         base.push({label:viewerItemName, to:null, current:true});
+        // Coming back from the timeline viewer must land on the item that was
+        // open, so the timeline crumb carries it in the navigation state.
+        if (fromTimeline && base.length > 1) base[1] = {...base[1], returnToMediaId: viewerItemId};
         return base;
       }
     }
@@ -435,6 +444,12 @@ function useBreadcrumb(): Crumb[] | null {
     if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
       const chain = folderData.chain;
       base.push(...chain.map((folder, index) => ({label:folderCrumbName(folder), to:(timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`) + favSuffix, ...(!timeline && chain[index + 1] ? {returnToFolderId: chain[index + 1].id} : {})})));
+    }
+    // The viewer keeps the item it is showing in the navigation state, so a
+    // breadcrumb click back into the folder list focuses that same item
+    // instead of dropping the user at the top of an unpositioned grid.
+    if (viewerMatch && Number.isFinite(viewerItemId) && viewerItemId > 0 && base.length > 0 && base[base.length - 1].to) {
+      base[base.length - 1] = {...base[base.length - 1], returnToMediaId: viewerItemId};
     }
     if (viewerMatch && favParam && viewerItemName) {
       base.push({label:viewerItemName, to:null, current:true});
@@ -596,12 +611,13 @@ function LoginTimeoutField() {
 }
 
 function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
+  const { setDialogLibrary } = useLibraryDialog();
   const navigate = useNavigate();
   const [libraries, setLibraries] = useState<Library[]>([]);
-  const [editing, setEditing] = useState<Library|null>(null);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
-  const [roots, setRoots] = useState([{path:"", watch:false}]);
+  const [roots, setRoots] = useState([{path:""}]);
+  const [watch, setWatch] = useState(false);
   const [scanNow, setScanNow] = useState(true);
   const [pickingRoot, setPickingRoot] = useState<number|null>(null);
   const [filesystem, setFilesystem] = useState<FilesystemListing|null>(null);
@@ -610,35 +626,29 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [deleting, setDeleting] = useState<Library|null>(null);
-  const [refreshingThumbnails, setRefreshingThumbnails] = useState<{id:ID; name:string}|null>(null);
-  const [refreshingMetadata, setRefreshingMetadata] = useState<{id:ID; name:string}|null>(null);
+  const [moving, setMoving] = useState<Library|null>(null);
   useEffect(() => { loadLibraries(); }, []);
   async function loadLibraries() {
     const items = await api.libraries();
     setLibraries(items);
   }
   function startAdd() {
-    setAdding(true); setEditing(null); setName(""); setRoots([{path:"", watch:false}]); setError(""); setNotice(""); setScanNow(true);
-  }
-  function startEdit(library:Library) {
-    setEditing(library); setAdding(false); setName(library.name);
-    setRoots((library.roots ?? []).map(root => ({path:root.path ?? "", watch:Boolean(root.watch)})).concat((library.roots ?? []).length ? [] : [{path:"", watch:false}]));
-    setError(""); setNotice(""); setScanNow(false);
+    setAdding(true); setName(""); setRoots([{path:""}]); setWatch(false); setError(""); setNotice(""); setScanNow(true);
   }
   function closeModal() {
-    setAdding(false); setEditing(null); setError(""); setNotice(""); closePicker();
+    setAdding(false); setError(""); setNotice(""); closePicker();
   }
   function startDelete(library:Library) {
     setDeleting(library); setError(""); setNotice("");
+  }
+  function startMove(library:Library) {
+    setMoving(library); setError(""); setNotice("");
   }
   function updateRoot(index:number, value:string) {
     setRoots(current => current.map((root, i) => i === index ? {...root, path:value} : root));
   }
   function addRoot() {
-    setRoots(current => [...current, {path:"", watch:false}]);
-  }
-  function updateRootWatch(index:number, watch:boolean) {
-    setRoots(current => current.map((root, i) => i === index ? {...root, watch} : root));
+    setRoots(current => [...current, {path:""}]);
   }
   function removeRoot(index:number) {
     setRoots(current => current.filter((_, i) => i !== index));
@@ -659,27 +669,6 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
     updateRoot(pickingRoot, path);
     closePicker();
   }
-  async function libraryAction(action:"refresh"|"thumbs"|"metadata", library:Library, options:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean} = {}) {
-    setBusy(true); setError(""); setNotice("");
-    try {
-      if (action === "refresh") await api.scanLibrary(library.id);
-      else if (action === "thumbs") await api.createThumbnails(library.id, {recreateExisting: !!options.recreateExisting});
-      else if (action === "metadata") await api.metadataRenew(library.id, {
-        recreateExisting: !!options.recreateExisting,
-        updateGps: !!options.updateGps,
-        updateTakenAt: !!options.updateTakenAt,
-      });
-      setNotice(action === "refresh" ? "Scan started in background. Thumbnails will start after scan." :
-        action === "thumbs" ? (options.recreateExisting ? "Thumbnail recreation started in background." : "Thumbnail creation for missing thumbnails started in background.") :
-        "Metadata renewal started in background.");
-      setRefreshingThumbnails(null);
-      setRefreshingMetadata(null);
-    } catch (cause) {
-      setError((cause as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
   async function confirmDelete() {
     if (!deleting) return;
     setBusy(true); setError("");
@@ -697,15 +686,13 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   async function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true); setError("");
-    const cleanedRoots = roots.map(root => ({path:root.path.trim(), watch:root.watch})).filter(root => root.path);
+    const cleanedRoots = roots.map(root => ({path:root.path.trim()})).filter(root => root.path);
     try {
-      const library = editing
-        ? await api.updateLibrary(editing.id, {name:name.trim(), roots:cleanedRoots})
-        : await api.createLibrary({name:name.trim(), roots:cleanedRoots});
+      const library = await api.createLibrary({name:name.trim(), watch, roots:cleanedRoots});
       if (scanNow) void api.scanLibrary(library.id).catch(cause => setError((cause as Error).message));
       await loadLibraries();
       closeModal();
-      setNotice(scanNow ? "Library saved. Scan started in background; thumbnails will start after scan." : editing ? "Library saved." : "Library added.");
+      setNotice(scanNow ? "Library saved. Scan started in background; thumbnails will start after scan." : "Library added.");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -721,24 +708,18 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
           <button className="library-glyph" aria-label={`Open library ${library.name}`} onClick={() => navigate(`/library/${library.id}`)}><span className="folder">▰</span></button>
           <button type="button" className="library-name-button" onClick={() => navigate(`/library/${library.id}`)}>
             <strong>{library.name}</strong>
-            <small>{(library.roots ?? []).some(root => root.watch) ? "Auto-refresh on" : "Click to open"}</small>
+            <small>{libraryRootName(library)}{library.watch ? " · Auto-refresh on" : ""}</small>
           </button>
-          <CardMenu ariaLabel={`Library menu ${library.name}`}>
-            <InlineStatsLine load={() => api.libraryStats(library.id)}/>
-            <button type="button" role="menuitem" disabled={busy} onClick={() => startEdit(library)}>Edit</button>
-            <button type="button" role="menuitem" disabled={busy} onClick={() => libraryAction("refresh", library)}>Refresh content</button>
-            <button type="button" role="menuitem" disabled={busy} onClick={() => setRefreshingThumbnails({id:library.id, name:library.name})}>Refresh thumbnails…</button>
-            <button type="button" role="menuitem" disabled={busy} onClick={() => setRefreshingMetadata({id:library.id, name:library.name})}>Refresh metadata…</button>
-            <button type="button" role="menuitem" className="danger" disabled={busy} onClick={() => startDelete(library)}>Delete</button>
-          </CardMenu>
+          <CardMenu ariaLabel={`Edit library ${library.name}`} onOpen={() => setDialogLibrary(library)}/>
+          <button type="button" className="secondary row-action" onClick={() => startMove(library)}>Move</button>
+          <button type="button" className="danger row-action" disabled={busy} onClick={() => startDelete(library)}>Delete</button>
         </div>)}
         {libraries.length === 0 && <div className="empty-state"><h2>No libraries yet</h2><p>Use the Add button above to create the first library.</p></div>}
       </div>
     </>}
     {activeSection === "users" && <><LoginTimeoutField/><UserManagement/></>}
     {activeSection === "logs" && <><AdminSettings section="logs"/><LogViewer/></>} 
-    {refreshingThumbnails && <ThumbnailRefreshModal title={refreshingThumbnails.name} busy={busy} error={error} onClose={() => setRefreshingThumbnails(null)} onRefresh={recreateExisting => libraryAction("thumbs", {id:refreshingThumbnails.id, name:refreshingThumbnails.name, roots:[]}, {recreateExisting})}/>}
-    {refreshingMetadata && <MetadataRefreshModal title={refreshingMetadata.name} busy={busy} error={error} onClose={() => setRefreshingMetadata(null)} onRefresh={(recreateExisting, updateGps, updateTakenAt) => libraryAction("metadata", {id:refreshingMetadata.id, name:refreshingMetadata.name, roots:[]}, {recreateExisting, updateGps, updateTakenAt})}/>}
+    {moving && <MoveRootModal library={moving} onMoved={(_updated, result) => { loadLibraries(); setNotice(`Updated ${result.folders} folder paths and ${result.media} media paths. No scan was started.`); }} onClose={() => setMoving(null)}/>}
     {deleting && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Delete library ${deleting.name}`}>
       <div className="card settings modal">
         <div className="panel-title"><h2>Delete library</h2><button type="button" className="secondary" onClick={() => setDeleting(null)}>Close</button></div>
@@ -751,29 +732,230 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
         </div>
       </div>
     </div>}
-    {(adding || editing) && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={editing ? "Edit library details" : "Add library"} onClick={event => closeOnBackdropClick(event, closeModal)}>
+    {adding && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Add library" onClick={event => closeOnBackdropClick(event, closeModal)}>
       <form className="card settings modal" onSubmit={submit}>
-        <div className="panel-title"><h2>{editing ? "Edit details" : "Add library"}</h2><button type="button" className="secondary" onClick={closeModal}>Close</button></div>
+        <div className="panel-title"><h2>Add library</h2><button type="button" className="secondary" onClick={closeModal}>Close</button></div>
         <div className="form-row">
           <label>Library name<input value={name} onChange={event => setName(event.target.value)} placeholder="Family photos" required/></label>
           <label className="check"><input type="checkbox" checked={scanNow} onChange={event => setScanNow(event.target.checked)}/> Scan after saving</label>
+          <label className="check"><input type="checkbox" checked={watch} onChange={event => setWatch(event.target.checked)}/> Watch for changes</label>
         </div>
+        <p className="muted">Watching watches every root of this library for file changes.</p>
         <div className="root-list">{roots.map((root, index) =>
           <div className="root-row" key={index}>
             <label>Root path<input value={root.path} onChange={event => updateRoot(index, event.target.value)} placeholder="family/photos" required/></label>
-            <label className="check"><input type="checkbox" checked={root.watch} onChange={event => updateRootWatch(index, event.target.checked)}/> Watch for changes</label>
             <div className="root-row-actions">
               <button type="button" className="secondary" onClick={() => openPicker(index)}>Browse</button>
               <button type="button" className="secondary" disabled={roots.length <= 1} onClick={() => removeRoot(index)}>Remove</button>
             </div>
           </div>)}</div>
         <button type="button" className="secondary" onClick={addRoot}>Add root folder</button>
-        {editing && <LibraryAccessEditor library={editing}/>}
         {error && <p className="error">{error}</p>}
-        <button disabled={busy}>{busy ? "Saving…" : editing ? "Save details" : "Create library"}</button>
+        <button disabled={busy}>{busy ? "Saving…" : "Create library"}</button>
       </form>
       {pickingRoot != null && <DirectoryPickerModal title="Choose root folder" filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(pickingRoot, path)} onSelect={selectPickerPath} onClose={closePicker}/>}
     </div>}
+  </div>;
+}
+
+// The admin row leads with the library name and shows the root folder it points
+// at underneath, since that root path is what a Move action relocates.
+function libraryRootName(library:Library) {
+  const paths = (library.roots ?? []).map(root => root.path).filter((path): path is string => Boolean(path));
+  if (paths.length === 0) return "No root folder";
+  return paths.length === 1 ? paths[0] : `${paths[0]} +${paths.length - 1} more`;
+}
+
+// Library actions dialog: every per-library action lives here behind the
+// library's Edit button. Statistics sit in the footer so they stay visible
+// while switching tabs; Delete stays in the admin row menu.
+function LibraryDialog({library, onClose}:{library:Library; onClose:()=>void}) {
+  const { setDialogLibrary, canManage } = useLibraryDialog();
+  const [tab, setTab] = useState(0);
+  const [name, setName] = useState(library.name);
+  const [watch, setWatch] = useState(Boolean(library.watch));
+  const [roots, setRoots] = useState<{id?:ID; path:string}[]>(() => (library.roots ?? []).map(root => ({id:root.id, path:root.path ?? ""})));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [pickingRoot, setPickingRoot] = useState<number|null>(null);
+  const [filesystem, setFilesystem] = useState<FilesystemListing|null>(null);
+  const [filesystemError, setFilesystemError] = useState("");
+  const [movingRoot, setMovingRoot] = useState<string|null>(null);
+  const [refreshing, setRefreshing] = useState<"" | "thumbs" | "metadata">("");
+  function openTab(next:number) { setError(""); setNotice(""); setTab(next); }
+  function updateRootPath(index:number, value:string) {
+    setRoots(current => current.map((root, i) => i === index ? {...root, path:value} : root));
+  }
+  function addRoot() {
+    setRoots(current => [...current, {path:""}]);
+  }
+  function removeRoot(index:number) {
+    setRoots(current => current.filter((_, i) => i !== index));
+  }
+  async function openPicker(index:number, path = roots[index]?.path ?? "") {
+    setPickingRoot(index); setFilesystemError("");
+    try {
+      setFilesystem(await api.filesystem(path));
+    } catch (cause) {
+      setFilesystem(null); setFilesystemError((cause as Error).message);
+    }
+  }
+  function closePicker() {
+    setPickingRoot(null); setFilesystem(null); setFilesystemError("");
+  }
+  function selectPickerPath(path:string) {
+    if (pickingRoot == null) return;
+    updateRootPath(pickingRoot, path);
+    closePicker();
+  }
+  function applyLibrary(saved:Library) {
+    setDialogLibrary(saved);
+    setName(saved.name);
+    setWatch(Boolean(saved.watch));
+    setRoots((saved.roots ?? []).map(root => ({id:root.id, path:root.path ?? ""})));
+  }
+  async function save() {
+    setBusy(true); setError(""); setNotice("");
+    const cleanedRoots = roots.map(root => ({path:root.path.trim()})).filter(root => root.path);
+    try {
+      applyLibrary(await api.updateLibrary(library.id, {name:name.trim(), watch, roots:cleanedRoots}));
+      setNotice("Library saved.");
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function startMoveRoot(oldPath:string) {
+    setMovingRoot(oldPath);
+  }
+  async function refreshContent() {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await api.scanLibrary(library.id);
+      setNotice("Scan started in background. Thumbnails will start after scan.");
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function refreshThumbs(recreateExisting:boolean) {
+    setBusy(true); setError("");
+    try {
+      await api.createThumbnails(library.id, {recreateExisting});
+      setRefreshing("");
+      setNotice(recreateExisting ? "Thumbnail recreation started in background." : "Thumbnail creation for missing thumbnails started in background.");
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function refreshMetadata(recreateExisting:boolean, updateGps:boolean, updateTakenAt:boolean) {
+    setBusy(true); setError("");
+    try {
+      await api.metadataRenew(library.id, {recreateExisting, updateGps, updateTakenAt});
+      setRefreshing("");
+      setNotice("Metadata renewal started in background.");
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Library actions ${library.name}`} onClick={event => closeOnBackdropClick(event, onClose)}>
+    <div className="card settings modal library-dialog" onClick={event => event.stopPropagation()}>
+      <div className="panel-title"><h2>{library.name}</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      {canManage && <div className="dialog-tabs" role="tablist" aria-label="Library actions">
+        <button type="button" role="tab" aria-selected={tab===0} className={tab===0?"active":""} onClick={() => openTab(0)}>Root folders</button>
+        <button type="button" role="tab" aria-selected={tab===1} className={tab===1?"active":""} onClick={() => openTab(1)}>Rights per users</button>
+        <button type="button" role="tab" aria-selected={tab===2} className={tab===2?"active":""} onClick={() => openTab(2)}>Refresh actions</button>
+      </div>}
+      {canManage && tab===0 && <div className="dialog-tab-content" role="tabpanel">
+        <div className="form-row">
+          <label>Library name<input value={name} onChange={event => setName(event.target.value)} required/></label>
+          <label className="check"><input type="checkbox" checked={watch} onChange={event => setWatch(event.target.checked)}/> Watch for changes</label>
+        </div>
+        <p className="muted">Watching is a library setting: when on, every root below is watched for file changes.</p>
+        <div className="root-list">{roots.map((root, index) =>
+          <div className="root-row" key={index}>
+            <label>Root path<input value={root.path} readOnly={root.id != null} onChange={event => updateRootPath(index, event.target.value)} placeholder="/media/path" required/></label>
+            <div className="root-row-actions">
+              {root.id == null && <button type="button" className="secondary" onClick={() => openPicker(index)}>Browse</button>}
+              <button type="button" className="secondary" onClick={() => startMoveRoot(root.path)}>Move path…</button>
+              <button type="button" className="secondary" disabled={roots.length <= 1} onClick={() => removeRoot(index)}>Remove</button>
+            </div>
+            {root.id != null && <small className="muted">An existing root keeps its stored folder and media paths. Use Move path… to relocate it; typing a new path here would only add a second, empty root.</small>}
+          </div>)}</div>
+        <button type="button" className="secondary" onClick={addRoot}>Add root folder</button>
+        <div className="action-row">
+          <button type="button" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Save changes"}</button>
+        </div>
+      </div>}
+      {canManage && tab===1 && <div className="dialog-tab-content" role="tabpanel"><LibraryAccessEditor library={library}/></div>}
+      {canManage && tab===2 && <div className="dialog-tab-content" role="tabpanel">
+        <div className="action-row">
+          <button type="button" disabled={busy} onClick={() => void refreshContent()}>Refresh content</button>
+          <button type="button" disabled={busy} onClick={() => setRefreshing("thumbs")}>Refresh thumbnails…</button>
+          <button type="button" disabled={busy} onClick={() => setRefreshing("metadata")}>Refresh metadata…</button>
+        </div>
+      </div>}
+      {error && <p className="error">{error}</p>}
+      {notice && <p className="success">{notice}</p>}
+      <div className="dialog-footer">
+        <InlineStatsLine key={`${library.id}-${library.name}`} load={() => api.libraryStats(library.id)}/>
+      </div>
+    </div>
+    {pickingRoot != null && <DirectoryPickerModal title="Choose root folder" filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(pickingRoot, path)} onSelect={selectPickerPath} onClose={closePicker}/>}
+    {movingRoot && <MoveRootModal library={library} oldPath={movingRoot} onMoved={(updated, result) => { applyLibrary(updated); setNotice(`Updated ${result.folders} folder paths and ${result.media} media paths. No scan was started.`); }} onClose={() => setMovingRoot(null)}/>}
+    {refreshing === "thumbs" && <ThumbnailRefreshModal title={library.name} busy={busy} error={error} onClose={() => setRefreshing("")} onRefresh={recreateExisting => void refreshThumbs(recreateExisting)}/>}
+    {refreshing === "metadata" && <MetadataRefreshModal title={library.name} busy={busy} error={error} onClose={() => setRefreshing("")} onRefresh={(recreateExisting, updateGps, updateTakenAt) => void refreshMetadata(recreateExisting, updateGps, updateTakenAt)}/>}
+  </div>;
+}
+
+// Relocating a root is inherently per-root, so this modal lives outside the
+// library dialog: the admin row's Move button and the dialog's per-root
+// "Move path…" both open it. `oldPath` pre-selects the root when the caller
+// already knows which one to move; otherwise the modal asks.
+function MoveRootModal({library, oldPath, onMoved, onClose}:{library:Library; oldPath?:string; onMoved:(updated:Library, result:LibraryPathMoveResult)=>void; onClose:()=>void}) {
+  const rootPaths = (library.roots ?? []).map(root => root.path).filter((path): path is string => Boolean(path));
+  const [selected, setSelected] = useState(oldPath ?? rootPaths[0] ?? "");
+  const [newPath, setNewPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  function choose(path:string) {
+    setSelected(path); setNewPath(""); setError("");
+  }
+  async function submit(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || !newPath.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api.moveLibraryPath(library.id, {oldPath:selected, newPath:newPath.trim()});
+      onMoved({...library, roots:(library.roots ?? []).map(root => root.path === selected ? {...root, path:newPath.trim()} : root)}, result);
+      onClose();
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="modal-backdrop nested" role="dialog" aria-modal="true" aria-label={`Move root path ${selected}`} onClick={event => closeOnBackdropClick(event, onClose)}>
+    <form className="card settings modal" onSubmit={submit}>
+      <div className="panel-title"><h2>Move root path</h2><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+      <p>Update <strong>{library.name}</strong> after the files behind this root have already been moved.</p>
+      {rootPaths.length === 0 && <p className="muted">This library has no stored root path to move.</p>}
+      {rootPaths.length > 1 && <label>Root to move<select value={selected} onChange={event => choose(event.target.value)}>
+        {rootPaths.map(path => <option key={path} value={path}>{path}</option>)}
+      </select></label>}
+      <label>Old base path<input value={selected} readOnly/></label>
+      <label>New base path<input value={newPath} onChange={event => setNewPath(event.target.value)} placeholder="/media/new-root-path" required/></label>
+      <p className="muted">This rewrites stored folder and media paths only. It does not move files or start a scan.</p>
+      {error && <p className="error">{error}</p>}
+      <button disabled={busy || !selected || !newPath.trim()}>{busy ? "Updating paths…" : "Update database paths"}</button>
+    </form>
   </div>;
 }
 
@@ -1871,11 +2053,15 @@ function InlineStatsLine({load}:{load:()=>Promise<{images:number; videos:number;
 
 // Shared ⋮ dropdown used by library tiles, folder entries, admin library rows
 // and favorite-view rows: one trigger style, one portal popup, all themes.
-function CardMenu({ariaLabel, children}:{ariaLabel:string; children:ReactNode}) {
+// Shared ⋮ affordance used by library tiles, folder entries, admin library rows
+// and favorite-view rows: one trigger style, one portal popup, all themes.
+// Passing `onOpen` (and no children) turns it into a plain trigger that opens a
+// dialog instead of a dropdown, so the dots never carry menu actions.
+function CardMenu({ariaLabel, children, onOpen}:{ariaLabel:string; children?:ReactNode; onOpen?:()=>void}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({top:0, left:20, maxWidth:220});
   const menuRef = useRef<HTMLButtonElement>(null);
-  const menuPopupRef = useRef<HTMLDivElement>(null);
+  const menuPopupRef = useRef<HTMLDivElement|null>(null);
   useEffect(() => {
     if (!menuOpen) return;
     const btn = menuRef.current;
@@ -1896,7 +2082,7 @@ function CardMenu({ariaLabel, children}:{ariaLabel:string; children:ReactNode}) 
     return () => document.removeEventListener("mousedown", handle);
   }, [menuOpen]);
   return <div className="item-menu folder-menu">
-    <button type="button" className="menu-summary" aria-label={ariaLabel} ref={menuRef} onClick={() => setMenuOpen(open => !open)}><span className="menu-dots"/></button>
+    <button type="button" className="menu-summary" aria-label={ariaLabel} ref={menuRef} aria-haspopup={onOpen ? undefined : "menu"} aria-expanded={onOpen ? undefined : menuOpen} onClick={() => onOpen ? onOpen() : setMenuOpen(open => !open)}><span className="menu-dots"/></button>
     {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef} style={{top: menuPos.top, left: menuPos.left, maxWidth: menuPos.maxWidth}}
       onClick={event => { if ((event.target as HTMLElement).closest('button[role="menuitem"]')) setMenuOpen(false); }}>
       {children}
@@ -1906,12 +2092,11 @@ function CardMenu({ariaLabel, children}:{ariaLabel:string; children:ReactNode}) 
 
 function LibraryTile({item}:{item:Library}) {
   const navigate = useNavigate();
+  const {setDialogLibrary} = useLibraryDialog();
   return <div className="card library library-tile">
     <Link className="folder-thumb-button" aria-label={`Open library ${item.name}`} to={`/library/${item.id}`}><span className="folder">▰</span></Link>
     <button type="button" className="folder-title-button" onClick={() => navigate(`/library/${item.id}`)}><h2>{item.name}</h2></button>
-    <CardMenu ariaLabel={`Library menu ${item.name}`}>
-      <InlineStatsLine load={() => api.libraryStats(item.id)}/>
-    </CardMenu>
+    <CardMenu ariaLabel={`Edit library ${item.name}`} onOpen={() => setDialogLibrary(item)}/>
   </div>;
 }
 
@@ -1937,7 +2122,7 @@ function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string
     <div className="card settings modal">
       <div className="panel-title"><h2>Re-extract metadata: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
       {error && <p className="error">{error}</p>}
-      <p className="muted">Every file is re-extracted; a checked option also overwrites values files already have, an unchecked one only fills what is still missing.</p>
+      <p className="muted">Every file is re-extracted; a checked option also overwrites values files already have, an unchecked one only fills what is still missing. This does not recreate thumbnail files; use Refresh thumbnails separately.</p>
       <label className="check"><input type="checkbox" checked={recreateExisting} onChange={event => setRecreateExisting(event.target.checked)}/> Re-extract metadata JSON for all files</label>
       <label className="check"><input type="checkbox" checked={updateGps} onChange={event => setUpdateGps(event.target.checked)}/> Update GPS coordinates</label>
       <label className="check"><input type="checkbox" checked={updateTakenAt} onChange={event => setUpdateTakenAt(event.target.checked)}/> Update date/time</label>
@@ -2071,14 +2256,22 @@ function Browser() {
   // A breadcrumb link back to an ancestor folder carries the folder it was
   // opened from in the navigation state: highlight it and scroll it into view
   // so the user sees where they came back from without scrolling themselves.
-  const returnToFolderId = (location.state as {returnToFolderId?:ID} | null)?.returnToFolderId ?? null;
+  // Leaving the viewer does the same for the media item that was open, so the
+  // grid comes back positioned on it rather than at the top.
+  const {returnToFolderId, returnToMediaId} = (location.state as {returnToFolderId?:ID; returnToMediaId?:ID} | null) ?? {};
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
-    if (returnToFolderId == null || consumedReturnKey.current === location.key) return;
-    if (!entries.some(entry => entry.type === "folder" && entry.id === returnToFolderId)) return;
-    consumedReturnKey.current = location.key;
-    kb.focus(`f${returnToFolderId}`);
-  }, [entries, returnToFolderId, location.key, kb.focus]);
+    if (consumedReturnKey.current === location.key) return;
+    if (returnToFolderId != null && entries.some(entry => entry.type === "folder" && entry.id === returnToFolderId)) {
+      consumedReturnKey.current = location.key;
+      kb.focus(`f${returnToFolderId}`);
+      return;
+    }
+    if (returnToMediaId != null && entries.some(entry => entry.type === "media" && entry.media?.id === returnToMediaId)) {
+      consumedReturnKey.current = location.key;
+      kb.focus(`m${returnToMediaId}`);
+    }
+  }, [entries, returnToFolderId, returnToMediaId, location.key, kb.focus]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
@@ -2134,11 +2327,17 @@ function LibraryTimeline() {
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [libraryId, currentFolderId]);
-  const filtered = items.filter(item =>
+  const filtered = useMemo(() => items.filter(item =>
     (kind === "all" || item.kind === kind) &&
     (gpsFilter === "all" ? true : gpsFilter === "nogps" ? item.gps === "" : item.gps !== "")
-  );
-  const sorted = sortMedia(filtered, sort);
+  ), [items, kind, gpsFilter]);
+  const sorted = useMemo(() => sortMedia(filtered, sort), [filtered, sort]);
+  // A whole-library timeline can mount tens of thousands of cards at once.
+  // Render the date groups in batches so the first paint stays responsive and
+  // scrolling never has to lay out every tile up front; offscreen groups are
+  // additionally skipped by the compositor via content-visibility.
+  const groups = useMemo(() => groupByDate(sorted), [sorted]);
+  const visibleGroups = useProgressiveReveal(groups, 120);
   const [selected, setSelected] = useState<ID[]>([]);
   const gridRef = useRef<HTMLDivElement|null>(null);
   const [favItem, setFavItem] = useState<Media|null>(null);
@@ -2148,6 +2347,17 @@ function LibraryTimeline() {
     onToggle: id => { if (id.startsWith("m")) toggleSelected(setSelected)(Number(id.slice(1))); },
     onFavorite: id => { if (id.startsWith("m")) { const found = items.find(m => `m${m.id}` === id); if (found) setFavItem(found); } }
   });
+  // Leaving the viewer via the breadcrumb hands back the item that was open, so
+  // the timeline reopens focused on it. Progressive group rendering can delay
+  // the card, so this retries as more date groups are revealed.
+  const returnToMediaId = (location.state as {returnToMediaId?:ID} | null)?.returnToMediaId ?? null;
+  const consumedReturnKey = useRef<string|null>(null);
+  useEffect(() => {
+    if (returnToMediaId == null || consumedReturnKey.current === location.key) return;
+    if (!items.some(item => item.id === returnToMediaId)) return;
+    consumedReturnKey.current = location.key;
+    kb.focus(`m${returnToMediaId}`);
+  }, [items, visibleGroups, returnToMediaId, location.key, kb.focus]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -2177,7 +2387,7 @@ function LibraryTimeline() {
       <button type="button" className="button-like active" onClick={() => navigate(-1)}>Cancel and go back</button>
     </div> :
     sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
-      <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{groupByDate(sorted).map(group =>
+      <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{visibleGroups.map(group =>
         <div className="timeline-group" key={group.label}>
           <div className="timeline-group-caption">{group.label}</div>
           <div className="timeline-group-grid">{group.items.map(item =>
@@ -2436,6 +2646,7 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected,
 
 function FavoriteViewPage() {
   const {viewId=""} = useParams();
+  const location = useLocation();
   const favoriteViewId = Number(viewId);
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [mediaItems, setMediaItems] = useState<Media[]>([]);
@@ -2459,6 +2670,17 @@ function FavoriteViewPage() {
     onToggle: id => { const num = Number(id.slice(1)); if (id.startsWith("f")) toggleSelected(setSelectedFolders)(num); else toggleSelected(setSelected)(num); },
     onFavorite: id => void keyboardFavorite(id)
   });
+  // Returning from the viewer focuses the item that was open in this view. It
+  // lives in `items` in folders mode and in `mediaItems` in timeline mode.
+  const returnToMediaId = (location.state as {returnToMediaId?:ID} | null)?.returnToMediaId ?? null;
+  const consumedReturnKey = useRef<string|null>(null);
+  useEffect(() => {
+    if (returnToMediaId == null || consumedReturnKey.current === location.key) return;
+    const present = mediaItems.some(item => item.id === returnToMediaId) || items.some(item => !item.isFolder && item.id === returnToMediaId);
+    if (!present) return;
+    consumedReturnKey.current = location.key;
+    kb.focus(`m${returnToMediaId}`);
+  }, [items, mediaItems, returnToMediaId, location.key, kb.focus]);
   async function keyboardFavorite(raw:string) {
     if (!Number.isFinite(favoriteViewId)) return;
     const num = Number(raw.slice(1));
@@ -2503,7 +2725,8 @@ function FavoriteViewPage() {
     Number(Boolean(b.isFolder)) - Number(Boolean(a.isFolder)) || a.name.localeCompare(b.name, undefined, {sensitivity:"base"}) || a.id - b.id
   ), [filteredItems]);
   const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => m.kind === kind);
-  const sortedMedia = sortMedia(filteredMedia, sort);
+  const sortedMedia = useMemo(() => sortMedia(filteredMedia, sort), [filteredMedia, sort]);
+  const visibleMediaGroups = useProgressiveReveal(useMemo(() => groupByDate(sortedMedia), [sortedMedia]), 120);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setMediaItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -2541,7 +2764,7 @@ function FavoriteViewPage() {
     {loaded && displayMode === "timeline" && <>
       {!mediaLoaded ? <div className="empty-state"><p>Loading…</p></div> :
         sortedMedia.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
-        <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{groupByDate(sortedMedia).map(group =>
+        <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{visibleMediaGroups.map(group =>
           <div className="timeline-group" key={group.label}>
             <div className="timeline-group-caption">{group.label}</div>
             <div className="timeline-group-grid">{group.items.map((item, itemIndex) =>
@@ -3546,19 +3769,21 @@ function MediaViewerPage() {
   const rootMode = rootParam != null;
   const [neighbors, setNeighbors] = useState<{anchor:Media; before:Media[]; after:Media[]}|null>(null);
   useEffect(() => {
-    if (!rootMode || !Number.isFinite(currentMediaId)) {
+    if (!Number.isFinite(currentMediaId)) {
       setNeighbors(null);
       return;
     }
     let cancelled = false;
     const kind = kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : undefined;
     const gps = gpsParam ?? undefined;
-    const folder = rootParam === "all" ? "all" as const : Number(rootParam);
+    // Folder mode scopes prev/next to the folder (like the index-based list);
+    // root/timeline mode scopes to the requested subtree (rootParam).
+    const folder = rootMode ? (rootParam === "all" ? "all" as const : Number(rootParam)) : routeFolderId;
     api.mediaNeighbors(libraryId, folder, currentMediaId, {sort: sortParam, kind, gps, before:1, after:1})
       .then(result => { if (!cancelled) setNeighbors(result); })
       .catch(() => { if (!cancelled) setNeighbors(null); });
     return () => { cancelled = true; };
-  }, [rootMode, rootParam, libraryId, currentMediaId, sortParam, kindParam, gpsParam]);
+  }, [rootMode, rootParam, routeFolderId, libraryId, currentMediaId, sortParam, kindParam, gpsParam]);
   useEffect(() => {
     // Once the neighbors response confirms the currently shown root-mode item,
     // the transition placeholder is no longer needed.
@@ -3587,10 +3812,10 @@ function MediaViewerPage() {
   const withOverride = (media: Media|null) => media ? mediaOverrides[media.id] ?? media : null;
   const previous = rootMode
     ? (anchorItem && neighbors ? withOverride(neighbors.before[0] ?? null) : null)
-    : (index > 0 ? folderMedia[index - 1] : null);
+    : (index >= 0 ? (index > 0 ? folderMedia[index - 1] : null) : (neighbors ? withOverride(neighbors.before[0] ?? null) : null));
   const next = rootMode
     ? (anchorItem && neighbors ? withOverride(neighbors.after[0] ?? null) : null)
-    : (index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null);
+    : (index >= 0 ? (index < folderMedia.length - 1 ? folderMedia[index + 1] : null) : (neighbors ? withOverride(neighbors.after[0] ?? null) : null));
   useEffect(() => {
     // Rebuild the desired prefetch window around the current item. In the
     // ordered list modes the whole neighbourhood is known, so a few items

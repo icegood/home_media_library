@@ -16,6 +16,7 @@ via `sh deploy/start.sh e2e`.
 ## Libraries & scanning
 
 - Media files stay in their original folders; operators mount them into the api container and add them as libraries referencing explicit absolute paths. Relative paths are never stored; both DB stores compute them from the library-root prefix.
+- After moving files locally, an admin can replace one exact library root path from the Admin → Libraries menu. The operation transactionally rewrites the root, descendant folder, and media paths in SQLite or PostgreSQL without rescanning; it does not move files itself and is rejected while the library has active jobs.
 - Scanner runs as a background job: walks folders with progress/pause/cancel, upserts folder + media indexes (slim tasks `{filePath, mimeType, parentID}`), extracts ExifTool/FFprobe metadata, then a thumbnail-create job runs.
 - Duplicate-job guard: starting a job that is already active for the same category+library is rejected.
 - Metadata renewal supports resume-by-offset after restart (deterministic ordering by relative path).
@@ -63,12 +64,14 @@ via `sh deploy/start.sh e2e`.
 ## Thumbnails & metadata
 
 - Thumbnail files live at `THUMBNAIL_DIR/media/<id/1000>/<id>_<index>.jpg`; folder covers at `THUMBNAIL_DIR/folders/<id/1000>/<id>_0.jpg` (3-way ffmpeg hstack JPEGs).
-- Default-thumb pictures per kind; refresh flows support "missing only" and "recreate existing".
+- Default-thumb pictures per kind; refresh flows support "missing only" and "recreate existing". Metadata refresh's "create existing" rewrites metadata only; use thumbnail refresh to regenerate image files.
+- Recreated media thumbnails use the source media's stored orientation metadata, do not apply per-user viewer adjustments, clear any prior thumbnail error and retry, and feed the rendered media thumbnails into folder covers. Thumbnail responses are private but revalidate so replacements appear immediately instead of remaining cached under stable URLs.
+- Original media content is privately cached for prefetching but revalidates with the source file modification time, so external file edits are visible without a long stale-content lease.
 
 ## Watch folders
 
-- Opt-in per library root (`watch` flag on `library_roots`, off by default), toggled via the admin library editor ("Watch for changes").
-- Enabled roots are watched recursively with fsnotify; file/dir events debounce (~3s) into one incremental rescan of that library using the regular scan job (duplicate guard applies).
+- Opt-in per library (`watch` flag on `libraries`, off by default), toggled via the admin library editor ("Watch for changes"). One toggle covers every root of the library; there is no per-root flag.
+- A watched library has all of its roots watched recursively with fsnotify; file/dir events debounce (~3s) into one incremental rescan of that library using the regular scan job (duplicate guard applies).
 - The watch set re-syncs every 30s and immediately after library create/update/delete; roots missing on disk are retried.
 
 ## ZIP download

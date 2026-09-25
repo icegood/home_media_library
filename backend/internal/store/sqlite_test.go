@@ -175,6 +175,64 @@ func TestSQLiteLibraryStatePersistsInternalPathsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestSQLiteMoveLibraryPathRewritesFolderAndMediaPrefixes(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	oldRoot := filepath.Join(t.TempDir(), "old")
+	newRoot := filepath.Join(t.TempDir(), "new")
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Photos", Watch: true, Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: oldRoot}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(oldRoot, "Camera")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: child.ID, Path: filepath.Join(oldRoot, "Camera", "one.jpg"), Name: "one.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := repository.MoveLibraryPath(ctx, library.ID, oldRoot, newRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Folders != 2 || result.Media != 1 {
+		t.Fatalf("move result = %#v, want 2 folders and 1 media", result)
+	}
+	loaded, err := repository.Library(ctx, library.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Roots) != 1 || loaded.Roots[0].Path != newRoot {
+		t.Fatalf("moved root = %#v", loaded.Roots)
+	}
+	// Relocating a root must not disturb the library-level watch flag.
+	if !loaded.Watch {
+		t.Fatal("watch flag lost while moving a root path")
+	}
+	loadedFolder, err := repository.Folder(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedFolder.Path != filepath.Join(newRoot, "Camera") {
+		t.Fatalf("moved folder path = %q", loadedFolder.Path)
+	}
+	loadedMedia, err := repository.MediaByPath(ctx, filepath.Join(newRoot, "Camera", "one.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedMedia.ID != media.ID {
+		t.Fatalf("moved media id = %d, want %d", loadedMedia.ID, media.ID)
+	}
+	if _, err := repository.MediaByPath(ctx, filepath.Join(oldRoot, "Camera", "one.jpg")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("old media path still resolves: %v", err)
+	}
+	if _, err := repository.MoveLibraryPath(ctx, library.ID, oldRoot, newRoot); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("old root lookup error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestSQLiteImportedEmbySHA1PasswordAuthenticatesAndUpgradesToBcrypt(t *testing.T) {
 	repository, dbFile := openSQLite(t)
 	result, err := repository.ImportSnapshot(context.Background(), domain.ImportSnapshot{Users: []domain.User{{
@@ -327,32 +385,60 @@ func TestSQLiteLibraryStats(t *testing.T) {
 	}
 }
 
-func TestSQLiteLibraryRootWatch(t *testing.T) {
+func TestSQLiteLibraryWatchIsPerLibrary(t *testing.T) {
 	repository, _ := openSQLite(t)
-	rootPath := filepath.Join(t.TempDir(), "photos")
-	library := domain.Library{ID: domain.InvalidID, Name: "Watched", Roots: []domain.LibraryRoot{
-		{ID: domain.InvalidID, Path: rootPath, Watch: true},
+	base := t.TempDir()
+	firstRoot := filepath.Join(base, "photos")
+	secondRoot := filepath.Join(base, "videos")
+	otherRoot := filepath.Join(base, "other")
+	// One library flag covers every one of its roots.
+	library := domain.Library{ID: domain.InvalidID, Name: "Watched", Watch: true, Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: firstRoot},
+		{ID: domain.InvalidID, Path: secondRoot},
 	}}
 	created, err := repository.CreateLibrary(context.Background(), library)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.CreateLibrary(context.Background(), domain.Library{ID: domain.InvalidID, Name: "Plain", Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: otherRoot},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := repository.Library(context.Background(), created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Roots) != 1 || !stored.Roots[0].Watch {
-		t.Fatalf("watch flag not persisted on create: %#v", stored.Roots)
+	if !stored.Watch {
+		t.Fatal("library watch flag not persisted on create")
 	}
 	watched, err := repository.WatchedRoots(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(watched) != 1 || watched[0].LibraryID != created.ID || watched[0].Path == "" {
-		t.Fatalf("unexpected watched roots: %#v", watched)
+	if len(watched) != 2 {
+		t.Fatalf("watched roots = %#v, want both roots of the watched library", watched)
 	}
-	// Turning the flag off must remove it from the watched set.
-	stored.Roots[0].Watch = false
+	for _, root := range watched {
+		if root.LibraryID != created.ID {
+			t.Fatalf("un-watched library %d leaked into the watched set", root.LibraryID)
+		}
+	}
+	listed, err := repository.LibrariesForUser(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("listed %d libraries, want 2", len(listed))
+	}
+	for _, item := range listed {
+		// Only the opted-in library reports watching; the flag is per library.
+		if item.Watch != (item.ID == created.ID) {
+			t.Fatalf("library %d watch = %v, want %v", item.ID, item.Watch, item.ID == created.ID)
+		}
+	}
+	// Turning the library flag off must remove all of its roots.
+	stored.Watch = false
 	if err := repository.UpdateLibrary(context.Background(), stored); err != nil {
 		t.Fatal(err)
 	}
@@ -974,6 +1060,17 @@ func TestSQLiteTHMExtensionMapsToImageJPEG(t *testing.T) {
 	}
 	if mimeType != "image/jpeg" {
 		t.Fatalf("THM mime = %q, want image/jpeg", mimeType)
+	}
+}
+
+func TestSQLite3GPPExtensionMapsToVideo3GPP(t *testing.T) {
+	repository, _ := openSQLite(t)
+	mimeType, err := repository.MIMETypeForExtension(context.Background(), ".3gp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mimeType != "video/3gpp" {
+		t.Fatalf("3GP mime = %q, want video/3gpp", mimeType)
 	}
 }
 

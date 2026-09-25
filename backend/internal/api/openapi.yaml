@@ -1442,6 +1442,39 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/Error"
+  /api/v1/admin/libraries/{id}/move-path:
+    post:
+      tags: [Admin]
+      summary: Rewrite a library root after its files have been moved
+      description: >
+        Replaces one exact library root path in the database and updates every
+        folder and media path below it without scanning files. The new directory
+        must already exist and the library must have no active jobs.
+      parameters:
+        - $ref: "#/components/parameters/LibraryID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LibraryPathMoveInput"
+      responses:
+        "200":
+          description: Stored folder and media paths were rewritten
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryPathMoveResult"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
   /api/v1/admin/libraries/{id}/scan:
     post:
       tags: [Admin]
@@ -2262,6 +2295,9 @@ components:
           type: integer
         name:
           type: string
+        watch:
+          type: boolean
+          description: Whether every root of this library is watched for filesystem changes.
         roots:
           type: array
           items:
@@ -2624,6 +2660,9 @@ components:
       properties:
         name:
           type: string
+        watch:
+          type: boolean
+          description: Watch every root of this library for filesystem changes (off by default).
         roots:
           type: array
           minItems: 1
@@ -2634,6 +2673,26 @@ components:
               path:
                 type: string
                 description: Absolute path of a folder to serve and index.
+    LibraryPathMoveInput:
+      type: object
+      required: [oldPath, newPath]
+      properties:
+        oldPath:
+          type: string
+          description: Existing absolute root path shown by the library editor.
+        newPath:
+          type: string
+          description: Existing absolute directory to which the files were moved.
+    LibraryPathMoveResult:
+      type: object
+      required: [folders, media]
+      properties:
+        folders:
+          type: integer
+          description: Number of folder paths rewritten.
+        media:
+          type: integer
+          description: Number of media paths rewritten.
     PathMapping:
       type: object
       required: [from, to]

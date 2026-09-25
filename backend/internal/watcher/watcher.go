@@ -1,6 +1,7 @@
 // Package watcher triggers incremental library rescans when files change on
-// disk inside opted-in library roots. Watching is off by default per root and
-// managed through the library_roots.watch flag.
+// disk inside opted-in library roots. Watching is off by default and managed
+// per library through the libraries.watch flag: enabling it watches every root
+// the library contains.
 package watcher
 
 import (

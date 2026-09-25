@@ -2,9 +2,11 @@ export type Role = "admin" | "regular";
 export type ID = number;
 export interface User { id:ID; login:string; role:Role; email?:string }
 export interface LibraryUserAccess { user:User; allowed:boolean }
-export interface LibraryRoot { id:ID; path?:string; watch?:boolean }
+export interface LibraryRoot { id:ID; path?:string }
 export interface KindStats { images:number; videos:number; documents:number }
-export interface Library { id:ID; name:string; roots?:LibraryRoot[]; stats?:KindStats }
+// watch opts every root of the library into filesystem watching (off by default).
+export interface Library { id:ID; name:string; watch?:boolean; roots?:LibraryRoot[]; stats?:KindStats }
+export interface LibraryPathMoveResult { folders:number; media:number }
 export interface FavoriteView { id:ID; name:string; count:number }
 export interface FavoriteViewMembership extends FavoriteView { contains:boolean }
 export interface Media {

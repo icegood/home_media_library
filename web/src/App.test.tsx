@@ -159,27 +159,62 @@ test("settings navigation opens libraries section", async () => {
   expect(screen.getByText("Family")).toBeInTheDocument();
 });
 
-test("library tile shows statistics inside its menu, not a dialog", async () => {
+test("library tile edit dialog shows statistics in a tab-independent footer", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   let resolveStats:(value:{images:number; videos:number; documents:number}) => void = () => {};
   mockApi.libraryStats.mockReturnValueOnce(new Promise(resolve => { resolveStats = resolve; }));
   render(<MemoryRouter><App/></MemoryRouter>);
   expect(await screen.findByRole("link", {name:"Open library Family"})).toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText("Library menu Family"));
-  expect(await screen.findByText("Loading statistics…")).toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  expect(within(dialog).getByText("Loading statistics…")).toBeInTheDocument();
   resolveStats({images:10, videos:2, documents:0});
-  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toHaveTextContent("Images: 10 · Videos: 2 · Documents: 0"));
-  expect(screen.queryByRole("dialog", {name:"Library statistics Family"})).not.toBeInTheDocument();
+  await waitFor(() => expect(within(dialog).getByText(/Images: 10 · Videos: 2 · Documents: 0/)).toBeInTheDocument());
+  // The statistics line lives in the dialog footer, so it stays visible
+  // whichever tab is open.
+  fireEvent.click(within(dialog).getByRole("tab", {name:"Rights per users"}));
+  expect(within(dialog).getByRole("group", {name:"Read access"})).toBeInTheDocument();
+  expect(within(dialog).getByText(/Images: 10 · Videos: 2 · Documents: 0/)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("tab", {name:"Root folders"}));
+  expect(within(dialog).getByText(/Images: 10 · Videos: 2 · Documents: 0/)).toBeInTheDocument();
 });
 
 test("item menu closes on outside click", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[{id:10, path:"/media/family"}]}]);
-  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  expect(await screen.findByRole("menuitem", {name:"Edit"})).toBeInTheDocument();
+  mockApi.entries.mockResolvedValue([{id:20, name:"Photos", relativePath:"Photos", type:"folder"}]);
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Folder menu Photos"));
+  expect(await screen.findByRole("menuitem", {name:"Refresh items"})).toBeInTheDocument();
   fireEvent.mouseDown(document.body);
-  await waitFor(() => expect(screen.queryByRole("menuitem", {name:"Edit"})).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole("menuitem", {name:"Refresh items"})).not.toBeInTheDocument());
+});
+
+test("library dots open the actions dialog instead of a menu", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  expect(await screen.findByRole("dialog", {name:"Library actions Family"})).toBeInTheDocument();
+  expect(document.querySelector(".item-submenu")).toBeNull();
+  // Delete is a row button, never a menu action.
+  expect(document.querySelector(".dialog-footer")).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", {name:"Close"}));
+  expect(screen.queryByRole("dialog", {name:"Library actions Family"})).not.toBeInTheDocument();
+  const row = (await screen.findByText("Family")).closest(".library-row") as HTMLElement;
+  expect(within(row).getByRole("button", {name:"Delete"})).toBeInTheDocument();
+  expect(within(row).queryByRole("menuitem")).not.toBeInTheDocument();
+});
+
+test("library dialog hides admin-only tabs and actions from regular users", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[{id:10, path:"/media/family/photos"}]}]);
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  expect(within(dialog).queryByRole("tab")).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", {name:"Save changes"})).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", {name:"Delete"})).not.toBeInTheDocument();
+  // The statistics footer stays, since every reader can see it.
+  await waitFor(() => expect(within(dialog).getByText(/Images:/)).toBeInTheDocument());
 });
 
 test("favorite views page keeps the create editor as a separate panel above the list", async () => {
@@ -209,15 +244,57 @@ test("library tile links into the library without a per-library map button", asy
   expect(screen.queryByText(/folders ·/)).not.toBeInTheDocument();
 });
 
-test("admin library list shows statistics in the row menu", async () => {
+test("admin library list keeps statistics out of the row menu and inside the edit dialog", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.libraryStats.mockResolvedValue({images:10, videos:2, documents:0});
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
   await screen.findByRole("heading", {name:"Libraries"});
   expect(await screen.findByText("Family")).toBeInTheDocument();
   expect(document.body.querySelector(".folder-stats-inline")).not.toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText("Library menu Family"));
-  await waitFor(() => expect(document.body.querySelector(".folder-stats-inline")).toHaveTextContent("Images: 10 · Videos: 2"));
+  fireEvent.click(screen.getByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  await waitFor(() => expect(within(dialog).getByText(/Images: 10 · Videos: 2/)).toBeInTheDocument());
+  expect(within(dialog).getByText(/Images: 10/).closest(".dialog-footer")).not.toBeNull();
+});
+
+test("admin can move a single root path from the dialog without starting a scan", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Move path…"}));
+  const moveDialog = await screen.findByRole("dialog", {name:"Move root path /media/family/photos"});
+  expect(within(moveDialog).getByLabelText("Old base path")).toHaveValue("/media/family/photos");
+  fireEvent.change(within(moveDialog).getByLabelText("New base path"), {target:{value:"/media/moved/family"}});
+  fireEvent.click(within(moveDialog).getByRole("button", {name:"Update database paths"}));
+  await waitFor(() => expect(mockApi.moveLibraryPath).toHaveBeenCalledWith(1, {oldPath:"/media/family/photos", newPath:"/media/moved/family"}));
+  expect(mockApi.deleteLibrary).not.toHaveBeenCalled();
+  expect(mockApi.scanLibrary).not.toHaveBeenCalled();
+  expect(await within(dialog).findByText("Updated 1 folder paths and 1 media paths. No scan was started.")).toBeInTheDocument();
+  // The moved root is reflected in the dialog, not by rewriting the whole library.
+  expect(within(dialog).getByLabelText("Root path")).toHaveValue("/media/moved/family");
+});
+
+test("library dialog never re-points an existing root path by typing, only Move path does", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  // An existing root is read-only: editing it through updateLibrary would add a
+  // second empty root and orphan the old subtree, so only Move path may change it.
+  expect(within(dialog).getByLabelText("Root path")).toHaveAttribute("readonly");
+  expect(within(dialog).queryByRole("button", {name:"Browse"})).not.toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Add root folder"}));
+  const paths = within(dialog).getAllByLabelText("Root path");
+  expect(paths).toHaveLength(2);
+  // A root added in this dialog is still free to be typed and browsed.
+  expect(paths[1]).not.toHaveAttribute("readonly");
+  expect(within(dialog).getByRole("button", {name:"Browse"})).toBeInTheDocument();
+  fireEvent.change(paths[1], {target:{value:"/media/new-root"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save changes"}));
+  await waitFor(() => expect(mockApi.updateLibrary).toHaveBeenCalledWith(1, expect.objectContaining({
+    roots: [expect.objectContaining({path:"/media/family/photos"}), expect.objectContaining({path:"/media/new-root"})]
+  })));
 });
 
 test("authenticated header renders user menu and clicking logout logs out", async () => {
@@ -796,33 +873,33 @@ test("admin user submenu does not contain settings sections", async () => {
   expect(userSubmenu).toHaveTextContent("Logout");
 });
 
-test("library tridot menu exposes library actions and thumbnail refresh options", async () => {
+test("library edit dialog exposes root, rights and refresh actions", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
   expect(await screen.findByRole("heading", {name:"Libraries"})).toBeInTheDocument();
   expect(screen.getByRole("button", {name:"Add"})).toBeInTheDocument();
   expect(await screen.findByText("Family")).toBeInTheDocument();
-  fireEvent.click(await screen.findByRole("button", {name:"Add"}));
-  expect(await screen.findByRole("heading", {name:"Add library"})).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"Close"}));
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(await screen.findByRole("menuitem", {name:"Refresh content"}));
-  expect(screen.queryByRole("menuitem", {name:"Edit"})).not.toBeInTheDocument();
+  // The row menu keeps only Delete; every other action moved into the dialog.
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  expect(document.querySelector(".item-submenu")).toBeNull();
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  expect(within(dialog).getByLabelText("Library name")).toHaveValue("Family");
+  fireEvent.click(within(dialog).getByRole("tab", {name:"Rights per users"}));
+  expect(within(dialog).getByRole("group", {name:"Read access"})).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("tab", {name:"Refresh actions"}));
+  fireEvent.click(within(dialog).getByRole("button", {name:"Refresh content"}));
   await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(1));
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(screen.getByRole("menuitem", {name:"Refresh thumbnails…"}));
+  fireEvent.click(within(dialog).getByRole("button", {name:"Refresh thumbnails…"}));
   expect(await screen.findByRole("dialog", {name:"Refresh thumbnails Family"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Missing only"}));
   await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:false}));
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(screen.getByRole("menuitem", {name:"Refresh thumbnails…"}));
+  fireEvent.click(within(dialog).getByRole("button", {name:"Refresh thumbnails…"}));
   fireEvent.click(await screen.findByRole("button", {name:"Recreate existing"}));
   await waitFor(() => expect(mockApi.createThumbnails).toHaveBeenCalledWith(1, {recreateExisting:true}));
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  expect(screen.queryByRole("menuitem", {name:"Renew metadata"})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("menuitem", {name:"Edit"}));
-  expect(await screen.findByRole("dialog", {name:"Edit library details"})).toBeInTheDocument();
-  expect(screen.getByRole("heading", {name:"Edit details"})).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Refresh metadata…"}));
+  expect(await screen.findByRole("dialog", {name:"Refresh metadata Family"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Refresh"}));
+  await waitFor(() => expect(mockApi.metadataRenew).toHaveBeenCalledWith(1, expect.objectContaining({recreateExisting:false, updateGps:false, updateTakenAt:false})));
 });
 
 test("user language setting switches rendered UI to Polish", async () => {
@@ -847,43 +924,85 @@ test("user language setting switches rendered UI to German", async () => {
   expect(document.body.textContent).not.toContain("Media Library");
 });
 
-test("library editor persists per-root watch flag and sends it on save", async () => {
+test("library dialog persists the library-level watch flag and sends it on save", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
-    {id:10, path:"/media/family/photos", watch:false}
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", watch:false, roots:[
+    {id:10, path:"/media/family/photos"},
+    {id:11, path:"/media/family/videos"}
   ]}]);
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(await screen.findByRole("menuitem", {name:"Edit"}));
-  const dialog = await screen.findByRole("dialog", {name:"Edit library details"});
-  const checkbox = within(dialog).getByRole("checkbox", {name:"Watch for changes"}) as HTMLInputElement;
-  expect(checkbox.checked).toBe(false);
-  fireEvent.click(checkbox);
-  fireEvent.click(within(dialog).getByRole("button", {name:"Save details"}));
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  // One toggle for the whole library, not one per root.
+  const checkboxes = within(dialog).getAllByRole("checkbox", {name:"Watch for changes"}) as HTMLInputElement[];
+  expect(checkboxes).toHaveLength(1);
+  expect(checkboxes[0].checked).toBe(false);
+  fireEvent.click(checkboxes[0]);
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save changes"}));
   await waitFor(() => expect(mockApi.updateLibrary).toHaveBeenCalledWith(1, expect.objectContaining({
-    roots: [expect.objectContaining({path:"/media/family/photos", watch:true})]
+    watch: true,
+    roots: [{path:"/media/family/photos"}, {path:"/media/family/videos"}]
   })));
+  expect(await within(dialog).findByText("Library saved.")).toBeInTheDocument();
 });
 
-test("library row shows auto-refresh indicator when a root is watched", async () => {
+test("library row shows the root folder and the auto-refresh indicator", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
-    {id:10, path:"/media/family/photos", watch:true}
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", watch:true, roots:[
+    {id:10, path:"/media/family/photos"}
   ]}]);
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
   const row = await screen.findByText("Family");
   expect(row.parentElement).toBeInTheDocument();
+  expect(screen.getByText(/\/media\/family\/photos/)).toBeInTheDocument();
   expect(screen.getByText(/Auto-refresh on/)).toBeInTheDocument();
 });
 
-test("library tridot menu can delete a library after confirmation", async () => {
+test("admin library row keeps Move and Delete on the name line", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
+    {id:10, path:"/media/family/photos"}
+  ]}]);
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  const row = (await screen.findByText("Family")).closest(".library-row") as HTMLElement;
+  const name = row.querySelector(".library-name-button") as HTMLElement;
+  const move = within(row).getByRole("button", {name:"Move"});
+  const del = within(row).getByRole("button", {name:"Delete"});
+  expect(name).toBeInTheDocument();
+  // Move relocates the root through the same modal the dialog uses.
+  fireEvent.click(move);
+  const modal = await screen.findByRole("dialog", {name:/Move root path/});
+  expect(within(modal).getByDisplayValue("/media/family/photos")).toBeInTheDocument();
+  fireEvent.change(within(modal).getByLabelText("New base path"), {target:{value:"/media/moved/photos"}});
+  fireEvent.click(within(modal).getByRole("button", {name:"Update database paths"}));
+  await waitFor(() => expect(mockApi.moveLibraryPath).toHaveBeenCalledWith(1, {oldPath:"/media/family/photos", newPath:"/media/moved/photos"}));
+  expect(within(row).getByRole("button", {name:"Delete"})).toBe(del);
+});
+
+test("multi-root library lets the row Move action pick which root to relocate", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[
+    {id:10, path:"/media/family/photos"},
+    {id:11, path:"/media/family/videos"}
+  ]}]);
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  const row = (await screen.findByText("Family")).closest(".library-row") as HTMLElement;
+  fireEvent.click(within(row).getByRole("button", {name:"Move"}));
+  const modal = await screen.findByRole("dialog", {name:/Move root path/});
+  fireEvent.change(within(modal).getByLabelText("Root to move"), {target:{value:"/media/family/videos"}});
+  fireEvent.change(within(modal).getByLabelText("New base path"), {target:{value:"/media/moved/videos"}});
+  fireEvent.click(within(modal).getByRole("button", {name:"Update database paths"}));
+  await waitFor(() => expect(mockApi.moveLibraryPath).toHaveBeenCalledWith(1, {oldPath:"/media/family/videos", newPath:"/media/moved/videos"}));
+});
+
+test("library row delete button removes a library after confirmation", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.libraries.mockResolvedValueOnce([{id:1, name:"Family", roots:[
     {id:10, path:"/media/family/photos"}
   ]}]).mockResolvedValueOnce([]);
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(await screen.findByRole("menuitem", {name:"Delete"}));
+  const row = (await screen.findByText("Family")).closest(".library-row") as HTMLElement;
+  fireEvent.click(within(row).getByRole("button", {name:"Delete"}));
   expect(await screen.findByRole("dialog", {name:"Delete library Family"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Delete library"}));
   await waitFor(() => expect(mockApi.deleteLibrary).toHaveBeenCalledWith(1));
@@ -938,13 +1057,14 @@ test("admin can create users from settings users section", async () => {
   await waitFor(() => expect(mockApi.createUser).toHaveBeenCalledWith({login:"bob", role:"regular", password:"verylongpass1"}));
 });
 
-test("library edit modal can grant regular user read access", async () => {
+test("library dialog rights tab can grant regular user read access", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(screen.getByRole("menuitem", {name:"Edit"}));
-  expect(await screen.findByRole("group", {name:"Read access"})).toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText(/alice/));
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  fireEvent.click(within(dialog).getByRole("tab", {name:"Rights per users"}));
+  expect(await within(dialog).findByRole("group", {name:"Read access"})).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByLabelText(/alice/));
   await waitFor(() => expect(mockApi.setLibraryAccess).toHaveBeenCalledWith(1, 2, true));
 });
 
@@ -1029,6 +1149,26 @@ test("admin can download the full application log file from the logs section", a
   }
 });
 
+test("add library offers one watch toggle for the whole library", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Add"}));
+  const dialog = await screen.findByRole("dialog", {name:"Add library"});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Add root folder"}));
+  // Two roots, but a single library-level watch flag.
+  const watch = within(dialog).getAllByRole("checkbox", {name:"Watch for changes"}) as HTMLInputElement[];
+  expect(watch).toHaveLength(1);
+  expect(watch[0].checked).toBe(false);
+  fireEvent.click(watch[0]);
+  fireEvent.change(within(dialog).getByLabelText("Library name"), {target:{value:"Family"}});
+  fireEvent.change(within(dialog).getAllByLabelText("Root path")[0], {target:{value:"/media/family/photos"}});
+  fireEvent.change(within(dialog).getAllByLabelText("Root path")[1], {target:{value:"/media/family/videos"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Create library"}));
+  await waitFor(() => expect(mockApi.createLibrary).toHaveBeenCalledWith({
+    name:"Family", watch:true, roots:[{path:"/media/family/photos"}, {path:"/media/family/videos"}]
+  }));
+});
+
 test("library root can be selected from docker filesystem picker", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
@@ -1053,8 +1193,8 @@ test("modal windows close when clicking outside but not inside", async () => {
 test("confirmation modals do not close when clicking outside", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
-  fireEvent.click(await screen.findByLabelText("Library menu Family"));
-  fireEvent.click(await screen.findByRole("menuitem", {name:"Delete"}));
+  const row = (await screen.findByText("Family")).closest(".library-row") as HTMLElement;
+  fireEvent.click(within(row).getByRole("button", {name:"Delete"}));
   const dialog = await screen.findByRole("dialog", {name:"Delete library Family"});
   fireEvent.click(dialog);
   expect(screen.getByRole("dialog", {name:"Delete library Family"})).toBeInTheDocument();
@@ -1535,6 +1675,59 @@ test("timeline load can be cancelled while a big folder is still loading", async
   expect(await screen.findByRole("button", {name:"Cancel and go back"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name:"Cancel and go back"}));
   await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Libraries / Family"));
+});
+
+test("returning from the viewer to its folder focuses the item that was open", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:101, name:"one.jpg", relativePath:"Photos/one.jpg", type:"media", media:{id:101, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:103, name:"two.mp4", relativePath:"Photos/two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:""}}
+  ], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  mockApi.media.mockResolvedValue({id:103, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:""});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+  const breadcrumb = await screen.findByLabelText("Breadcrumb");
+  expect(breadcrumb).toHaveTextContent("Libraries / Family / Photos");
+  fireEvent.click(screen.getByRole("link", {name:"Photos"}));
+  await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Libraries / Family / Photos"));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m103"]')).toHaveClass("kb-focus"));
+  expect(document.querySelector('[data-kb-id="m101"]')).not.toHaveClass("kb-focus");
+});
+
+test("returning from the viewer keeps the folder focus behaviour for ancestor crumbs", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.entries.mockResolvedValue([
+    {id:20, name:"Photos", relativePath:"Photos", type:"folder"}
+  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:101, name:"one.jpg", relativePath:"Photos/one.jpg", type:"media", media:{id:101, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  mockApi.media.mockResolvedValue({id:101, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=101"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Breadcrumb");
+  // The library crumb still hands back the folder the viewer was opened from.
+  fireEvent.click(screen.getByRole("link", {name:"Family"}));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="f20"]')).toHaveClass("kb-focus"));
+});
+
+test("returning from the viewer to the timeline focuses the item that was open", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"}
+  ]});
+  mockApi.folderMedia.mockResolvedValue([
+    {id:100, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-08-21T12:34:00Z"},
+    {id:102, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:"2020-08-21T13:34:00Z"}
+  ]);
+  mockApi.media.mockResolvedValue({id:102, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:"2020-08-21T13:34:00Z"});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=102&root=20"]}><App/></MemoryRouter>);
+  const breadcrumb = await screen.findByLabelText("Breadcrumb");
+  await waitFor(() => expect(breadcrumb).toHaveTextContent("two.mp4"));
+  fireEvent.click(screen.getByRole("link", {name:"Family"}));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m102"]')).toHaveClass("kb-focus"));
+  expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
 });
 
 test("library timeline groups media by date along a vertical ruler", async () => {
@@ -2696,6 +2889,7 @@ test("folder card menu opens metadata renewal with option checkboxes", async () 
   fireEvent.click(await screen.findByLabelText("Folder menu Photos"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"Refresh metadata…"}));
   const dialog = await screen.findByRole("dialog", {name:"Refresh metadata Photos"});
+  expect(within(dialog).getByText(/does not recreate thumbnail files/i)).toBeInTheDocument();
   fireEvent.click(within(dialog).getByLabelText("Update GPS coordinates"));
   fireEvent.click(within(dialog).getByRole("button", {name:"Refresh"}));
   await waitFor(() => expect(mockApi.metadataRenew).toHaveBeenCalledWith(1, {recreateExisting:false, updateGps:true, updateTakenAt:false, rootId:20}));
@@ -3672,14 +3866,15 @@ test("library editor scan-now checkbox drives the post-save notice variants", as
   await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(expect.any(Number)));
   expect(await screen.findByText(/Scan started in background/)).toBeInTheDocument();
 
-  // Root watch toggle round-trips through the edit form.
-  fireEvent.click(await screen.findByLabelText("Library menu Trips"));
-  fireEvent.click(await screen.findByRole("menuitem", {name:"Edit"}));
-  const editDialog = await screen.findByRole("dialog", {name:"Edit library details"});
+  // The library-level watch toggle round-trips through the library dialog.
+  const tripsRow = (await screen.findByText("Trips")).closest(".library-row") as HTMLElement;
+  fireEvent.click(within(tripsRow).getByLabelText("Edit library Trips"));
+  const editDialog = await screen.findByRole("dialog", {name:"Library actions Trips"});
+  expect(within(editDialog).getByLabelText("Watch for changes")).not.toBeChecked();
   fireEvent.click(within(editDialog).getByLabelText("Watch for changes"));
-  fireEvent.click(within(editDialog).getByRole("button", {name:"Save details"}));
+  fireEvent.click(within(editDialog).getByRole("button", {name:"Save changes"}));
   await waitFor(() => expect(mockApi.updateLibrary).toHaveBeenCalledWith(expect.any(Number),
-    expect.objectContaining({roots:[expect.objectContaining({watch:true})]})));
+    expect.objectContaining({watch:true})));
 });
 
 test("native server gate asks for the address when none is saved", async () => {

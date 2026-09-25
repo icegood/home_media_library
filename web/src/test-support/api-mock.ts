@@ -10,7 +10,7 @@ import type { About, Media, User } from "../types";
 
 interface POIPoint {id:string; name:string; category:string; lat:number; lon:number; website?:string; wikipediaTitle?:string}
 
-interface LibraryRow { id:number; name:string; roots:{id:number; path:string; watch?:boolean}[] }
+interface LibraryRow { id:number; name:string; watch?:boolean; roots:{id:number; path:string}[] }
 interface FolderRow { id:number; parentId:number; relativePath:string; name:string }
 interface FavoriteViewRow { id:number; name:string; count:number }
 interface JobRow { id:string; category:string; status:string; paused?:boolean; cancelable?:boolean }
@@ -137,19 +137,28 @@ function createMockApi() {
       const view = state.favoriteViews.find((row:FavoriteViewRow) => row.id === Number(id));
       return {images:view ? Math.max(view.count - 1, 0) : 0, videos:view ? 1 : 0, documents:0};
     }),
-    createLibrary: vi.fn(async (input:{name:string; roots:{path:string; watch?:boolean}[]}) => {
-      const library:LibraryRow = {id:++nextId, name:input.name, roots:[]};
-      library.roots = input.roots.map(root => ({id:++nextId, path:root.path, watch:root.watch}));
+    createLibrary: vi.fn(async (input:{name:string; watch?:boolean; roots:{path:string}[]}) => {
+      const library:LibraryRow = {id:++nextId, name:input.name, watch:Boolean(input.watch), roots:[]};
+      library.roots = input.roots.map(root => ({id:++nextId, path:root.path}));
       state.libraries.push(library);
       state.access.set(library.id, []);
       return JSON.parse(JSON.stringify(library));
     }),
-    updateLibrary: vi.fn(async (id:number, input:{name:string; roots:{path:string; watch?:boolean}[]}) => {
+    updateLibrary: vi.fn(async (id:number, input:{name:string; watch?:boolean; roots:{path:string}[]}) => {
       const library = findLibrary(id);
       if (!library) throw new Error(`library ${id} not found`);
       library.name = input.name;
-      library.roots = input.roots.map((root, index) => ({id:(library.roots[index] ?? {id:++nextId}).id as number, path:root.path, watch:root.watch}));
+      library.watch = Boolean(input.watch);
+      library.roots = input.roots.map((root, index) => ({id:(library.roots[index] ?? {id:++nextId}).id as number, path:root.path}));
       return JSON.parse(JSON.stringify(library));
+    }),
+    moveLibraryPath: vi.fn(async (id:number, input:{oldPath:string; newPath:string}) => {
+      const library = findLibrary(id);
+      if (!library) throw new Error(`library ${id} not found`);
+      const root = library.roots.find((row:{path:string}) => row.path === input.oldPath);
+      if (!root) throw new Error("old path is not a root of this library");
+      root.path = input.newPath;
+      return {folders:1, media:1};
     }),
     deleteLibrary: vi.fn(async (id:number) => {
       state.libraries = state.libraries.filter((library:LibraryRow) => library.id !== Number(id));

@@ -727,6 +727,38 @@ func TestCreateLibraryRejectsNestedRoots(t *testing.T) {
 	}
 }
 
+func TestAdminCanMoveLibraryPathWithoutScanning(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	oldRoot := filepath.Join(f.mediaRoot, "family")
+	newRoot := filepath.Join(f.mediaRoot, "moved-family")
+	if err := os.Rename(oldRoot, newRoot); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]string{"oldPath": oldRoot, "newPath": newRoot})
+	response := request(f.handler, http.MethodPost, fmt.Sprintf("/api/v1/admin/libraries/%d/move-path", f.libraryID), admin, payload)
+	if response.Code != http.StatusOK {
+		t.Fatalf("move path status = %d: %s", response.Code, response.Body)
+	}
+	var result domain.LibraryPathMoveResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Folders != 2 || result.Media != 1 {
+		t.Fatalf("move result = %#v, want 2 folders and 1 media", result)
+	}
+	library, err := f.store.Library(context.Background(), f.libraryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(library.Roots) != 1 || library.Roots[0].Path != newRoot {
+		t.Fatalf("library roots after move = %#v", library.Roots)
+	}
+	if got := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/content", f.photoID), admin, nil); got.Code != http.StatusOK {
+		t.Fatalf("moved media content status = %d: %s", got.Code, got.Body)
+	}
+}
+
 func TestAdminCanBrowseFilesystem(t *testing.T) {
 	f := setup(t)
 	admin := login(t, f.handler, "admin")
@@ -1305,8 +1337,8 @@ func TestMediaContentServes(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("content status = %d: %s", response.Code, response.Body)
 	}
-	if cc := response.Header().Get("Cache-Control"); !strings.Contains(cc, "private") || !strings.Contains(cc, "max-age=") {
-		t.Fatalf("Cache-Control = %q, want private cacheability so prefetch is reused instantly", cc)
+	if cc := response.Header().Get("Cache-Control"); cc != "private, no-cache" {
+		t.Fatalf("Cache-Control = %q, want private revalidation", cc)
 	}
 }
 
@@ -1425,6 +1457,34 @@ func TestInvalidCoordinatesRejected(t *testing.T) {
 	response := request(f.handler, http.MethodPatch, fmt.Sprintf("/api/v1/media/%d/gps", f.photoID), alice, []byte(`{"gps":"91,30"}`))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestThumbnailResponsesRevalidate(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	mediaTarget := filepath.Join(f.thumbnailDir, "media", fmt.Sprintf("%d", f.photoID/1000), fmt.Sprintf("%d_0.jpg", f.photoID))
+	folderTarget := filepath.Join(f.thumbnailDir, "folders", fmt.Sprintf("%d", f.folderID/1000), fmt.Sprintf("%d_0.jpg", f.folderID))
+	for _, target := range []string{mediaTarget, folderTarget} {
+		if err := os.MkdirAll(filepath.Dir(target), 0o770); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("thumbnail"), 0o660); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	responses := []*httptest.ResponseRecorder{
+		request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/media/%d/thumbnail", f.photoID), alice, nil),
+		request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/folders/%d/thumbnail", f.folderID), alice, nil),
+	}
+	for _, response := range responses {
+		if response.Code != http.StatusOK {
+			t.Fatalf("thumbnail status = %d: %s", response.Code, response.Body)
+		}
+		if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "private, no-cache" {
+			t.Fatalf("thumbnail Cache-Control = %q", cacheControl)
+		}
 	}
 }
 
@@ -1585,6 +1645,9 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 	if item, err = f.store.UpsertMedia(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.store.SetMediaActionError(context.Background(), item.ID, "thumbnail", "previous thumbnail failure"); err != nil {
+		t.Fatal(err)
+	}
 	items, err := f.store.MediaForLibrary(context.Background(), 0, f.libraryID)
 	if err != nil {
 		t.Fatal(err)
@@ -1598,7 +1661,7 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 	if !found {
 		t.Fatalf("broken media is not in library items: %#v", items)
 	}
-	response := request(f.handler, http.MethodPost, fmt.Sprintf("/api/v1/admin/libraries/%d/thumbnails", f.libraryID), admin, nil)
+	response := request(f.handler, http.MethodPost, fmt.Sprintf("/api/v1/admin/libraries/%d/thumbnails", f.libraryID), admin, []byte(`{"recreateExisting":true}`))
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("thumbnail job status = %d: %s", response.Code, response.Body)
 	}
@@ -1616,6 +1679,9 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 			if statuses[0].Processed != statuses[0].Total || statuses[0].Error == "" {
 				t.Fatalf("unexpected completed job: %#v", statuses[0])
 			}
+			if strings.Contains(statuses[0].Error, "skipped thumbnail because previous error") {
+				t.Fatalf("recreate did not retry the failed thumbnail: %#v", statuses[0])
+			}
 			updated, err := f.store.Media(context.Background(), item.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -1629,6 +1695,126 @@ func TestThumbnailJobMarksBrokenMediaAndContinues(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("thumbnail job did not finish")
+}
+
+// awaitThumbnailJob starts a thumbnail refresh with the given options and
+// returns the finished job status.
+func awaitThumbnailJob(t *testing.T, f fixture, admin string, body string) api.JobStatus {
+	t.Helper()
+	response := request(f.handler, http.MethodPost, fmt.Sprintf("/api/v1/admin/libraries/%d/thumbnails", f.libraryID), admin, []byte(body))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("thumbnail job status = %d: %s", response.Code, response.Body)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs := request(f.handler, http.MethodGet, "/api/v1/admin/jobs", admin, nil)
+		if jobs.Code != http.StatusOK {
+			t.Fatalf("jobs status = %d: %s", jobs.Code, jobs.Body)
+		}
+		var statuses []api.JobStatus
+		if err := json.Unmarshal(jobs.Body.Bytes(), &statuses); err != nil {
+			t.Fatal(err)
+		}
+		if len(statuses) != 0 && statuses[0].Status == "done" {
+			return statuses[0]
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("thumbnail job did not finish")
+	return api.JobStatus{}
+}
+
+// erroredPhoto stores a thumbnail error for the fixture photo and makes sure
+// no thumbnail file exists, mirroring media whose generation failed earlier.
+func erroredPhoto(t *testing.T, f fixture) domain.Media {
+	t.Helper()
+	if err := os.RemoveAll(filepath.Join(f.thumbnailDir, "media")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetMediaActionError(context.Background(), f.photoID, "thumbnail", "could not create thumbnail: Permission denied"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := f.store.Media(context.Background(), f.photoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func TestMissingThumbnailRefreshRetriesStoredErrors(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	erroredPhoto(t, f)
+
+	job := awaitThumbnailJob(t, f, admin, `{"recreateExisting":false}`)
+
+	if strings.Contains(job.Error, "skipped") {
+		t.Fatalf("missing-only refresh skipped an errored item without a thumbnail: %#v", job)
+	}
+	if !strings.Contains(job.Error, "trip.jpg") {
+		t.Fatalf("job did not report the errored item: %#v", job)
+	}
+}
+
+func TestMissingThumbnailRefreshLeavesExistingThumbnailsAloneDespiteStoredError(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	if err := f.store.SetMediaActionError(context.Background(), f.photoID, "thumbnail", "could not create thumbnail: Permission denied"); err != nil {
+		t.Fatal(err)
+	}
+	thumbDir := filepath.Join(f.thumbnailDir, "media", "0")
+	if err := os.MkdirAll(thumbDir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(thumbDir, fmt.Sprintf("%d_0.jpg", f.photoID))
+	if err := os.WriteFile(target, []byte("existing thumb"), 0o660); err != nil {
+		t.Fatal(err)
+	}
+
+	awaitThumbnailJob(t, f, admin, `{"recreateExisting":false}`)
+
+	if content, err := os.ReadFile(target); err != nil || string(content) != "existing thumb" {
+		t.Fatalf("missing-only refresh overwrote an existing thumbnail: %q %v", content, err)
+	}
+	updated, err := f.store.Media(context.Background(), f.photoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ThumbnailError == "" {
+		t.Fatalf("missing-only refresh cleared the stored error statistic of an untouched item: %#v", updated)
+	}
+}
+
+func TestMetadataRenewIgnoresStoredError(t *testing.T) {
+	f := setup(t)
+	admin := login(t, f.handler, "admin")
+	if err := f.store.SetMediaActionError(context.Background(), f.photoID, "metadata", "previous metadata failure"); err != nil {
+		t.Fatal(err)
+	}
+	response := request(f.handler, http.MethodPost, fmt.Sprintf("/api/v1/admin/libraries/%d/metadata/renew", f.libraryID), admin, []byte(`{"recreateExisting":false}`))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("metadata renew status = %d: %s", response.Code, response.Body)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs := request(f.handler, http.MethodGet, "/api/v1/admin/jobs", admin, nil)
+		var statuses []api.JobStatus
+		if err := json.Unmarshal(jobs.Body.Bytes(), &statuses); err != nil {
+			t.Fatal(err)
+		}
+		if len(statuses) != 0 && statuses[0].Status == "done" {
+			updated, err := f.store.Media(context.Background(), f.photoID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.MetadataError == "previous metadata failure" {
+				t.Fatalf("metadata renew skipped an item because of its stored error: %#v", updated)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("metadata renew job did not finish")
 }
 
 func TestMetadataRenewFallsBackToFileMTimeForDatelessMedia(t *testing.T) {

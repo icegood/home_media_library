@@ -89,6 +89,7 @@ type Store interface {
 	PruneFolder(ctx context.Context, rootFolderID int, keepFolders, keepMedia map[int]bool) error
 	CreateLibrary(ctx context.Context, library domain.Library) (domain.Library, error)
 	UpdateLibrary(ctx context.Context, library domain.Library) error
+	MoveLibraryPath(ctx context.Context, libraryID int, oldPath, newPath string) (domain.LibraryPathMoveResult, error)
 	DeleteLibrary(ctx context.Context, id int) error
 	LibraryAccess(ctx context.Context, libraryID int) ([]domain.LibraryUserAccess, error)
 	SetAccess(ctx context.Context, libraryID, userID int, allowed bool) error

@@ -56,9 +56,10 @@ Key facts:
   Maps coordinate formats (`N 050° 4.035, E 19° 56.614`, DMS, links) in its coordinate search.
 - Scanner: background job walks folder (progress, pause/cancel), upserts folders +
   media, extracts ExifTool/FFprobe metadata, then a thumbnail-create job runs.
-- Folder watcher: per-root `watch` flag (off by default) — fsnotify watches each
-  opted-in library root recursively and debounces filesystem changes into an
-  incremental rescan of that library (see `backend/internal/watcher`).
+- Folder watcher: per-library `watch` flag on `libraries` (off by default) —
+  fsnotify watches every root of an opted-in library recursively and debounces
+  filesystem changes into an incremental rescan of that library (see
+  `backend/internal/watcher`).
 - Settings → Network access toggles HTTP/HTTPS; gateway config regenerates and
   Caddy hot-reloads.
 

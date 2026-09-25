@@ -164,6 +164,20 @@ func normalizePath(value string) string {
 	return filepath.ToSlash(filepath.Clean(value))
 }
 
+func normalizeLibraryPathMove(oldPath, newPath string) (string, string, error) {
+	oldPath = strings.TrimSpace(oldPath)
+	newPath = strings.TrimSpace(newPath)
+	if oldPath == "" || newPath == "" {
+		return "", "", ErrConflict
+	}
+	oldPath = normalizePath(oldPath)
+	newPath = normalizePath(newPath)
+	if oldPath == newPath || nestedPath(oldPath, newPath) || nestedPath(newPath, oldPath) {
+		return "", "", ErrConflict
+	}
+	return oldPath, newPath, nil
+}
+
 // gpsCoords splits a "lat,lng" value into its coordinates. Values that are not
 // two finite numbers produce (nil, nil) so absent GPS is stored as NULL rather
 // than a fake 0,0 point; the media_geo R*Tree only ever holds real coordinates.
@@ -719,13 +733,13 @@ func (s *SQLite) ImportSnapshot(ctx context.Context, snapshot domain.ImportSnaps
 			roots = append(roots, domain.LibraryRoot{ID: folderID, Path: root.Path})
 		}
 		if id == domain.InvalidID {
-			res, err := tx.ExecContext(ctx, `INSERT INTO libraries(name) VALUES(?)`, name)
+			res, err := tx.ExecContext(ctx, `INSERT INTO libraries(name, watch) VALUES(?,?)`, name, library.Watch)
 			if err != nil {
 				return result, err
 			}
 			newID, _ := res.LastInsertId()
 			id = int(newID)
-		} else if _, err := tx.ExecContext(ctx, `INSERT INTO libraries(id, name) VALUES(?,?)`, id, name); err != nil {
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO libraries(id, name, watch) VALUES(?,?,?)`, id, name, library.Watch); err != nil {
 			continue
 		}
 		for _, root := range roots {
@@ -769,7 +783,7 @@ func (s *SQLite) ImportSnapshot(ctx context.Context, snapshot domain.ImportSnaps
 }
 
 func (s *SQLite) loadRoots(ctx context.Context, libraryID int) []domain.LibraryRoot {
-	rows, err := s.db.QueryContext(ctx, `SELECT lr.folder_id, f.path, COALESCE(lr.watch, 0) FROM library_roots lr
+	rows, err := s.db.QueryContext(ctx, `SELECT lr.folder_id, f.path FROM library_roots lr
 		JOIN media_folders f ON f.id = lr.folder_id
 		WHERE lr.library_id = ? ORDER BY f.path`, libraryID)
 	if err != nil {
@@ -779,21 +793,22 @@ func (s *SQLite) loadRoots(ctx context.Context, libraryID int) []domain.LibraryR
 	roots := []domain.LibraryRoot{}
 	for rows.Next() {
 		var root domain.LibraryRoot
-		var watch bool
-		if err := rows.Scan(&root.ID, &root.Path, &watch); err != nil {
+		if err := rows.Scan(&root.ID, &root.Path); err != nil {
 			continue
 		}
-		root.Watch = watch
 		roots = append(roots, root)
 	}
 	return roots
 }
 
-// WatchedRoots returns every library root flagged for filesystem watching.
+// WatchedRoots returns every root of every library flagged for filesystem
+// watching. Watching is a library setting, so all of a watched library's
+// roots are returned and un-watched libraries return nothing.
 func (s *SQLite) WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT lr.library_id, f.path FROM library_roots lr
 		JOIN media_folders f ON f.id = lr.folder_id
-		WHERE COALESCE(lr.watch, 0) = 1 ORDER BY lr.library_id, f.path`)
+		JOIN libraries l ON l.id = lr.library_id
+		WHERE COALESCE(l.watch, 0) = 1 ORDER BY lr.library_id, f.path`)
 	if err != nil {
 		return nil, translateErr(err)
 	}
@@ -889,8 +904,8 @@ func (s *SQLite) FavoriteViewStats(ctx context.Context, userID, viewID int, admi
 
 func (s *SQLite) loadLibrary(ctx context.Context, id int) (domain.Library, error) {
 	var library domain.Library
-	err := s.db.QueryRowContext(ctx, `SELECT id, name FROM libraries WHERE id = ?`, id).
-		Scan(&library.ID, &library.Name)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, COALESCE(watch, 0) FROM libraries WHERE id = ?`, id).
+		Scan(&library.ID, &library.Name, &library.Watch)
 	if err != nil {
 		return library, translateErr(err)
 	}
@@ -902,13 +917,13 @@ func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) (
 	var rows *sql.Rows
 	var err error
 	if admin {
-		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path, COALESCE(lr.watch, 0)
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, COALESCE(l.watch, 0), lr.folder_id, f.path
 			FROM libraries l
 			LEFT JOIN library_roots lr ON lr.library_id = l.id
 			LEFT JOIN media_folders f ON f.id = lr.folder_id
 			ORDER BY l.name, f.path`)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path, COALESCE(lr.watch, 0)
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, COALESCE(l.watch, 0), lr.folder_id, f.path
 			FROM libraries l
 			JOIN library_access la ON la.library_id = l.id AND la.user_id = ?
 			LEFT JOIN library_roots lr ON lr.library_id = l.id
@@ -924,15 +939,15 @@ func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) (
 	for rows.Next() {
 		var id int
 		var name string
+		var watch bool
 		var rootID sql.NullInt64
 		var rootPath sql.NullString
-		var rootWatch sql.NullBool
-		if err := rows.Scan(&id, &name, &rootID, &rootPath, &rootWatch); err != nil {
+		if err := rows.Scan(&id, &name, &watch, &rootID, &rootPath); err != nil {
 			return nil, err
 		}
 		library, ok := libraries[id]
 		if !ok {
-			library = &domain.Library{ID: id, Name: name}
+			library = &domain.Library{ID: id, Name: name, Watch: watch}
 			libraries[id] = library
 			order = append(order, id)
 		}
@@ -941,7 +956,7 @@ func (s *SQLite) LibrariesForUser(ctx context.Context, userID int, admin bool) (
 			if !admin {
 				path = ""
 			}
-			library.Roots = append(library.Roots, domain.LibraryRoot{ID: int(rootID.Int64), Path: path, Watch: rootWatch.Bool})
+			library.Roots = append(library.Roots, domain.LibraryRoot{ID: int(rootID.Int64), Path: path})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -2598,7 +2613,7 @@ func (s *SQLite) CreateLibrary(ctx context.Context, library domain.Library) (dom
 	if err != nil {
 		return domain.Library{}, err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO libraries(name) VALUES(?)`, name)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO libraries(name, watch) VALUES(?,?)`, name, library.Watch)
 	if err != nil {
 		return domain.Library{}, err
 	}
@@ -2607,8 +2622,8 @@ func (s *SQLite) CreateLibrary(ctx context.Context, library domain.Library) (dom
 		return domain.Library{}, err
 	}
 	for _, root := range roots {
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id, watch) VALUES(?,?,?)`,
-			id, root.ID, root.Watch); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id) VALUES(?,?)`,
+			id, root.ID); err != nil {
 			return domain.Library{}, err
 		}
 	}
@@ -2633,20 +2648,122 @@ func (s *SQLite) UpdateLibrary(ctx context.Context, library domain.Library) erro
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE libraries SET name = ? WHERE id = ?`,
-		name, library.ID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE libraries SET name = ?, watch = ? WHERE id = ?`,
+		name, library.Watch, library.ID); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM library_roots WHERE library_id = ?`, library.ID); err != nil {
 		return err
 	}
 	for _, root := range roots {
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id, watch) VALUES(?,?,?)`,
-			library.ID, root.ID, root.Watch); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(library_id, folder_id) VALUES(?,?)`,
+			library.ID, root.ID); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *SQLite) MoveLibraryPath(ctx context.Context, libraryID int, oldPath, newPath string) (domain.LibraryPathMoveResult, error) {
+	oldPath, newPath, err := normalizeLibraryPathMove(oldPath, newPath)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	defer tx.Rollback()
+
+	var rootID int
+	err = tx.QueryRowContext(ctx, `SELECT root.id
+		FROM library_roots lr
+		JOIN media_folders root ON root.id = lr.folder_id
+		WHERE lr.library_id = ? AND root.path = ?`, libraryID, oldPath).Scan(&rootID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.LibraryPathMoveResult{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+
+	var count int
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM library_roots lr
+		JOIN media_folders root ON root.id = lr.folder_id
+		WHERE lr.library_id = ? AND lr.folder_id <> ?
+		  AND (root.path = ? OR substr(root.path, 1, length(?) + 1) = ? || '/')`, libraryID, rootID, newPath, newPath, newPath).Scan(&count)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, ErrNestedRoot
+	}
+
+	err = tx.QueryRowContext(ctx, `WITH RECURSIVE subtree(id) AS (
+		SELECT id FROM media_folders WHERE id = ?
+		UNION ALL
+		SELECT child.id FROM media_folders child JOIN subtree ON child.parent_id = subtree.id
+	)
+	SELECT COUNT(*) FROM library_roots lr JOIN subtree ON subtree.id = lr.folder_id
+	WHERE lr.library_id <> ?`, rootID, libraryID).Scan(&count)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, ErrConflict
+	}
+
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_folders
+		WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '/'`, newPath, newPath, newPath).Scan(&count); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, ErrConflict
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM media
+		WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '/'`, newPath, newPath, newPath).Scan(&count); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, err
+	}
+
+	res, err := tx.ExecContext(ctx, `WITH RECURSIVE subtree(id) AS (
+		SELECT id FROM media_folders WHERE id = ?
+		UNION ALL
+		SELECT child.id FROM media_folders child JOIN subtree ON child.parent_id = subtree.id
+	)
+	UPDATE media SET path = ? || substr(path, length(?) + 1)
+	WHERE folder_id IN (SELECT id FROM subtree)`, rootID, newPath, oldPath)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	mediaCount, err := res.RowsAffected()
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	res, err = tx.ExecContext(ctx, `WITH RECURSIVE subtree(id) AS (
+		SELECT id FROM media_folders WHERE id = ?
+		UNION ALL
+		SELECT child.id FROM media_folders child JOIN subtree ON child.parent_id = subtree.id
+	)
+	UPDATE media_folders SET path = ? || substr(path, length(?) + 1)
+	WHERE id IN (SELECT id FROM subtree)`, rootID, newPath, oldPath)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	folderCount, err := res.RowsAffected()
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE media_folders SET parent_id = NULL WHERE id = ?`, rootID); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	return domain.LibraryPathMoveResult{Folders: int(folderCount), Media: int(mediaCount)}, nil
 }
 
 func (s *SQLite) libraryNameExists(ctx context.Context, name string, exceptID int) bool {
@@ -2672,7 +2789,7 @@ func (s *SQLite) ensureRoots(ctx context.Context, roots []domain.LibraryRoot) ([
 			continue
 		}
 		seen[folderID] = true
-		out = append(out, domain.LibraryRoot{ID: folderID, Path: root.Path, Watch: root.Watch})
+		out = append(out, domain.LibraryRoot{ID: folderID, Path: root.Path})
 	}
 	for i := range out {
 		for j := range out {

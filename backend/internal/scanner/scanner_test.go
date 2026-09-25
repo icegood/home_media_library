@@ -43,6 +43,9 @@ func TestScanPreservesRelativeFoldersAndFiltersFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "archive", "camera.MPG"), []byte("mpeg video"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "archive", "phone.3GP"), []byte("3gp video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "archive", "old_libvpx-vp9_libmp3lame.mkv"), []byte("generated"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +91,7 @@ func TestScanPreservesRelativeFoldersAndFiltersFiles(t *testing.T) {
 	for _, entry := range entries {
 		mimeTypes[entry.Name] = entry.Media.MIMEType
 	}
-	if len(entries) != 3 || mimeTypes["camera.MPG"] != "video/mpeg" || mimeTypes["old_libvpx-vp9_libmp3lame.mkv"] != "video/x-matroska" || mimeTypes["old.mp4"] != "video/mp4" {
+	if len(entries) != 4 || mimeTypes["camera.MPG"] != "video/mpeg" || mimeTypes["old_libvpx-vp9_libmp3lame.mkv"] != "video/x-matroska" || mimeTypes["old.mp4"] != "video/mp4" || mimeTypes["phone.3GP"] != "video/3gpp" {
 		t.Fatalf("unexpected archive entries: %#v", entries)
 	}
 }
@@ -100,6 +103,7 @@ func TestMIMETypeForPathIsResolvedFromDatabaseCaseInsensitively(t *testing.T) {
 		"photo.JPG":   "image/jpeg",
 		"photo.JpEg":  "image/jpeg",
 		"clip.MOV":    "video/quicktime",
+		"clip.3GP":    "video/3gpp",
 		"clip.MPG":    "video/mpeg",
 		"movie.MpEg":  "video/mpeg",
 		"notes.TXT":   "text/plain",

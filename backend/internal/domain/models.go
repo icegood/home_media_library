@@ -266,10 +266,14 @@ type ImportResult struct {
 }
 
 type Library struct {
-	ID    int           `json:"id"`
-	Name  string        `json:"name"`
-	Roots []LibraryRoot `json:"roots"`
-	Stats KindStats     `json:"stats"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	// Watch enables inotify-triggered incremental rescans for every root of
+	// this library (opt-in, off by default). It is a library setting: roots
+	// are watched together or not at all.
+	Watch bool           `json:"watch"`
+	Roots []LibraryRoot  `json:"roots"`
+	Stats KindStats      `json:"stats"`
 }
 
 type FavoriteView struct {
@@ -297,12 +301,14 @@ type LibraryRoot struct {
 	// ID is the media_folders.id value selected as this library root.
 	ID   int    `json:"id"`
 	Path string `json:"path,omitempty"`
-	// Watch enables inotify-triggered incremental rescans for this root
-	// (opt-in, off by default).
-	Watch bool `json:"watch"`
 }
 
-// WatchedRoot is a library root flagged for filesystem watching.
+type LibraryPathMoveResult struct {
+	Folders int `json:"folders"`
+	Media   int `json:"media"`
+}
+
+// WatchedRoot is a library root of a library flagged for filesystem watching.
 type WatchedRoot struct {
 	LibraryID int    `json:"libraryId"`
 	Path      string `json:"path"`

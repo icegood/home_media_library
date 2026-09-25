@@ -21,15 +21,30 @@ test('item menus are unified and top-right on library and folder tiles', async (
   expect(tileOffsets.right).toBeLessThanOrEqual(12);
   expect(tileOffsets.left).toBeGreaterThan(tileOffsets.right); // clearly right side
 
+  // Admin library rows do not use a popup at all: the dots open the actions
+  // dialog, and Delete is a separate row button on the same line.
   await page.goto('/admin?section=libraries');
-  await page.waitForSelector('button[aria-label^="Library menu "]', { timeout: 10_000 });
+  await page.waitForSelector('button[aria-label^="Edit library "]', { timeout: 10_000 });
   await setTheme(page, 'dark');
-  await page.locator('button[aria-label^="Library menu "]').first().click();
-  const adminPopup = page.locator('.item-submenu.portal-fixed').last();
-  await expect(adminPopup).toBeVisible();
-  expect(await adminPopup.evaluate(el => getComputedStyle(el).position)).toBe('fixed');
-  await page.mouse.click(8, 400);
-  await expect(adminPopup).toBeHidden();
+  const row = page.locator('.admin-library').first();
+  const dots = row.locator('button[aria-label^="Edit library "]');
+  const del = row.locator('button.danger');
+  await dots.click();
+  await expect(page.getByRole('dialog', { name: /^Library actions / })).toBeVisible();
+  expect(await page.locator('.item-submenu').count()).toBe(0);
+  await page.getByRole('button', { name: 'Close' }).click();
+  await expect(page.getByRole('dialog', { name: /^Library actions / })).toBeHidden();
+
+  const nameBox = await row.locator('.library-name-button').boundingBox();
+  const dotsBox = await dots.boundingBox();
+  const delBox = await del.boundingBox();
+  // One line: name, dots and Delete share the same vertical band.
+  expect(Math.abs(dotsBox!.y - nameBox!.y)).toBeLessThanOrEqual(6);
+  expect(Math.abs(delBox!.y - nameBox!.y)).toBeLessThanOrEqual(6);
+  expect(delBox!.x).toBeGreaterThan(dotsBox!.x + dotsBox!.width - 1);
+  // Nothing wraps below the name, so the row is no taller than its name cell.
+  const rowBox = await row.boundingBox();
+  expect(rowBox!.height).toBeLessThanOrEqual(nameBox!.height + 8);
 
   // Same trigger background on folder tiles as on library tiles (one style).
   await page.goto(`/library/${libId}`);

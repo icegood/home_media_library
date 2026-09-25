@@ -156,6 +156,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/map/poi", a.auth(http.HandlerFunc(a.mapPOI)))
 	mux.Handle("POST /api/v1/admin/libraries", a.auth(a.admin(http.HandlerFunc(a.createLibrary))))
 	mux.Handle("PUT /api/v1/admin/libraries/{id}", a.auth(a.admin(http.HandlerFunc(a.updateLibrary))))
+	mux.Handle("POST /api/v1/admin/libraries/{id}/move-path", a.auth(a.admin(http.HandlerFunc(a.moveLibraryPath))))
 	mux.Handle("DELETE /api/v1/admin/libraries/{id}", a.auth(a.admin(http.HandlerFunc(a.deleteLibrary))))
 	mux.Handle("POST /api/v1/admin/libraries/{id}/scan", a.auth(a.admin(http.HandlerFunc(a.scanLibrary))))
 	mux.Handle("POST /api/v1/admin/libraries/{id}/metadata/renew", a.auth(a.admin(http.HandlerFunc(a.metadataRenew))))
@@ -1632,10 +1633,9 @@ func (a *API) content(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", item.MIMEType)
 	// The viewer prefetches prev/next media bytes to keep play-mode paging
-	// instant; this header guarantees the browser actually reuses the warmed
-	// response from its private cache. The file can change on a rescan, so the
-	// lease is short and revalidation (Last-Modified) still applies.
-	w.Header().Set("Cache-Control", "private, max-age=86400")
+	// instant; private caching preserves that behavior while revalidation
+	// ensures a changed file is observed after an external edit.
+	w.Header().Set("Cache-Control", "private, no-cache")
 	if r.URL.Query().Get("download") != "" {
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": item.Name}))
 	}
@@ -1850,7 +1850,7 @@ func (a *API) thumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("Cache-Control", "private, no-cache")
 	http.ServeFile(w, r, target)
 }
 
@@ -1940,7 +1940,7 @@ func (a *API) cleanupThumbnailRefs(ctx context.Context, refs domain.ThumbnailCle
 	}
 }
 
-func (a *API) generateImageThumbnail(ctx context.Context, source string, mediaID int, index int, target string) error {
+func (a *API) generateImageThumbnail(ctx context.Context, source string, index int, target string) error {
 	if index != 0 {
 		return fmt.Errorf("images only have thumbnail index 0")
 	}
@@ -2137,7 +2137,7 @@ func (a *API) folderThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("Cache-Control", "private, no-cache")
 	http.ServeFile(w, r, target)
 }
 
@@ -2258,7 +2258,12 @@ func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, ind
 		return target, nil
 	}
 	if item.ThumbnailError != "" {
-		return "", fmt.Errorf("thumbnail skipped because previous error is not cleared: %s", item.ThumbnailError)
+		// A stored error is not a permanent veto: only the serving endpoint
+		// honours it, and only to explain the gap. Both callers here are
+		// background jobs that must retry, otherwise a transient failure
+		// (an unreadable file, a full disk) would keep the thumbnail and every
+		// folder cover built from it missing forever.
+		applog.Printf(applog.Info, "retrying thumbnail for %s after previous error: %s", item.RelativePath, item.ThumbnailError)
 	}
 	source, err := a.mediaSourcePath(ctx, item)
 	if err != nil {
@@ -2267,7 +2272,7 @@ func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, ind
 	if item.Kind == domain.KindVideo {
 		err = a.generateVideoThumbnail(ctx, source, item, index, target)
 	} else {
-		err = a.generateImageThumbnail(ctx, source, item.ID, index, target)
+		err = a.generateImageThumbnail(ctx, source, index, target)
 	}
 	if err != nil {
 		return "", err
@@ -2275,6 +2280,11 @@ func (a *API) ensureThumbnailForItem(ctx context.Context, item domain.Media, ind
 	_ = a.storeFor(ctx).UpsertThumbnail(ctx, domain.Thumbnail{
 		MediaID: item.ID, Index: index, Path: target, MIMEType: "image/jpeg",
 	})
+	if item.ThumbnailError != "" {
+		if err := a.storeFor(ctx).SetMediaActionError(ctx, item.ID, "thumbnail", ""); err != nil {
+			applog.Printf(applog.Warn, "could not clear thumbnail error for %s: %s", item.RelativePath, err)
+		}
+	}
 	return target, nil
 }
 
@@ -2501,11 +2511,12 @@ func (a *API) mapPOI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) createLibrary(w http.ResponseWriter, r *http.Request) {
-	name, roots, ok := a.libraryInput(w, r)
+	name, roots, watch, ok := a.libraryInput(w, r)
 	if !ok {
 		return
 	}
 	library := scanner.NewLibrary(name, roots)
+	library.Watch = watch
 	library, err := a.Store.CreateLibrary(r.Context(), library)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -2522,7 +2533,7 @@ func (a *API) createLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) updateLibrary(w http.ResponseWriter, r *http.Request) {
-	name, roots, ok := a.libraryInput(w, r)
+	name, roots, watch, ok := a.libraryInput(w, r)
 	if !ok {
 		return
 	}
@@ -2537,6 +2548,7 @@ func (a *API) updateLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	existing.Name = name
 	existing.Roots = roots
+	existing.Watch = watch
 	if err := a.Store.UpdateLibrary(r.Context(), existing); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			problem(w, http.StatusConflict, "library name already exists")
@@ -2550,6 +2562,65 @@ func (a *API) updateLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, _ := a.Store.Library(r.Context(), existing.ID)
 	writeJSON(w, 200, updated)
+}
+
+func (a *API) moveLibraryPath(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input struct {
+		OldPath string `json:"oldPath"`
+		NewPath string `json:"newPath"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil {
+		problem(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	input.OldPath = strings.TrimSpace(input.OldPath)
+	input.NewPath = strings.TrimSpace(input.NewPath)
+	if input.OldPath == "" || input.NewPath == "" || !filepath.IsAbs(input.OldPath) || !filepath.IsAbs(input.NewPath) {
+		problem(w, http.StatusBadRequest, "oldPath and newPath must be absolute paths")
+		return
+	}
+	newPath, err := a.Scanner.NormalizeRoot(input.NewPath)
+	if err != nil {
+		problem(w, http.StatusBadRequest, "new path is not an accessible directory: "+err.Error())
+		return
+	}
+
+	a.jobMu.Lock()
+	activeJob := false
+	for _, job := range a.jobs {
+		if job.LibraryID == id && (job.Status == "running" || job.Status == "paused" || job.Status == "cancelling") {
+			activeJob = true
+			break
+		}
+	}
+	a.jobMu.Unlock()
+	if activeJob {
+		problem(w, http.StatusConflict, "stop the library's active jobs before moving its path")
+		return
+	}
+
+	result, err := a.Store.MoveLibraryPath(r.Context(), id, input.OldPath, newPath)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			problem(w, http.StatusNotFound, "old path is not a root of this library")
+		case errors.Is(err, store.ErrNestedRoot):
+			problem(w, http.StatusConflict, "new path overlaps another root in this library")
+		case errors.Is(err, store.ErrConflict):
+			problem(w, http.StatusConflict, "path move conflicts with existing folders or shared library roots")
+		default:
+			problem(w, http.StatusInternalServerError, "could not move library path")
+		}
+		return
+	}
+	if a.OnLibrariesChanged != nil {
+		a.OnLibrariesChanged()
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *API) deleteLibrary(w http.ResponseWriter, r *http.Request) {
@@ -2576,17 +2647,19 @@ func (a *API) deleteLibrary(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) libraryInput(w http.ResponseWriter, r *http.Request) (string, []domain.LibraryRoot, bool) {
+// libraryInput validates a create/update payload. Watch is a library-level
+// flag: one boolean opts every root of the library into filesystem watching.
+func (a *API) libraryInput(w http.ResponseWriter, r *http.Request) (string, []domain.LibraryRoot, bool, bool) {
 	var input struct {
 		Name  string `json:"name"`
+		Watch bool   `json:"watch"`
 		Roots []struct {
-			Path  string `json:"path"`
-			Watch bool   `json:"watch"`
+			Path string `json:"path"`
 		} `json:"roots"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil || strings.TrimSpace(input.Name) == "" || len(input.Roots) == 0 {
 		problem(w, 400, "name and at least one root are required")
-		return "", nil, false
+		return "", nil, false, false
 	}
 	roots := make([]domain.LibraryRoot, 0, len(input.Roots))
 	paths := map[string]bool{}
@@ -2594,22 +2667,22 @@ func (a *API) libraryInput(w http.ResponseWriter, r *http.Request) (string, []do
 		root.Path = strings.TrimSpace(root.Path)
 		if root.Path == "" {
 			problem(w, 400, "root paths are required")
-			return "", nil, false
+			return "", nil, false, false
 		}
 		canonicalPath, err := a.Scanner.NormalizeRoot(root.Path)
 		if err != nil {
 			problem(w, 400, "invalid root path: "+err.Error())
-			return "", nil, false
+			return "", nil, false, false
 		}
 		root.Path = canonicalPath
 		if paths[root.Path] {
 			problem(w, 400, "root paths must be unique")
-			return "", nil, false
+			return "", nil, false, false
 		}
 		paths[root.Path] = true
-		roots = append(roots, domain.LibraryRoot{ID: domain.InvalidID, Path: root.Path, Watch: root.Watch})
+		roots = append(roots, domain.LibraryRoot{ID: domain.InvalidID, Path: root.Path})
 	}
-	return strings.TrimSpace(input.Name), roots, true
+	return strings.TrimSpace(input.Name), roots, input.Watch, true
 }
 
 func (a *API) scanLibrary(w http.ResponseWriter, r *http.Request) {
@@ -3072,13 +3145,11 @@ func (a *API) runThumbnailJob(job *JobStatus, library domain.Library, rootID int
 				item := task.item
 				index := task.index
 				a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = item.RelativePath })
-				if item.ThumbnailError != "" {
-					a.updateJob(job.ID, func(job *JobStatus) {
-						job.Error = fmt.Sprintf("%s: skipped thumbnail because previous error is not cleared: %s", item.RelativePath, item.ThumbnailError)
-						job.Processed++
-					})
-					return nil
-				}
+				// A stored thumbnail error is a statistic, not a lock: it never
+				// keeps an item out of a refresh. Recreate deletes the file so it
+				// is rebuilt, and missing-only leaves an existing thumbnail alone
+				// inside ensureThumbnailForItem, which is the only "already done"
+				// check there is.
 				if recreate {
 					_ = os.Remove(a.thumbnailPath(item.ID, index))
 				}

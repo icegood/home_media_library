@@ -270,3 +270,14 @@ test("library admin endpoints cover update delete and scan", async () => {
   await api.map(undefined, undefined, undefined, 30);
   expect(fetchMock.mock.calls[2][0]).toBe("/api/v1/map?favorite=30");
 });
+
+test("library path move uses one direct POST without deleting the library", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({folders:2, media:1}));
+  vi.stubGlobal("fetch", fetchMock);
+  await api.moveLibraryPath(1, {oldPath:"/old", newPath:"/new"});
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/libraries/1/move-path", expect.objectContaining({
+    method:"POST",
+    body:JSON.stringify({oldPath:"/old", newPath:"/new"})
+  }));
+});

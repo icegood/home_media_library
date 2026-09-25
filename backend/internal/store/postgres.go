@@ -511,15 +511,15 @@ func (s *Postgres) ImportSnapshot(ctx context.Context, snapshot domain.ImportSna
 			roots = append(roots, domain.LibraryRoot{ID: folderID, Path: root.Path})
 		}
 		if id == domain.InvalidID {
-			if err := tx.QueryRowContext(ctx, `INSERT INTO libraries(name) VALUES($1) RETURNING id`, name).Scan(&id); err != nil {
+			if err := tx.QueryRowContext(ctx, `INSERT INTO libraries(name, watch) VALUES($1,$2) RETURNING id`, name, library.Watch).Scan(&id); err != nil {
 				return result, err
 			}
-		} else if _, err := tx.ExecContext(ctx, `INSERT INTO libraries(id, name) OVERRIDING SYSTEM VALUE VALUES($1,$2)`, id, name); err != nil {
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO libraries(id, name, watch) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3)`, id, name, library.Watch); err != nil {
 			continue
 		}
 		for _, root := range roots {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id, watch) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
-				id, root.ID, root.Watch); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+				id, root.ID); err != nil {
 				return result, err
 			}
 		}
@@ -567,7 +567,7 @@ func (s *Postgres) ImportSnapshot(ctx context.Context, snapshot domain.ImportSna
 }
 
 func (s *Postgres) loadRoots(ctx context.Context, libraryID int) []domain.LibraryRoot {
-	rows, err := s.db.QueryContext(ctx, `SELECT lr.folder_id, f.path, COALESCE(lr.watch, FALSE) FROM library_roots lr
+	rows, err := s.db.QueryContext(ctx, `SELECT lr.folder_id, f.path FROM library_roots lr
 		JOIN media_folders f ON f.id = lr.folder_id
 		WHERE lr.library_id = $1 ORDER BY f.path`, libraryID)
 	if err != nil {
@@ -577,21 +577,22 @@ func (s *Postgres) loadRoots(ctx context.Context, libraryID int) []domain.Librar
 	roots := []domain.LibraryRoot{}
 	for rows.Next() {
 		var root domain.LibraryRoot
-		var watch bool
-		if err := rows.Scan(&root.ID, &root.Path, &watch); err != nil {
+		if err := rows.Scan(&root.ID, &root.Path); err != nil {
 			continue
 		}
-		root.Watch = watch
 		roots = append(roots, root)
 	}
 	return roots
 }
 
-// WatchedRoots returns every library root flagged for filesystem watching.
+// WatchedRoots returns every root of every library flagged for filesystem
+// watching. Watching is a library setting, so all of a watched library's
+// roots are returned and un-watched libraries return nothing.
 func (s *Postgres) WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT lr.library_id, f.path FROM library_roots lr
 		JOIN media_folders f ON f.id = lr.folder_id
-		WHERE COALESCE(lr.watch, FALSE) = TRUE ORDER BY lr.library_id, f.path`)
+		JOIN libraries l ON l.id = lr.library_id
+		WHERE COALESCE(l.watch, FALSE) = TRUE ORDER BY lr.library_id, f.path`)
 	if err != nil {
 		return nil, translateErr(err)
 	}
@@ -691,8 +692,8 @@ func (s *Postgres) FavoriteViewStats(ctx context.Context, userID, viewID int, ad
 
 func (s *Postgres) loadLibrary(ctx context.Context, id int) (domain.Library, error) {
 	var library domain.Library
-	err := s.db.QueryRowContext(ctx, `SELECT id, name FROM libraries WHERE id = $1`, id).
-		Scan(&library.ID, &library.Name)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, COALESCE(watch, FALSE) FROM libraries WHERE id = $1`, id).
+		Scan(&library.ID, &library.Name, &library.Watch)
 	if err != nil {
 		return library, translateErr(err)
 	}
@@ -704,13 +705,13 @@ func (s *Postgres) LibrariesForUser(ctx context.Context, userID int, admin bool)
 	var rows *sql.Rows
 	var err error
 	if admin {
-		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path, COALESCE(lr.watch, FALSE)
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, COALESCE(l.watch, FALSE), lr.folder_id, f.path
 			FROM libraries l
 			LEFT JOIN library_roots lr ON lr.library_id = l.id
 			LEFT JOIN media_folders f ON f.id = lr.folder_id
 			ORDER BY l.name, f.path`)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, lr.folder_id, f.path, COALESCE(lr.watch, FALSE)
+		rows, err = s.db.QueryContext(ctx, `SELECT l.id, l.name, COALESCE(l.watch, FALSE), lr.folder_id, f.path
 			FROM libraries l
 			JOIN library_access la ON la.library_id = l.id AND la.user_id = $1
 			LEFT JOIN library_roots lr ON lr.library_id = l.id
@@ -726,15 +727,15 @@ func (s *Postgres) LibrariesForUser(ctx context.Context, userID int, admin bool)
 	for rows.Next() {
 		var id int
 		var name string
+		var watch bool
 		var rootID sql.NullInt64
 		var rootPath sql.NullString
-		var rootWatch sql.NullBool
-		if err := rows.Scan(&id, &name, &rootID, &rootPath, &rootWatch); err != nil {
+		if err := rows.Scan(&id, &name, &watch, &rootID, &rootPath); err != nil {
 			return nil, err
 		}
 		library, ok := libraries[id]
 		if !ok {
-			library = &domain.Library{ID: id, Name: name}
+			library = &domain.Library{ID: id, Name: name, Watch: watch}
 			libraries[id] = library
 			order = append(order, id)
 		}
@@ -743,7 +744,7 @@ func (s *Postgres) LibrariesForUser(ctx context.Context, userID int, admin bool)
 			if !admin {
 				path = ""
 			}
-			library.Roots = append(library.Roots, domain.LibraryRoot{ID: int(rootID.Int64), Path: path, Watch: rootWatch.Bool})
+			library.Roots = append(library.Roots, domain.LibraryRoot{ID: int(rootID.Int64), Path: path})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -2331,13 +2332,13 @@ func (s *Postgres) CreateLibrary(ctx context.Context, library domain.Library) (d
 		return domain.Library{}, err
 	}
 	var id int
-	if err := s.db.QueryRowContext(ctx, `INSERT INTO libraries(name) VALUES($1) RETURNING id`,
-		name).Scan(&id); err != nil {
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO libraries(name, watch) VALUES($1,$2) RETURNING id`,
+		name, library.Watch).Scan(&id); err != nil {
 		return domain.Library{}, err
 	}
 	for _, root := range roots {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id, watch) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
-			id, root.ID, root.Watch); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			id, root.ID); err != nil {
 			return domain.Library{}, err
 		}
 	}
@@ -2362,20 +2363,122 @@ func (s *Postgres) UpdateLibrary(ctx context.Context, library domain.Library) er
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE libraries SET name = $1 WHERE id = $2`,
-		name, library.ID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE libraries SET name = $1, watch = $2 WHERE id = $3`,
+		name, library.Watch, library.ID); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM library_roots WHERE library_id = $1`, library.ID); err != nil {
 		return err
 	}
 	for _, root := range roots {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id, watch) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
-			library.ID, root.ID, root.Watch); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+			library.ID, root.ID); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Postgres) MoveLibraryPath(ctx context.Context, libraryID int, oldPath, newPath string) (domain.LibraryPathMoveResult, error) {
+	oldPath, newPath, err := normalizeLibraryPathMove(oldPath, newPath)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	defer tx.Rollback()
+
+	var rootID int
+	err = tx.QueryRowContext(ctx, `SELECT root.id
+		FROM library_roots lr
+		JOIN media_folders root ON root.id = lr.folder_id
+		WHERE lr.library_id = $1 AND root.path = $2`, libraryID, oldPath).Scan(&rootID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.LibraryPathMoveResult{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+
+	var count int
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM library_roots lr
+		JOIN media_folders root ON root.id = lr.folder_id
+		WHERE lr.library_id = $1 AND lr.folder_id <> $2
+		  AND (root.path = $3 OR substr(root.path, 1, length($3) + 1) = $3 || '/')`, libraryID, rootID, newPath).Scan(&count)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, ErrNestedRoot
+	}
+
+	err = tx.QueryRowContext(ctx, `WITH RECURSIVE subtree(id) AS (
+		SELECT id FROM media_folders WHERE id = $1
+		UNION ALL
+		SELECT child.id FROM media_folders child JOIN subtree ON child.parent_id = subtree.id
+	)
+	SELECT COUNT(*) FROM library_roots lr JOIN subtree ON subtree.id = lr.folder_id
+	WHERE lr.library_id <> $2`, rootID, libraryID).Scan(&count)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, ErrConflict
+	}
+
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_folders
+		WHERE path = $1 OR substr(path, 1, length($1) + 1) = $1 || '/'`, newPath).Scan(&count); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, ErrConflict
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM media
+		WHERE path = $1 OR substr(path, 1, length($1) + 1) = $1 || '/'`, newPath).Scan(&count); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if count > 0 {
+		return domain.LibraryPathMoveResult{}, ErrConflict
+	}
+
+	res, err := tx.ExecContext(ctx, `WITH RECURSIVE subtree(id) AS (
+		SELECT id FROM media_folders WHERE id = $3
+		UNION ALL
+		SELECT child.id FROM media_folders child JOIN subtree ON child.parent_id = subtree.id
+	)
+	UPDATE media SET path = $1 || substr(path, length($2) + 1)
+	WHERE folder_id IN (SELECT id FROM subtree)`, newPath, oldPath, rootID)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	mediaCount, err := res.RowsAffected()
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	res, err = tx.ExecContext(ctx, `WITH RECURSIVE subtree(id) AS (
+		SELECT id FROM media_folders WHERE id = $3
+		UNION ALL
+		SELECT child.id FROM media_folders child JOIN subtree ON child.parent_id = subtree.id
+	)
+	UPDATE media_folders SET path = $1 || substr(path, length($2) + 1)
+	WHERE id IN (SELECT id FROM subtree)`, newPath, oldPath, rootID)
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	folderCount, err := res.RowsAffected()
+	if err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE media_folders SET parent_id = NULL WHERE id = $1`, rootID); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return domain.LibraryPathMoveResult{}, err
+	}
+	return domain.LibraryPathMoveResult{Folders: int(folderCount), Media: int(mediaCount)}, nil
 }
 
 func (s *Postgres) libraryNameExists(ctx context.Context, name string, exceptID int) bool {
