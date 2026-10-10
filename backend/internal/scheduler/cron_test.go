@@ -92,3 +92,18 @@ func TestCronNext(t *testing.T) {
 		t.Fatalf("Next(0 0 15 * 1): got %v want %v", next, want)
 	}
 }
+
+func TestParseCronStartStepRunsToFieldMax(t *testing.T) {
+	parsed, err := ParseCron("5/20 * * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, minute := range []int{5, 25, 45} {
+		if !parsed[0].matches(minute) {
+			t.Errorf("minute %d should match 5/20", minute)
+		}
+	}
+	if parsed[0].matches(6) || len(parsed[0].values) != 3 {
+		t.Errorf("5/20 values = %v, want 5,25,45", parsed[0].values)
+	}
+}

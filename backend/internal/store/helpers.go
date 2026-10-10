@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/rand"
 	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,9 +11,15 @@ import (
 	"media-library/backend/internal/domain"
 )
 
-func temporaryPassword(parts ...string) string {
-	sum := sha1.Sum([]byte("emby-import/" + strings.Join(parts, "/")))
-	return "emby-" + fmt.Sprintf("%x", sum)[:18]
+// temporaryPassword returns a random one-time password for imported users
+// without an importable password. It must be unpredictable: it is a real
+// credential until the user changes it.
+func temporaryPassword() (string, error) {
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "emby-" + hex.EncodeToString(raw), nil
 }
 
 func verifyEmbySHA1(storedHash string, password string) bool {

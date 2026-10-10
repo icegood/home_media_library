@@ -1470,3 +1470,55 @@ func TestSQLiteMediaAdjust(t *testing.T) {
 		t.Fatalf("overwrite = %+v", got2)
 	}
 }
+
+func TestSQLiteUpdateLibraryDropsIndexOfRemovedRootUnlessSharedOrCovered(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	base := t.TempDir()
+	rootA := filepath.Join(base, "a")
+	rootB := filepath.Join(base, "b")
+	rootC := filepath.Join(base, "c")
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Main", Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: rootA}, {ID: domain.InvalidID, Path: rootB}, {ID: domain.InvalidID, Path: rootC}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Other", Roots: []domain.LibraryRoot{
+		{ID: domain.InvalidID, Path: rootB}}}); err != nil {
+		t.Fatal(err)
+	}
+	media := map[string]domain.Media{}
+	for _, root := range library.Roots {
+		sub, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: root.ID, Path: filepath.Join(root.Path, "sub"), RelativePath: "sub"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: sub.ID, Path: filepath.Join(sub.Path, "x.jpg"),
+			RelativePath: "sub/x.jpg", Name: "x.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		media[root.Path] = item
+	}
+	// An empty folder under the kept root must survive the cleanup.
+	empty, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[2].ID, Path: filepath.Join(rootC, "empty"), RelativePath: "empty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	library.Roots = []domain.LibraryRoot{{ID: domain.InvalidID, Path: rootC}}
+	if err := repository.UpdateLibrary(ctx, library); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Media(ctx, media[rootA].ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("media under removed root still indexed: %v", err)
+	}
+	if _, err := repository.Media(ctx, media[rootB].ID); err != nil {
+		t.Fatalf("media under root shared with another library was deleted: %v", err)
+	}
+	if _, err := repository.Media(ctx, media[rootC].ID); err != nil {
+		t.Fatalf("media under kept root was deleted: %v", err)
+	}
+	if _, err := repository.Folder(ctx, empty.ID); err != nil {
+		t.Fatalf("empty folder under kept root was deleted: %v", err)
+	}
+}

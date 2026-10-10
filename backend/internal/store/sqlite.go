@@ -659,20 +659,43 @@ func (s *SQLite) ImportSnapshot(ctx context.Context, snapshot domain.ImportSnaps
 		if id == domain.InvalidID {
 			id = 0
 		}
+		// An account with the same login is the same person: reuse it. A
+		// matching id alone is not enough, otherwise library access of the
+		// imported user would be granted to an unrelated local account.
+		var existing domain.User
+		err := tx.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE login = ?`, user.Login).
+			Scan(&existing.ID, &existing.Login, &existing.PasswordHash, &existing.Role)
+		if err == nil {
+			userIDs[originalID] = existing.ID
+			existing.PasswordHash = ""
+			result.Users = append(result.Users, domain.ImportedUser{User: existing, Existed: true})
+			continue
+		}
 		if id != 0 {
-			var existing domain.User
-			err := tx.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE id = ?`, id).
-				Scan(&existing.ID, &existing.Login, &existing.PasswordHash, &existing.Role)
-			if err == nil {
-				userIDs[originalID] = existing.ID
-				result.Users = append(result.Users, domain.ImportedUser{User: existing, Existed: true})
-				continue
+			var taken bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)`, id).Scan(&taken); err != nil {
+				return result, err
+			}
+			if taken {
+				id = 0
 			}
 		}
 		if user.Role == "" {
 			user.Role = domain.RoleRegular
 		}
 		imported := domain.ImportedUser{User: user}
+		if user.PasswordHash == "" {
+			password, err := temporaryPassword()
+			if err != nil {
+				return result, err
+			}
+			hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			if err != nil {
+				return result, err
+			}
+			user.PasswordHash = string(hash)
+			imported.TemporaryPassword = password
+		}
 		if id == 0 {
 			res, err := tx.ExecContext(ctx, `INSERT INTO users(login, password_hash, role) VALUES(?,?,?)`,
 				user.Login, user.PasswordHash, user.Role)
@@ -681,31 +704,9 @@ func (s *SQLite) ImportSnapshot(ctx context.Context, snapshot domain.ImportSnaps
 			}
 			newID, _ := res.LastInsertId()
 			id = int(newID)
-			if user.PasswordHash == "" {
-				password := temporaryPassword(strconv.Itoa(id), user.Login)
-				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-				if err != nil {
-					return result, err
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, string(hash), id); err != nil {
-					return result, err
-				}
-				imported.TemporaryPassword = password
-			}
-		} else {
-			if user.PasswordHash == "" {
-				password := temporaryPassword(strconv.Itoa(id), user.Login)
-				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-				if err != nil {
-					return result, err
-				}
-				user.PasswordHash = string(hash)
-				imported.TemporaryPassword = password
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO users(id, login, password_hash, role) VALUES(?,?,?,?)`,
-				id, user.Login, user.PasswordHash, user.Role); err != nil {
-				continue
-			}
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO users(id, login, password_hash, role) VALUES(?,?,?,?)`,
+			id, user.Login, user.PasswordHash, user.Role); err != nil {
+			continue
 		}
 		user.ID = id
 		user.PasswordHash = ""
@@ -1131,6 +1132,28 @@ func (s *SQLite) CanRead(ctx context.Context, userID, libraryID int, admin bool)
 func (s *SQLite) CanReadMedia(ctx context.Context, userID, mediaID int, admin bool) (bool, error) {
 	var folderID int
 	if err := s.db.QueryRowContext(ctx, `SELECT folder_id FROM media WHERE id = ?`, mediaID).Scan(&folderID); err != nil {
+		return false, translateErr(err)
+	}
+	if admin {
+		return true, nil
+	}
+	sub, args := accessibleSubtree(userID, false)
+	query := `WITH RECURSIVE sub(id) AS (` + sub + `
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+	SELECT EXISTS(SELECT 1 FROM sub WHERE id = ?)`
+	args = append(args, folderID)
+	var ok bool
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&ok)
+	return ok, err
+}
+
+// CanReadFolder reports whether the folder lies beneath a library root the
+// user may read (any existing folder for admins). ErrNotFound is returned for
+// an unknown folder id.
+func (s *SQLite) CanReadFolder(ctx context.Context, userID, folderID int, admin bool) (bool, error) {
+	var id int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE id = ?`, folderID).Scan(&id); err != nil {
 		return false, translateErr(err)
 	}
 	if admin {
@@ -2489,6 +2512,13 @@ func (s *SQLite) PruneFolder(ctx context.Context, rootFolderID int, keepFolders,
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE id = ?`, rootFolderID).Scan(&exists); err != nil {
 		return translateErr(err)
 	}
+	// Temp tables are per connection: pin one for the whole prune so a pool
+	// rotation (ConnMaxLifetime) between statements cannot drop them.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 	subtree := `WITH RECURSIVE sub(id) AS (
 		SELECT ?
 		UNION ALL
@@ -2497,37 +2527,37 @@ func (s *SQLite) PruneFolder(ctx context.Context, rootFolderID int, keepFolders,
 	// keep tens of thousands of ids. Route the keep-set through temp tables with
 	// chunked inserts instead of an unbounded IN (...) list so pruning never
 	// trips "SQL logic error: too many SQL variables".
-	if _, err := s.db.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS media_library_prune_keep_media(id INTEGER PRIMARY KEY)`); err != nil {
+	if _, err := conn.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS media_library_prune_keep_media(id INTEGER PRIMARY KEY)`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS media_library_prune_keep_folder(id INTEGER PRIMARY KEY)`); err != nil {
+	if _, err := conn.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS media_library_prune_keep_folder(id INTEGER PRIMARY KEY)`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM media_library_prune_keep_media`); err != nil {
+	if _, err := conn.ExecContext(ctx, `DELETE FROM media_library_prune_keep_media`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM media_library_prune_keep_folder`); err != nil {
+	if _, err := conn.ExecContext(ctx, `DELETE FROM media_library_prune_keep_folder`); err != nil {
 		return err
 	}
 	defer func() {
-		_, _ = s.db.ExecContext(ctx, `DROP TABLE IF EXISTS media_library_prune_keep_media`)
-		_, _ = s.db.ExecContext(ctx, `DROP TABLE IF EXISTS media_library_prune_keep_folder`)
+		_, _ = conn.ExecContext(ctx, `DROP TABLE IF EXISTS media_library_prune_keep_media`)
+		_, _ = conn.ExecContext(ctx, `DROP TABLE IF EXISTS media_library_prune_keep_folder`)
 	}()
 	// Media and folder ids live in separate namespaces, so they must stay in
 	// separate tables: a media id and a folder id can coincide numerically.
-	if err := s.keepIDsChunked(ctx, "media_library_prune_keep_media", keepMedia); err != nil {
+	if err := keepIDsChunked(ctx, conn, "media_library_prune_keep_media", keepMedia); err != nil {
 		return err
 	}
-	if err := s.keepIDsChunked(ctx, "media_library_prune_keep_folder", keepFolders); err != nil {
+	if err := keepIDsChunked(ctx, conn, "media_library_prune_keep_folder", keepFolders); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media
+	if _, err := conn.ExecContext(ctx, subtree+` DELETE FROM media
 		WHERE folder_id IN (SELECT id FROM sub)
 		  AND NOT EXISTS (SELECT 1 FROM media_library_prune_keep_media k WHERE k.id = media.id)`,
 		rootFolderID); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, subtree+` DELETE FROM media_folders
+	if _, err := conn.ExecContext(ctx, subtree+` DELETE FROM media_folders
 		WHERE id IN (SELECT id FROM sub) AND id <> ?
 		  AND NOT EXISTS (SELECT 1 FROM media_library_prune_keep_folder k WHERE k.id = media_folders.id)
 		  AND id NOT IN (SELECT DISTINCT folder_id FROM media)`,
@@ -2540,7 +2570,7 @@ func (s *SQLite) PruneFolder(ctx context.Context, rootFolderID int, keepFolders,
 // keepIDsChunked loads a keep-set into the given temp table in bounded batches so
 // a huge root never produces a single query with more bound variables than SQLite
 // permits.
-func (s *SQLite) keepIDsChunked(ctx context.Context, table string, ids map[int]bool) error {
+func keepIDsChunked(ctx context.Context, conn *sql.Conn, table string, ids map[int]bool) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -2560,7 +2590,7 @@ func (s *SQLite) keepIDsChunked(ctx context.Context, table string, ids map[int]b
 		for i, id := range values[start:end] {
 			args[i] = id
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO `+table+`(id) VALUES `+placeholders, args...); err != nil {
+		if _, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO `+table+`(id) VALUES `+placeholders, args...); err != nil {
 			return err
 		}
 	}
@@ -2575,6 +2605,13 @@ func (s *SQLite) DeleteLibrary(ctx context.Context, id int) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = ?`, id); err != nil {
 		return err
 	}
+	return s.deleteUncovered(ctx)
+}
+
+// deleteUncovered removes media and folders no library root covers any more,
+// after a library or one of its roots was removed. Rows still beneath a root
+// of another library are kept.
+func (s *SQLite) deleteUncovered(ctx context.Context) error {
 	covers := `WITH RECURSIVE covers(folder_id, library_id) AS (
 		SELECT lr.folder_id, lr.library_id FROM library_roots lr
 		UNION ALL
@@ -2584,8 +2621,8 @@ func (s *SQLite) DeleteLibrary(ctx context.Context, id int) error {
 		return err
 	}
 	for {
-		res, err := s.db.ExecContext(ctx, `DELETE FROM media_folders
-			WHERE id NOT IN (SELECT folder_id FROM library_roots)
+		res, err := s.db.ExecContext(ctx, covers+` DELETE FROM media_folders
+			WHERE id NOT IN (SELECT covers.folder_id FROM covers)
 			  AND id NOT IN (SELECT DISTINCT folder_id FROM media)
 			  AND id NOT IN (SELECT DISTINCT parent_id FROM media_folders WHERE parent_id IS NOT NULL)`)
 		if err != nil {
@@ -2661,7 +2698,8 @@ func (s *SQLite) UpdateLibrary(ctx context.Context, library domain.Library) erro
 			return err
 		}
 	}
-	return nil
+	// A removed root takes its index with it unless another library covers it.
+	return s.deleteUncovered(ctx)
 }
 
 func (s *SQLite) MoveLibraryPath(ctx context.Context, libraryID int, oldPath, newPath string) (domain.LibraryPathMoveResult, error) {

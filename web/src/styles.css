@@ -635,7 +635,9 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .viewer-media > .viewer-document { display: block; width: 100%; height: calc(100vh - 130px); border: 0; background: var(--surface); }
 
 /* ===== Zoom controls ===== */
-.zoom-controls { position: absolute; z-index: 12; top: calc(192px + var(--ml-safe-top, 0px)); left: 18px; display: flex; flex-direction: column; gap: 8px; padding: 6px; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); box-shadow: 0 12px 30px #0008; }
+/* Second control column beside favorite/download/fullscreen: kept out of the
+   first column so it never runs into the vertically centered previous arrow. */
+.zoom-controls { position: absolute; z-index: 12; top: calc(18px + var(--ml-safe-top, 0px)); left: 76px; display: flex; flex-direction: column; gap: 8px; padding: 6px; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); box-shadow: 0 12px 30px #0008; }
 .zoom-controls button { width: 38px; height: 38px; padding: 0; display: grid; place-items: center; border-radius: 999px; border: 1px solid var(--overlay-btn-border); background: var(--overlay-btn-bg); color: white; font-weight: 900; }
 .zoom-controls button[aria-label="Rotate media"] { font-size: 1.15rem; }
 .zoom-controls-separator { width: 26px; height: 1px; align-self: center; background: var(--overlay-btn-border); }

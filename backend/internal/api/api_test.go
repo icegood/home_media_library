@@ -2583,3 +2583,111 @@ func TestMediaAdjustDefaultsPersistAndClamp(t *testing.T) {
 		t.Fatalf("missing media status = %d, want 404", got)
 	}
 }
+
+func TestBulkMediaUpdateRequiresReadAccess(t *testing.T) {
+	f := setup(t)
+	bob := login(t, f.handler, "bob")
+	byID, _ := json.Marshal(map[string]any{"selectedIds": []int{f.photoID}, "gps": "1,2"})
+	if got := request(f.handler, http.MethodPatch, "/api/v1/media/bulk", bob, byID).Code; got != http.StatusForbidden {
+		t.Fatalf("bulk by id status = %d, want 403", got)
+	}
+	byFolder, _ := json.Marshal(map[string]any{"selectedFolders": []int{f.folderID}, "gps": "1,2"})
+	if got := request(f.handler, http.MethodPatch, "/api/v1/media/bulk", bob, byFolder).Code; got != http.StatusForbidden {
+		t.Fatalf("bulk by folder status = %d, want 403", got)
+	}
+	photo, err := f.store.Media(context.Background(), f.photoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if photo.GPS != "" {
+		t.Fatalf("unauthorized bulk update changed gps to %q", photo.GPS)
+	}
+	alice := login(t, f.handler, "alice")
+	if got := request(f.handler, http.MethodPatch, "/api/v1/media/bulk", alice, byID).Code; got != http.StatusOK {
+		t.Fatalf("reader bulk status = %d, want 200", got)
+	}
+}
+
+func TestMediaNeighborsRejectsScopeOutsideLibrary(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	otherRoot := filepath.Join(f.mediaRoot, "archive")
+	other, err := f.store.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Other",
+		Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: otherRoot}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretPhoto, err := f.store.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: other.Roots[0].ID,
+		Path: filepath.Join(otherRoot, "secret.jpg"), RelativePath: "secret.jpg", Name: "secret.jpg",
+		Kind: domain.KindImage, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := login(t, f.handler, "alice")
+	anchor := fmt.Sprintf("/api/v1/libraries/%d/media/neighbors?anchor=%d", f.libraryID, secretPhoto.ID)
+	if got := request(f.handler, http.MethodGet, anchor, alice, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("foreign anchor status = %d, want 403", got)
+	}
+	scope := fmt.Sprintf("/api/v1/libraries/%d/media/neighbors?anchor=%d&folder=%d", f.libraryID, f.photoID, other.Roots[0].ID)
+	if got := request(f.handler, http.MethodGet, scope, alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("foreign folder scope status = %d, want 404", got)
+	}
+}
+
+func TestFavoriteFolderRequiresReadAccess(t *testing.T) {
+	f := setup(t)
+	view, err := f.store.CreateFavoriteView(context.Background(), 3, "Mine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := login(t, f.handler, "bob")
+	path := fmt.Sprintf("/api/v1/favorite-views/%d/folders/%d", view.ID, f.folderID)
+	if got := request(f.handler, http.MethodPut, path, bob, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("favorite foreign folder status = %d, want 403", got)
+	}
+}
+
+func TestSessionRoleFollowsStoredRole(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	manager, err := f.store.CreateUser(ctx, domain.User{Login: "manager", Role: domain.RoleAdmin}, "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := login(t, f.handler, "manager")
+	if got := request(f.handler, http.MethodGet, "/api/v1/admin/users", session, nil).Code; got != http.StatusOK {
+		t.Fatalf("admin status = %d, want 200", got)
+	}
+	if _, err := f.store.UpdateUser(ctx, domain.User{ID: manager.ID, Login: "manager", Role: domain.RoleRegular}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := request(f.handler, http.MethodGet, "/api/v1/admin/users", session, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("demoted admin status = %d, want 403", got)
+	}
+}
+
+func TestSetupRejectsEmptyPassword(t *testing.T) {
+	repository := openSQLite(t)
+	handler := (&api.API{Store: repository, JWTSecret: []byte(secret)}).Handler()
+	body, _ := json.Marshal(map[string]string{"login": "admin", "password": ""})
+	if got := request(handler, http.MethodPost, "/api/v1/setup", "", body).Code; got != http.StatusBadRequest {
+		t.Fatalf("empty password setup status = %d, want 400", got)
+	}
+}
+
+func TestUserSettingsHidePOISecrets(t *testing.T) {
+	f := setup(t)
+	settings := domain.DefaultServerSettings()
+	settings.POIProviders = map[string]map[string]string{"geoapify": {"apiKey": "server-secret"}, "mapbox": {"token": "server-token"}}
+	if err := f.store.SaveServerSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	alice := login(t, f.handler, "alice")
+	response := request(f.handler, http.MethodGet, "/api/v1/settings", alice, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("settings status = %d", response.Code)
+	}
+	if body := response.Body.String(); strings.Contains(body, "server-secret") || strings.Contains(body, "server-token") {
+		t.Fatalf("user settings leak POI credentials: %s", body)
+	}
+}

@@ -146,6 +146,9 @@ func (p *Pool) Wait(ctx context.Context, jobID string) error {
 	for q != nil && !q.done && (q.next < len(q.items) || q.running > 0) {
 		if err := ctx.Err(); err != nil {
 			q.done = true
+			// Drop the queue: in-flight items still complete against the
+			// queue pointer, but the map must not keep cancelled work forever.
+			delete(p.queues, jobID)
 			p.cond.Broadcast()
 			return err
 		}

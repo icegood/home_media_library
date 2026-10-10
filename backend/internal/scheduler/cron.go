@@ -79,6 +79,10 @@ func parseField(part string, min, max int) (field, error) {
 				return f, fmt.Errorf("invalid value %q", base)
 			}
 			lo, hi = v, v
+			if strings.Contains(item, "/") {
+				// "a/n" means every n-th value starting at a (Vixie cron).
+				hi = max
+			}
 		}
 		if lo > hi || lo < min || hi > max {
 			return f, fmt.Errorf("range %d-%d is outside %d-%d", lo, hi, min, max)

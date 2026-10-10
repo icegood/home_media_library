@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -118,7 +119,23 @@ func (s Scanner) walk(ctx context.Context, root, start string, startID int) erro
 			}
 		}
 		if walkErr != nil {
-			return walkErr
+			if filePath == start || entry == nil {
+				return walkErr
+			}
+			// One unreadable entry (lost+found, a folder owned by another
+			// user, a file removed mid-walk) must not abort the whole scan.
+			// Rows already indexed beneath it are kept rather than pruned,
+			// so a transient permission problem never drops user data.
+			applog.Printf(applog.Warn, "scan skipped %s: %v", filePath, walkErr)
+			if entry.IsDir() {
+				if id, ok := folderIDs[filepath.Clean(filePath)]; ok {
+					if err := s.keepIndexedSubtree(ctx, id, seenFolders, seenMedia); err != nil {
+						return err
+					}
+				}
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			if entry.IsDir() {
@@ -174,6 +191,9 @@ func (s Scanner) walk(ctx context.Context, root, start string, startID int) erro
 					if err != nil {
 						return err
 					}
+					if mediaID == domain.InvalidID {
+						return nil
+					}
 					seenMediaMu.Lock()
 					seenMedia[mediaID] = true
 					seenMediaMu.Unlock()
@@ -195,6 +215,9 @@ func (s Scanner) walk(ctx context.Context, root, start string, startID int) erro
 			if err != nil {
 				return err
 			}
+			if mediaID == domain.InvalidID {
+				continue
+			}
 			seenMediaMu.Lock()
 			seenMedia[mediaID] = true
 			seenMediaMu.Unlock()
@@ -210,6 +233,11 @@ func (s Scanner) importMedia(ctx context.Context, root, filePath string, mimeTyp
 		}
 	}
 	info, err := os.Stat(filePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		// Removed between the walk and the import (a temp file, a move in
+		// progress): nothing to index, and pruning drops any stale row.
+		return domain.InvalidID, nil
+	}
 	if err != nil {
 		return domain.InvalidID, err
 	}
@@ -252,6 +280,26 @@ func (s Scanner) importMedia(ctx context.Context, root, filePath string, mimeTyp
 		return domain.InvalidID, err
 	}
 	return media.ID, nil
+}
+
+// keepIndexedSubtree marks every folder and media row already stored beneath
+// folderID as seen, so pruning leaves a subtree the walk could not read alone.
+func (s Scanner) keepIndexedSubtree(ctx context.Context, folderID int, folders, media map[int]bool) error {
+	subFolders, err := s.Store.FoldersForSubtree(ctx, folderID)
+	if err != nil {
+		return err
+	}
+	for _, folder := range subFolders {
+		folders[folder.ID] = true
+	}
+	items, err := s.Store.MediaForSubtree(ctx, folderID)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		media[item.ID] = true
+	}
+	return nil
 }
 
 func (s Scanner) mimeTypeForPath(ctx context.Context, path string) (string, bool) {

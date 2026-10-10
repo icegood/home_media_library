@@ -84,8 +84,30 @@ func Fetch(ctx context.Context, provider, providerKey string, bbox BBox, categor
 	if err != nil {
 		return nil, err
 	}
+	for i := range out {
+		out[i].Website = safeLink(out[i].Website)
+		out[i].ImageURL = safeLink(out[i].ImageURL)
+	}
 	cacheSet(provider, providerKey, bbox, categories, out)
 	return out, nil
+}
+
+// safeLink keeps only absolute http(s) links. Provider data is third-party
+// (OSM tags are user-edited) and lands in <a href>, so javascript:, data: and
+// other schemes are dropped.
+func safeLink(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	if scheme := strings.ToLower(parsed.Scheme); scheme != "http" && scheme != "https" {
+		return ""
+	}
+	return parsed.String()
 }
 
 // ── Overpass ──────────────────────────────────────────────────────────────────
@@ -550,7 +572,15 @@ func cacheGet(provider, key string, bbox BBox, cats []CategoryID) ([]POI, bool) 
 func cacheSet(provider, key string, bbox BBox, cats []CategoryID, val []POI) {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-	cache[cacheKeyFor(provider, key, bbox, cats)] = &cacheEntry{val: val, expiresAt: time.Now().Add(cacheTTL)}
+	now := time.Now()
+	// Every map pan is a new bbox key, so expired entries are swept here;
+	// otherwise the cache grows for the whole server lifetime.
+	for k, e := range cache {
+		if now.After(e.expiresAt) {
+			delete(cache, k)
+		}
+	}
+	cache[cacheKeyFor(provider, key, bbox, cats)] = &cacheEntry{val: val, expiresAt: now.Add(cacheTTL)}
 }
 
 func min(a, b int) int {

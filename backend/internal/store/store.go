@@ -44,6 +44,7 @@ type Store interface {
 	FoldersByIDs(ctx context.Context, ids []int) (map[int]domain.MediaFolder, error)
 	CanRead(ctx context.Context, userID, libraryID int, admin bool) (bool, error)
 	CanReadMedia(ctx context.Context, userID, mediaID int, admin bool) (bool, error)
+	CanReadFolder(ctx context.Context, userID, folderID int, admin bool) (bool, error)
 	Entries(ctx context.Context, userID, libraryID int, relativeDir string) ([]domain.Entry, error)
 	EntriesForFolder(ctx context.Context, userID, libraryID, folderID int) (domain.FolderEntries, error)
 	Media(ctx context.Context, id int) (domain.Media, error)

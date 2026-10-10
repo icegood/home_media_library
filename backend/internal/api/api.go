@@ -214,8 +214,7 @@ func (a *API) setup(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "login must contain 3 to 64 letters, numbers, dots, dashes, or underscores")
 		return
 	}
-	if len(input.Password) > 72 {
-		problem(w, http.StatusBadRequest, "password must contain no more than 72 characters")
+	if !validatePassword(w, input.Password) {
 		return
 	}
 	user := domain.User{ID: domain.InvalidID, Login: login, Role: domain.RoleAdmin}
@@ -298,8 +297,7 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if len(input.New) > 72 {
-		problem(w, http.StatusBadRequest, "password must contain no more than 72 characters")
+	if !validatePassword(w, input.New) {
 		return
 	}
 	user, err := a.Store.User(r.Context(), p.ID)
@@ -398,8 +396,7 @@ func (a *API) resetPassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if len(input.Password) > 72 {
-		problem(w, http.StatusBadRequest, "password must contain no more than 72 characters")
+	if !validatePassword(w, input.Password) {
 		return
 	}
 	if strings.TrimSpace(input.Token) == "" {
@@ -458,6 +455,13 @@ func validEmail(value string) bool {
 	if len(value) < 3 || len(value) > 254 || !strings.Contains(value, "@") {
 		return false
 	}
+	// Addresses end up in SMTP commands and mail headers: no whitespace or
+	// control characters (CR/LF would allow header injection).
+	for _, character := range value {
+		if character <= ' ' || character == 0x7f {
+			return false
+		}
+	}
 	at := strings.LastIndex(value, "@")
 	domainPart := value[at+1:]
 	if at == 0 || domainPart == "" || !strings.Contains(domainPart, ".") {
@@ -495,7 +499,7 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
 		"poiProviderLight":      settings.POIProviderLight,
 		"poiProviderDark":       settings.POIProviderDark,
-		"poiProviders":          a.poiProvidersJSON(r.Context()),
+		"poiProviders":          redactPOIProviders(a.poiProvidersJSON(r.Context())),
 		"thumbMin":           settings.ThumbMin,
 		"thumbMax":           settings.ThumbMax,
 	})
@@ -519,6 +523,24 @@ func (a *API) poiProvidersJSON(ctx context.Context) map[string]map[string]string
 		copy["overpass"] = map[string]string{}
 	}
 	return copy
+}
+
+// redactPOIProviders blanks the POI provider credentials for non-admin
+// payloads. POI lookups are proxied by the server, so the browser never needs
+// the Geoapify key or the Mapbox token; only the provider ids are kept.
+func redactPOIProviders(providers map[string]map[string]string) map[string]map[string]string {
+	out := make(map[string]map[string]string, len(providers))
+	for id, options := range providers {
+		clean := make(map[string]string, len(options))
+		for key, value := range options {
+			if key == "apiKey" || key == "token" {
+				value = ""
+			}
+			clean[key] = value
+		}
+		out[id] = clean
+	}
+	return out
 }
 
 // mapTileProvidersJSON returns the provider options as a shallow copy that is
@@ -835,6 +857,22 @@ func (a *API) mediaNeighbors(w http.ResponseWriter, r *http.Request) {
 			problem(w, 400, "after must be an integer between 0 and 50")
 			return
 		}
+	}
+	// The scope and the anchor are caller-supplied: a folder of another
+	// library or an unreadable anchor would otherwise leak media the user has
+	// no access to.
+	if folderID > 0 {
+		if _, err := a.Store.FolderChain(r.Context(), id, folderID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				problem(w, http.StatusNotFound, "folder not found in library")
+				return
+			}
+			problem(w, 500, err.Error())
+			return
+		}
+	}
+	if !a.requireMediaRead(w, r, p, anchorID) {
+		return
 	}
 	result, err := a.Store.MediaNeighbors(r.Context(), p.ID, id, folderID, anchorID, sort, kind, gps, before, after)
 	if err != nil {
@@ -1171,7 +1209,11 @@ func (a *API) favoriteViewMedia(w http.ResponseWriter, r *http.Request) {
 	items := []itemView{}
 	folders, err := a.Store.FavoriteFolders(r.Context(), p.ID, viewID)
 	if err == nil {
+		admin := p.Role == domain.RoleAdmin
 		for _, f := range folders {
+			if readable, err := a.Store.CanReadFolder(r.Context(), p.ID, f.ID, admin); err != nil || !readable {
+				continue
+			}
 			items = append(items, itemView{ID: f.ID, Name: f.Name, IsFolder: true})
 		}
 	}
@@ -1235,6 +1277,9 @@ func (a *API) setFavoriteFolder(w http.ResponseWriter, r *http.Request, favorite
 	}
 	viewID, ok := pathID(w, r, "viewId")
 	if !ok {
+		return
+	}
+	if favorite && !a.requireFolderRead(w, r, p, folderID) {
 		return
 	}
 	if err := a.Store.SetFavoriteFolder(r.Context(), p.ID, viewID, folderID, favorite); err != nil {
@@ -1427,6 +1472,9 @@ func (a *API) trajectoryStart(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid JSON")
 		return
 	}
+	if !a.requireFolderRead(w, r, p, *body.FolderID) {
+		return
+	}
 	if err := a.Store.SetTrajectoryStart(r.Context(), *body.FolderID, id, *body.Start); err != nil {
 		problem(w, 500, err.Error())
 		return
@@ -1460,6 +1508,9 @@ func (a *API) trajectoryEnd(w http.ResponseWriter, r *http.Request) {
 	}
 	if json.NewDecoder(r.Body).Decode(&body) != nil || body.FolderID == nil || body.End == nil {
 		problem(w, 400, "invalid JSON")
+		return
+	}
+	if !a.requireFolderRead(w, r, p, *body.FolderID) {
 		return
 	}
 	if err := a.Store.SetTrajectoryEnd(r.Context(), *body.FolderID, id, *body.End); err != nil {
@@ -1497,6 +1548,9 @@ func (a *API) trajectoryName(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid JSON")
 		return
 	}
+	if !a.requireFolderRead(w, r, p, *body.FolderID) {
+		return
+	}
 	if err := a.Store.SetTrajectoryName(r.Context(), *body.FolderID, id, *body.Name); err != nil {
 		problem(w, 500, err.Error())
 		return
@@ -1519,6 +1573,22 @@ func (a *API) bulkMediaUpdate(w http.ResponseWriter, r *http.Request) {
 	if patch.ShiftMinutes != nil && patch.TakenAt != nil {
 		problem(w, 400, "cannot combine shiftMinutes with takenAt")
 		return
+	}
+	// Every target must be readable, exactly like the single-item edit
+	// endpoints; otherwise any user could rewrite media of other libraries.
+	patch.SelectedIDs = dedupeInts(patch.SelectedIDs)
+	patch.SelectedFolders = dedupeInts(patch.SelectedFolders)
+	if p.Role != domain.RoleAdmin {
+		for _, mediaID := range patch.SelectedIDs {
+			if !a.requireMediaRead(w, r, p, mediaID) {
+				return
+			}
+		}
+		for _, folderID := range patch.SelectedFolders {
+			if !a.requireFolderRead(w, r, p, folderID) {
+				return
+			}
+		}
 	}
 	storeStart := time.Now()
 	var (
@@ -2549,6 +2619,9 @@ func (a *API) updateLibrary(w http.ResponseWriter, r *http.Request) {
 	existing.Name = name
 	existing.Roots = roots
 	existing.Watch = watch
+	// Collected before the update: a removed root drops its index, and the
+	// thumbnails of media that no longer exist afterwards are deleted too.
+	thumbnailRefs, refsErr := a.Store.ThumbnailCleanupRefsForLibrary(r.Context(), id)
 	if err := a.Store.UpdateLibrary(r.Context(), existing); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			problem(w, http.StatusConflict, "library name already exists")
@@ -2556,6 +2629,9 @@ func (a *API) updateLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 		problem(w, 409, err.Error())
 		return
+	}
+	if refsErr == nil {
+		a.cleanupThumbnailRefs(r.Context(), thumbnailRefs)
 	}
 	if a.OnLibrariesChanged != nil {
 		a.OnLibrariesChanged()
@@ -2731,7 +2807,7 @@ func (a *API) metadataRenew(w http.ResponseWriter, r *http.Request) {
 	job := a.startMetadataRenewJob(library, rootID, input.RecreateExisting, input.UpdateGps, input.UpdateTakenAt)
 	// Log the effective job parameters (including the dedupe result) so the
 	// admin log viewer shows exactly what every metadata refresh ran with.
-	applog.Printf(applog.Info, "metadata renew job %s: library=%d(%s) scope=%s recreateExisting=%v updateGps=%v updateTakenAt=%v requested by %s from %s",
+	applog.Printf(applog.Info, "metadata renew job %s: library=%d(%s) scope=%s recreateExisting=%v updateGps=%v updateTakenAt=%v requested by user %d from %s",
 		job.ID, library.ID, library.Name, job.RootPath, input.RecreateExisting, input.UpdateGps, input.UpdateTakenAt, current(r).ID, remoteAddr(r))
 	writeJSON(w, http.StatusAccepted, job)
 }
@@ -2759,8 +2835,8 @@ func (a *API) jobScope(w http.ResponseWriter, r *http.Request) (domain.Library, 
 			problem(w, http.StatusBadRequest, "invalid root folder")
 			return domain.Library{}, 0, false
 		}
-		if _, err := a.Store.Folder(r.Context(), parsed); err != nil {
-			problem(w, http.StatusNotFound, "folder not found")
+		if _, err := a.Store.FolderChain(r.Context(), library.ID, parsed); err != nil {
+			problem(w, http.StatusNotFound, "folder not found in library")
 			return domain.Library{}, 0, false
 		}
 		rootID = parsed
@@ -3248,11 +3324,15 @@ func (a *API) startJob(job JobStatus, run func(*JobStatus) error) JobStatus {
 	a.jobCancels[job.ID] = cancel
 	a.jobContexts[job.ID] = ctx
 	a.jobMu.Unlock()
-	if err := a.jobStore().SaveJob(context.Background(), copy); err != nil {
-		applog.Printf(applog.Error, "could not persist job %s: %v", copy.ID, err)
+	// The map entry is mutated under jobMu by updateJob; the runner and the
+	// caller each get their own snapshot so nothing reads it unlocked.
+	snapshot := job
+	runSnapshot := job
+	if err := a.jobStore().SaveJob(context.Background(), snapshot); err != nil {
+		applog.Printf(applog.Error, "could not persist job %s: %v", snapshot.ID, err)
 	}
-	go a.runJob(&copy, run, cancel)
-	return copy
+	go a.runJob(&runSnapshot, run, cancel)
+	return snapshot
 }
 
 func (a *API) runJob(snapshot *JobStatus, run func(*JobStatus) error, cancel context.CancelFunc) {
@@ -3684,11 +3764,11 @@ func (a *API) startVacuumJob() (JobStatus, bool) {
 	job := a.newJob("vacuum", domain.Library{ID: 0, Name: "Database maintenance"}, 0, nil)
 	job.Cancelable = false
 	return a.startJob(job, func(job *JobStatus) error {
-		job.Total = 1
+		a.updateJob(job.ID, func(job *JobStatus) { job.Total = 1 })
 		if err := provider.Vacuum(context.Background()); err != nil {
 			return err
 		}
-		job.Processed = 1
+		a.updateJob(job.ID, func(job *JobStatus) { job.Processed = 1 })
 		return nil
 	}), true
 }
@@ -3982,6 +4062,13 @@ func (a *API) createUser(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	if !validLogin(normalizeLogin(input.Login)) {
+		problem(w, http.StatusBadRequest, "login must contain 3 to 64 letters, numbers, dots, dashes, or underscores")
+		return
+	}
+	if !validatePassword(w, input.Password) {
+		return
+	}
 	user, err := a.Store.CreateUser(r.Context(), domain.User{Login: input.Login, Role: input.Role}, input.Password)
 	if err != nil {
 		problem(w, http.StatusBadRequest, "login and role are required and password is mandatory")
@@ -4002,6 +4089,15 @@ func (a *API) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		problem(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	// Imported accounts may carry logins outside the current rules; only a
+	// changed login has to satisfy them.
+	if existing, err := a.Store.User(r.Context(), id); err == nil && normalizeLogin(input.Login) != existing.Login && !validLogin(normalizeLogin(input.Login)) {
+		problem(w, http.StatusBadRequest, "login must contain 3 to 64 letters, numbers, dots, dashes, or underscores")
+		return
+	}
+	if input.Password != "" && !validatePassword(w, input.Password) {
 		return
 	}
 	user, err := a.Store.UpdateUser(r.Context(), domain.User{ID: id, Login: input.Login, Role: input.Role}, input.Password)
@@ -4267,6 +4363,8 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	applog.SetLevel(logLevel)
+	applog.SetRotation(applog.Rotation{MaxSizeMB: input.LogRotateMaxSizeMB,
+		MaxBackups: input.LogRotateMaxBackups, MaxAgeDays: input.LogRotateMaxAgeDays})
 	certificateExpiresAt := ""
 	if expires, ok := gatewayconfig.CertificateExpiration(a.CaddyDataDir, transport.PublicDNS); ok {
 		certificateExpiresAt = expires.Format("2006-01-02")
@@ -4292,6 +4390,7 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		"smtpUsername":          input.SMTPUsername,
 		"smtpFrom":              input.SMTPFrom,
 		"mapTileProviders":      a.mapTileProvidersJSON(r.Context()),
+		"poiProviders":          a.poiProvidersJSON(r.Context()),
 	})
 }
 
@@ -4322,6 +4421,20 @@ func (a *API) serverSettingsFor(ctx context.Context) domain.ServerSettings {
 		return domain.DefaultServerSettings()
 	}
 	return settings
+}
+
+// validatePassword enforces the password rules shared by every endpoint that
+// sets a password: non-empty and within bcrypt's 72-byte input limit.
+func validatePassword(w http.ResponseWriter, password string) bool {
+	if password == "" {
+		problem(w, http.StatusBadRequest, "password is required")
+		return false
+	}
+	if len(password) > 72 {
+		problem(w, http.StatusBadRequest, "password must contain no more than 72 characters")
+		return false
+	}
+	return true
 }
 
 func normalizeLogin(value string) string {
@@ -4368,6 +4481,19 @@ func (a *API) requireMediaRead(w http.ResponseWriter, r *http.Request, p princip
 	return true
 }
 
+func (a *API) requireFolderRead(w http.ResponseWriter, r *http.Request, p principal, folderID int) bool {
+	ok, err := a.Store.CanReadFolder(r.Context(), p.ID, folderID, p.Role == domain.RoleAdmin)
+	if err != nil {
+		problem(w, 404, "folder not found")
+		return false
+	}
+	if !ok {
+		problem(w, 403, "access denied")
+		return false
+	}
+	return true
+}
+
 func (a *API) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -4387,7 +4513,15 @@ func (a *API) auth(next http.Handler) http.Handler {
 			return
 		}
 		c := token.Claims.(*claims)
-		ctx := context.WithValue(r.Context(), principalKey, principal{ID: c.UserID, Role: c.Role})
+		// The token only proves who the caller is. The role is read from the
+		// store on every request so a demoted or deleted account loses its
+		// rights immediately instead of at token expiry.
+		user, err := a.Store.User(r.Context(), c.UserID)
+		if err != nil {
+			problem(w, 401, "authentication required")
+			return
+		}
+		ctx := context.WithValue(r.Context(), principalKey, principal{ID: user.ID, Role: user.Role})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

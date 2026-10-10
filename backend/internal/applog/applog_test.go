@@ -52,3 +52,32 @@ func TestClearFileWithoutConfiguredFile(t *testing.T) {
 		t.Fatalf("expected ErrNotConfigured, got: %v", err)
 	}
 }
+
+func TestFileRotatesBySize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	if err := ConfigureFile(path); err != nil {
+		t.Fatal(err)
+	}
+	SetRotation(Rotation{MaxSizeMB: 1, MaxBackups: 2, MaxAgeDays: 30})
+	t.Cleanup(func() { SetRotation(Rotation{}) })
+	line := strings.Repeat("x", 64*1024)
+	for i := 0; i < 40; i++ {
+		Printf(Error, "%s", line)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 1<<20 {
+		t.Fatalf("active log is %d bytes, want <= 1 MiB", info.Size())
+	}
+	for _, index := range []string{".1", ".2"} {
+		if _, err := os.Stat(path + index); err != nil {
+			t.Fatalf("backup %s missing: %v", index, err)
+		}
+	}
+	if _, err := os.Stat(path + ".3"); err == nil {
+		t.Fatal("backup beyond MaxBackups was kept")
+	}
+}

@@ -440,50 +440,64 @@ func (s *Postgres) ImportSnapshot(ctx context.Context, snapshot domain.ImportSna
 		if id == domain.InvalidID {
 			id = 0
 		}
+		// An account with the same login is the same person: reuse it. A
+		// matching id alone is not enough, otherwise library access of the
+		// imported user would be granted to an unrelated local account.
+		var existing domain.User
+		err := tx.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE login = $1`, user.Login).
+			Scan(&existing.ID, &existing.Login, &existing.PasswordHash, &existing.Role)
+		if err == nil {
+			userIDs[originalID] = existing.ID
+			existing.PasswordHash = ""
+			result.Users = append(result.Users, domain.ImportedUser{User: existing, Existed: true})
+			continue
+		}
 		if id != 0 {
-			var existing domain.User
-			err := tx.QueryRowContext(ctx, `SELECT id, login, password_hash, role FROM users WHERE id = $1`, id).
-				Scan(&existing.ID, &existing.Login, &existing.PasswordHash, &existing.Role)
-			if err == nil {
-				userIDs[originalID] = existing.ID
-				result.Users = append(result.Users, domain.ImportedUser{User: existing, Existed: true})
-				continue
+			var taken bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, id).Scan(&taken); err != nil {
+				return result, err
+			}
+			if taken {
+				id = 0
 			}
 		}
 		if user.Role == "" {
 			user.Role = domain.RoleRegular
 		}
 		imported := domain.ImportedUser{User: user}
+		if user.PasswordHash == "" {
+			password, err := temporaryPassword()
+			if err != nil {
+				return result, err
+			}
+			hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			if err != nil {
+				return result, err
+			}
+			user.PasswordHash = string(hash)
+			imported.TemporaryPassword = password
+		}
+		// A failed statement aborts a Postgres transaction, so a skippable
+		// insert runs inside a savepoint that is rolled back on failure.
+		if _, err := tx.ExecContext(ctx, `SAVEPOINT import_row`); err != nil {
+			return result, err
+		}
+		var insertErr error
 		if id == 0 {
-			if err := tx.QueryRowContext(ctx, `INSERT INTO users(login, password_hash, role) VALUES($1,$2,$3) RETURNING id`,
-				user.Login, user.PasswordHash, user.Role).Scan(&id); err != nil {
-				continue
-			}
-			if user.PasswordHash == "" {
-				password := temporaryPassword(strconv.Itoa(id), user.Login)
-				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-				if err != nil {
-					return result, err
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = $1 WHERE id = $2`, string(hash), id); err != nil {
-					return result, err
-				}
-				imported.TemporaryPassword = password
-			}
+			insertErr = tx.QueryRowContext(ctx, `INSERT INTO users(login, password_hash, role) VALUES($1,$2,$3) RETURNING id`,
+				user.Login, user.PasswordHash, user.Role).Scan(&id)
 		} else {
-			if user.PasswordHash == "" {
-				password := temporaryPassword(strconv.Itoa(id), user.Login)
-				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-				if err != nil {
-					return result, err
-				}
-				user.PasswordHash = string(hash)
-				imported.TemporaryPassword = password
+			_, insertErr = tx.ExecContext(ctx, `INSERT INTO users(id, login, password_hash, role) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4)`,
+				id, user.Login, user.PasswordHash, user.Role)
+		}
+		if insertErr != nil {
+			if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT import_row`); err != nil {
+				return result, err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO users(id, login, password_hash, role) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3,$4)`,
-				id, user.Login, user.PasswordHash, user.Role); err != nil {
-				continue
-			}
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT import_row`); err != nil {
+			return result, err
 		}
 		user.ID = id
 		user.PasswordHash = ""
@@ -514,8 +528,19 @@ func (s *Postgres) ImportSnapshot(ctx context.Context, snapshot domain.ImportSna
 			if err := tx.QueryRowContext(ctx, `INSERT INTO libraries(name, watch) VALUES($1,$2) RETURNING id`, name, library.Watch).Scan(&id); err != nil {
 				return result, err
 			}
-		} else if _, err := tx.ExecContext(ctx, `INSERT INTO libraries(id, name, watch) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3)`, id, name, library.Watch); err != nil {
-			continue
+		} else {
+			if _, err := tx.ExecContext(ctx, `SAVEPOINT import_row`); err != nil {
+				return result, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO libraries(id, name, watch) OVERRIDING SYSTEM VALUE VALUES($1,$2,$3)`, id, name, library.Watch); err != nil {
+				if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT import_row`); err != nil {
+					return result, err
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT import_row`); err != nil {
+				return result, err
+			}
 		}
 		for _, root := range roots {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO library_roots(library_id, folder_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
@@ -920,6 +945,29 @@ func (s *Postgres) CanRead(ctx context.Context, userID, libraryID int, admin boo
 func (s *Postgres) CanReadMedia(ctx context.Context, userID, mediaID int, admin bool) (bool, error) {
 	var folderID int
 	if err := s.db.QueryRowContext(ctx, `SELECT folder_id FROM media WHERE id = $1`, mediaID).Scan(&folderID); err != nil {
+		return false, translateErr(err)
+	}
+	if admin {
+		return true, nil
+	}
+	subSQL, subArgs := accessibleSubtree(userID, false)
+	subPG, args := pgPlaceholders(subSQL, subArgs, 1)
+	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
+		UNION ALL
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+	SELECT EXISTS(SELECT 1 FROM sub WHERE id = ` + "$" + strconv.Itoa(len(args)+1) + `)`
+	args = append(args, folderID)
+	var ok bool
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&ok)
+	return ok, err
+}
+
+// CanReadFolder reports whether the folder lies beneath a library root the
+// user may read (any existing folder for admins). ErrNotFound is returned for
+// an unknown folder id.
+func (s *Postgres) CanReadFolder(ctx context.Context, userID, folderID int, admin bool) (bool, error) {
+	var id int
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM media_folders WHERE id = $1`, folderID).Scan(&id); err != nil {
 		return false, translateErr(err)
 	}
 	if admin {
@@ -2293,6 +2341,13 @@ func (s *Postgres) DeleteLibrary(ctx context.Context, id int) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = $1`, id); err != nil {
 		return err
 	}
+	return s.deleteUncovered(ctx)
+}
+
+// deleteUncovered removes media and folders no library root covers any more,
+// after a library or one of its roots was removed. Rows still beneath a root
+// of another library are kept.
+func (s *Postgres) deleteUncovered(ctx context.Context) error {
 	covers := `WITH RECURSIVE covers(folder_id, library_id) AS (
 		SELECT lr.folder_id, lr.library_id FROM library_roots lr
 		UNION ALL
@@ -2302,8 +2357,8 @@ func (s *Postgres) DeleteLibrary(ctx context.Context, id int) error {
 		return err
 	}
 	for {
-		res, err := s.db.ExecContext(ctx, `DELETE FROM media_folders
-			WHERE id NOT IN (SELECT folder_id FROM library_roots)
+		res, err := s.db.ExecContext(ctx, covers+` DELETE FROM media_folders
+			WHERE id NOT IN (SELECT covers.folder_id FROM covers)
 			  AND id NOT IN (SELECT DISTINCT folder_id FROM media)
 			  AND id NOT IN (SELECT DISTINCT parent_id FROM media_folders WHERE parent_id IS NOT NULL)`)
 		if err != nil {
@@ -2376,7 +2431,8 @@ func (s *Postgres) UpdateLibrary(ctx context.Context, library domain.Library) er
 			return err
 		}
 	}
-	return nil
+	// A removed root takes its index with it unless another library covers it.
+	return s.deleteUncovered(ctx)
 }
 
 func (s *Postgres) MoveLibraryPath(ctx context.Context, libraryID int, oldPath, newPath string) (domain.LibraryPathMoveResult, error) {

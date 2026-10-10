@@ -92,6 +92,10 @@ func main() {
 	if err := applog.ConfigureFile(logPath); err != nil {
 		log.Fatalf("configure app log: %v", err)
 	}
+	if settings, err := repository.ServerSettings(context.Background()); err == nil {
+		applog.SetRotation(applog.Rotation{MaxSizeMB: settings.LogRotateMaxSizeMB,
+			MaxBackups: settings.LogRotateMaxBackups, MaxAgeDays: settings.LogRotateMaxAgeDays})
+	}
 	gatewayPath := env("GATEWAY_CONFIG_FILE", "/runtime/app-config/gateway/Caddyfile")
 	if err := gatewayconfig.Write(gatewayPath, gatewayconfig.Load(context.Background(), repository)); err != nil {
 		log.Fatalf("write gateway config: %v", err)
