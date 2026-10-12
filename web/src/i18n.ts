@@ -498,6 +498,22 @@ const UA_STRINGS: Record<string, string> = {
   "Zoom": "Масштаб",
   "Zoom controls": "Керування масштабом",
   "lat, lng e.g. 50.45,30.52": "шир., довг., напр. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Прогулянка",
+  "Show your own position and how far away each photo was taken": "Показати вашу позицію та відстань до місця кожного фото",
+  "Locating you…": "Визначаємо вашу позицію…",
+  "Near you": "Поруч з вами",
+  "Center on me": "Центрувати на мені",
+  "Accuracy": "Точність",
+  "From you": "Від вас",
+  "No geotagged media on this map.": "На цій карті немає медіа з геотегами.",
+  "Media near you": "Медіа поруч з вами",
+  "Location permission was denied.": "Доступ до геолокації заборонено.",
+  "Location is unavailable.": "Геолокація недоступна.",
+  "This device does not report its location.": "Цей пристрій не повідомляє свою геолокацію.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Браузер передає геолокацію лише через HTTPS. Відкрийте сервер через HTTPS або скористайтеся застосунком Android.",
+  "Location is turned off. Enable it in the system settings.": "Геолокацію вимкнено. Увімкніть її в налаштуваннях системи.",
+  "Location is unavailable on this device.": "Геолокація недоступна на цьому пристрої."
 };
 
 const DE_STRINGS: Record<string, string> = {
@@ -895,6 +911,22 @@ const DE_STRINGS: Record<string, string> = {
   "Zoom": "Zoom",
   "Zoom controls": "Zoom-Steuerung",
   "lat, lng e.g. 50.45,30.52": "lat, lng z. B. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Gehen",
+  "Show your own position and how far away each photo was taken": "Eigene Position und Entfernung zu jedem Aufnahmeort anzeigen",
+  "Locating you…": "Position wird ermittelt…",
+  "Near you": "In deiner Nähe",
+  "Center on me": "Auf mich zentrieren",
+  "Accuracy": "Genauigkeit",
+  "From you": "Von dir",
+  "No geotagged media on this map.": "Keine georeferenzierten Medien auf dieser Karte.",
+  "Media near you": "Medien in deiner Nähe",
+  "Location permission was denied.": "Standortberechtigung wurde verweigert.",
+  "Location is unavailable.": "Standort ist nicht verfügbar.",
+  "This device does not report its location.": "Dieses Gerät meldet keinen Standort.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Der Browser gibt den Standort nur über HTTPS frei. Öffne den Server über HTTPS oder nutze die Android-App.",
+  "Location is turned off. Enable it in the system settings.": "Standort ist ausgeschaltet. Aktiviere ihn in den Systemeinstellungen.",
+  "Location is unavailable on this device.": "Standort ist auf diesem Gerät nicht verfügbar."
 };
 
 const NL_STRINGS: Record<string, string> = {
@@ -1292,6 +1324,22 @@ const NL_STRINGS: Record<string, string> = {
   "Zoom": "Zoom",
   "Zoom controls": "Zoomknoppen",
   "lat, lng e.g. 50.45,30.52": "lat, lng bijv. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Wandelen",
+  "Show your own position and how far away each photo was taken": "Toon je eigen positie en hoe ver elke foto is gemaakt",
+  "Locating you…": "Je locatie bepalen…",
+  "Near you": "Bij jou in de buurt",
+  "Center on me": "Centreer op mij",
+  "Accuracy": "Nauwkeurigheid",
+  "From you": "Vanaf jou",
+  "No geotagged media on this map.": "Geen media met locatie op deze kaart.",
+  "Media near you": "Media bij jou in de buurt",
+  "Location permission was denied.": "Locatietoestemming is geweigerd.",
+  "Location is unavailable.": "Locatie is niet beschikbaar.",
+  "This device does not report its location.": "Dit apparaat geeft geen locatie door.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "De browser deelt je locatie alleen via HTTPS. Open de server via HTTPS of gebruik de Android-app.",
+  "Location is turned off. Enable it in the system settings.": "Locatie staat uit. Schakel deze in via de systeeminstellingen.",
+  "Location is unavailable on this device.": "Locatie is niet beschikbaar op dit apparaat."
 };
 
 const FI_STRINGS: Record<string, string> = {
@@ -1689,6 +1737,22 @@ const FI_STRINGS: Record<string, string> = {
   "Zoom": "Zoomaus",
   "Zoom controls": "Zoomin säätimet",
   "lat, lng e.g. 50.45,30.52": "lat, lng esim. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Kävely",
+  "Show your own position and how far away each photo was taken": "Näytä oma sijaintisi ja etäisyys kunkin kuvan ottopaikkaan",
+  "Locating you…": "Paikannetaan…",
+  "Near you": "Lähelläsi",
+  "Center on me": "Keskitä minuun",
+  "Accuracy": "Tarkkuus",
+  "From you": "Sinusta",
+  "No geotagged media on this map.": "Tällä kartalla ei ole sijaintitietoja sisältävää mediaa.",
+  "Media near you": "Media lähelläsi",
+  "Location permission was denied.": "Sijaintilupa evättiin.",
+  "Location is unavailable.": "Sijainti ei ole käytettävissä.",
+  "This device does not report its location.": "Tämä laite ei ilmoita sijaintiaan.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Selain jakaa sijainnin vain HTTPS-yhteydellä. Avaa palvelin HTTPS:llä tai käytä Android-sovellusta.",
+  "Location is turned off. Enable it in the system settings.": "Sijainti on pois päältä. Ota se käyttöön järjestelmäasetuksista.",
+  "Location is unavailable on this device.": "Sijainti ei ole käytettävissä tällä laitteella."
 };
 
 const SV_STRINGS: Record<string, string> = {
@@ -2086,6 +2150,22 @@ const SV_STRINGS: Record<string, string> = {
   "Zoom": "Zooma",
   "Zoom controls": "Zoomkontroller",
   "lat, lng e.g. 50.45,30.52": "lat, lng t.ex. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Promenad",
+  "Show your own position and how far away each photo was taken": "Visa din position och hur långt bort varje foto togs",
+  "Locating you…": "Hämtar din position…",
+  "Near you": "Nära dig",
+  "Center on me": "Centrera på mig",
+  "Accuracy": "Noggrannhet",
+  "From you": "Från dig",
+  "No geotagged media on this map.": "Inga geotaggade medier på den här kartan.",
+  "Media near you": "Medier nära dig",
+  "Location permission was denied.": "Platsbehörighet nekades.",
+  "Location is unavailable.": "Platsen är inte tillgänglig.",
+  "This device does not report its location.": "Den här enheten rapporterar ingen plats.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Webbläsaren delar bara platsen via HTTPS. Öppna servern via HTTPS eller använd Android-appen.",
+  "Location is turned off. Enable it in the system settings.": "Platstjänster är avstängda. Aktivera dem i systeminställningarna.",
+  "Location is unavailable on this device.": "Platsen är inte tillgänglig på den här enheten."
 };
 
 const PL_STRINGS: Record<string, string> = {
@@ -2483,6 +2563,22 @@ const PL_STRINGS: Record<string, string> = {
   "Zoom": "Powiększenie",
   "Zoom controls": "Sterowanie powiększeniem",
   "lat, lng e.g. 50.45,30.52": "lat, lng np. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Spacer",
+  "Show your own position and how far away each photo was taken": "Pokaż swoją pozycję i odległość do miejsca każdego zdjęcia",
+  "Locating you…": "Ustalanie pozycji…",
+  "Near you": "W pobliżu",
+  "Center on me": "Wyśrodkuj na mnie",
+  "Accuracy": "Dokładność",
+  "From you": "Od ciebie",
+  "No geotagged media on this map.": "Brak multimediów z geolokalizacją na tej mapie.",
+  "Media near you": "Multimedia w pobliżu",
+  "Location permission was denied.": "Odmówiono dostępu do lokalizacji.",
+  "Location is unavailable.": "Lokalizacja jest niedostępna.",
+  "This device does not report its location.": "To urządzenie nie udostępnia lokalizacji.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Przeglądarka udostępnia lokalizację tylko przez HTTPS. Otwórz serwer przez HTTPS lub użyj aplikacji Android.",
+  "Location is turned off. Enable it in the system settings.": "Lokalizacja jest wyłączona. Włącz ją w ustawieniach systemu.",
+  "Location is unavailable on this device.": "Lokalizacja jest niedostępna na tym urządzeniu."
 };
 
 const CHE_STRINGS: Record<string, string> = {
@@ -2880,6 +2976,22 @@ const CHE_STRINGS: Record<string, string> = {
   "Zoom": "Přiblížení",
   "Zoom controls": "Ovládání přiblížení",
   "lat, lng e.g. 50.45,30.52": "lat, lng např. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Procházka",
+  "Show your own position and how far away each photo was taken": "Zobrazit vaši polohu a vzdálenost k místu pořízení každé fotky",
+  "Locating you…": "Zjišťování polohy…",
+  "Near you": "Ve vašem okolí",
+  "Center on me": "Vycentrovat na mě",
+  "Accuracy": "Přesnost",
+  "From you": "Od vás",
+  "No geotagged media on this map.": "Na této mapě nejsou žádná média s polohou.",
+  "Media near you": "Média ve vašem okolí",
+  "Location permission was denied.": "Oprávnění k poloze bylo zamítnuto.",
+  "Location is unavailable.": "Poloha není dostupná.",
+  "This device does not report its location.": "Toto zařízení neposkytuje polohu.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Prohlížeč sdílí polohu jen přes HTTPS. Otevřete server přes HTTPS nebo použijte aplikaci pro Android.",
+  "Location is turned off. Enable it in the system settings.": "Poloha je vypnutá. Zapněte ji v nastavení systému.",
+  "Location is unavailable on this device.": "Poloha není na tomto zařízení dostupná."
 };
 
 const SLO_STRINGS: Record<string, string> = {
@@ -3277,6 +3389,22 @@ const SLO_STRINGS: Record<string, string> = {
   "Zoom": "Priblíženie",
   "Zoom controls": "Ovládanie priblíženia",
   "lat, lng e.g. 50.45,30.52": "lat, lng napr. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Prechádzka",
+  "Show your own position and how far away each photo was taken": "Zobraziť vašu polohu a vzdialenosť k miestu každej fotky",
+  "Locating you…": "Zisťovanie polohy…",
+  "Near you": "Vo vašom okolí",
+  "Center on me": "Vycentrovať na mňa",
+  "Accuracy": "Presnosť",
+  "From you": "Od vás",
+  "No geotagged media on this map.": "Na tejto mape nie sú žiadne médiá s polohou.",
+  "Media near you": "Médiá vo vašom okolí",
+  "Location permission was denied.": "Povolenie polohy bolo zamietnuté.",
+  "Location is unavailable.": "Poloha nie je dostupná.",
+  "This device does not report its location.": "Toto zariadenie neposkytuje polohu.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Prehliadač zdieľa polohu iba cez HTTPS. Otvorte server cez HTTPS alebo použite aplikáciu pre Android.",
+  "Location is turned off. Enable it in the system settings.": "Poloha je vypnutá. Zapnite ju v nastaveniach systému.",
+  "Location is unavailable on this device.": "Poloha nie je na tomto zariadení dostupná."
 };
 
 const HU_STRINGS: Record<string, string> = {
@@ -3674,6 +3802,22 @@ const HU_STRINGS: Record<string, string> = {
   "Zoom": "Nagyítás",
   "Zoom controls": "Nagyításvezérlők",
   "lat, lng e.g. 50.45,30.52": "lat, lng pl. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Séta",
+  "Show your own position and how far away each photo was taken": "Saját pozíció és az egyes fotók helyének távolsága",
+  "Locating you…": "Helymeghatározás…",
+  "Near you": "A közelben",
+  "Center on me": "Középre engem",
+  "Accuracy": "Pontosság",
+  "From you": "Tőled",
+  "No geotagged media on this map.": "Ezen a térképen nincs helyadatos média.",
+  "Media near you": "Média a közelben",
+  "Location permission was denied.": "A helyhozzáférés megtagadva.",
+  "Location is unavailable.": "A hely nem érhető el.",
+  "This device does not report its location.": "Ez az eszköz nem adja meg a helyét.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "A böngésző csak HTTPS-en osztja meg a helyet. Nyisd meg a szervert HTTPS-en, vagy használd az Android-alkalmazást.",
+  "Location is turned off. Enable it in the system settings.": "A helymeghatározás ki van kapcsolva. Kapcsold be a rendszerbeállításokban.",
+  "Location is unavailable on this device.": "A hely nem érhető el ezen az eszközön."
 };
 
 const ES_STRINGS: Record<string, string> = {
@@ -4071,6 +4215,22 @@ const ES_STRINGS: Record<string, string> = {
   "Zoom": "Zoom",
   "Zoom controls": "Controles de zoom",
   "lat, lng e.g. 50.45,30.52": "lat, lng p. ej. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Caminar",
+  "Show your own position and how far away each photo was taken": "Muestra tu posición y a qué distancia se tomó cada foto",
+  "Locating you…": "Localizándote…",
+  "Near you": "Cerca de ti",
+  "Center on me": "Centrar en mí",
+  "Accuracy": "Precisión",
+  "From you": "Desde ti",
+  "No geotagged media on this map.": "No hay medios geoetiquetados en este mapa.",
+  "Media near you": "Medios cerca de ti",
+  "Location permission was denied.": "Se denegó el permiso de ubicación.",
+  "Location is unavailable.": "La ubicación no está disponible.",
+  "This device does not report its location.": "Este dispositivo no informa de su ubicación.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "El navegador solo comparte tu ubicación por HTTPS. Abre el servidor por HTTPS o usa la app de Android.",
+  "Location is turned off. Enable it in the system settings.": "La ubicación está desactivada. Actívala en los ajustes del sistema.",
+  "Location is unavailable on this device.": "La ubicación no está disponible en este dispositivo."
 };
 
 const IT_STRINGS: Record<string, string> = {
@@ -4468,6 +4628,22 @@ const IT_STRINGS: Record<string, string> = {
   "Zoom": "Zoom",
   "Zoom controls": "Controlli dello zoom",
   "lat, lng e.g. 50.45,30.52": "lat, lng es. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Passeggiata",
+  "Show your own position and how far away each photo was taken": "Mostra la tua posizione e quanto distano i luoghi delle foto",
+  "Locating you…": "Localizzazione in corso…",
+  "Near you": "Vicino a te",
+  "Center on me": "Centra su di me",
+  "Accuracy": "Precisione",
+  "From you": "Da te",
+  "No geotagged media on this map.": "Nessun contenuto geolocalizzato su questa mappa.",
+  "Media near you": "Contenuti vicino a te",
+  "Location permission was denied.": "Autorizzazione alla posizione negata.",
+  "Location is unavailable.": "Posizione non disponibile.",
+  "This device does not report its location.": "Questo dispositivo non fornisce la posizione.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Il browser condivide la posizione solo tramite HTTPS. Apri il server via HTTPS o usa l'app Android.",
+  "Location is turned off. Enable it in the system settings.": "La posizione è disattivata. Attivala nelle impostazioni di sistema.",
+  "Location is unavailable on this device.": "Posizione non disponibile su questo dispositivo."
 };
 
 const SL_STRINGS: Record<string, string> = {
@@ -4865,6 +5041,22 @@ const SL_STRINGS: Record<string, string> = {
   "Zoom": "Približaj",
   "Zoom controls": "Krmilniki približevanja",
   "lat, lng e.g. 50.45,30.52": "lat, lng npr. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Sprehod",
+  "Show your own position and how far away each photo was taken": "Prikaži svoj položaj in oddaljenost do kraja vsake fotografije",
+  "Locating you…": "Določanje položaja…",
+  "Near you": "V vaši bližini",
+  "Center on me": "Osredini name",
+  "Accuracy": "Natančnost",
+  "From you": "Od vas",
+  "No geotagged media on this map.": "Na tem zemljevidu ni medijev z lokacijo.",
+  "Media near you": "Mediji v vaši bližini",
+  "Location permission was denied.": "Dovoljenje za lokacijo je bilo zavrnjeno.",
+  "Location is unavailable.": "Lokacija ni na voljo.",
+  "This device does not report its location.": "Ta naprava ne sporoča lokacije.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Brskalnik deli lokacijo samo prek HTTPS. Odprite strežnik prek HTTPS ali uporabite aplikacijo za Android.",
+  "Location is turned off. Enable it in the system settings.": "Lokacija je izklopljena. Vklopite jo v sistemskih nastavitvah.",
+  "Location is unavailable on this device.": "Lokacija na tej napravi ni na voljo."
 };
 
 const NO_STRINGS: Record<string, string> = {
@@ -5262,6 +5454,22 @@ const NO_STRINGS: Record<string, string> = {
   "Zoom": "Zoom",
   "Zoom controls": "Zoomkontroller",
   "lat, lng e.g. 50.45,30.52": "lat, lng f.eks. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Gå tur",
+  "Show your own position and how far away each photo was taken": "Vis din posisjon og hvor langt unna hvert bilde ble tatt",
+  "Locating you…": "Finner posisjonen din…",
+  "Near you": "I nærheten",
+  "Center on me": "Sentrer på meg",
+  "Accuracy": "Nøyaktighet",
+  "From you": "Fra deg",
+  "No geotagged media on this map.": "Ingen geotaggede medier på dette kartet.",
+  "Media near you": "Medier i nærheten",
+  "Location permission was denied.": "Tillatelse til posisjon ble avslått.",
+  "Location is unavailable.": "Posisjonen er ikke tilgjengelig.",
+  "This device does not report its location.": "Denne enheten oppgir ikke posisjon.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "Nettleseren deler posisjonen bare over HTTPS. Åpne serveren over HTTPS eller bruk Android-appen.",
+  "Location is turned off. Enable it in the system settings.": "Posisjon er slått av. Slå den på i systeminnstillingene.",
+  "Location is unavailable on this device.": "Posisjon er ikke tilgjengelig på denne enheten."
 };
 
 const PT_STRINGS: Record<string, string> = {
@@ -5659,6 +5867,22 @@ const PT_STRINGS: Record<string, string> = {
   "Zoom": "Zoom",
   "Zoom controls": "Controlos de zoom",
   "lat, lng e.g. 50.45,30.52": "lat, lng ex. 50.45,30.52",
+  // Map walking mode
+  "Walk": "Caminhar",
+  "Show your own position and how far away each photo was taken": "Mostrar a sua posição e a distância até onde cada foto foi tirada",
+  "Locating you…": "A localizar…",
+  "Near you": "Perto de si",
+  "Center on me": "Centrar em mim",
+  "Accuracy": "Precisão",
+  "From you": "De si",
+  "No geotagged media on this map.": "Não há multimédia com localização neste mapa.",
+  "Media near you": "Multimédia perto de si",
+  "Location permission was denied.": "A permissão de localização foi recusada.",
+  "Location is unavailable.": "A localização não está disponível.",
+  "This device does not report its location.": "Este dispositivo não indica a localização.",
+  "The browser only shares your location over HTTPS. Open the server over HTTPS or use the Android app.": "O navegador só partilha a localização por HTTPS. Abra o servidor por HTTPS ou use a app Android.",
+  "Location is turned off. Enable it in the system settings.": "A localização está desligada. Ative-a nas definições do sistema.",
+  "Location is unavailable on this device.": "A localização não está disponível neste dispositivo."
 };
 
 function uaItemCount(n:number):string {

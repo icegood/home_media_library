@@ -6,9 +6,10 @@ import { applyLanguageSetting, installDomTranslation, LANGUAGES, useLanguage } f
 import type { LanguageSetting } from "./api";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
-import { MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type MapTileSource, type POISource, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
+import { bearingDegrees, compassPoint, distanceMeters, formatDistance, type MyPosition, useMyPosition } from "./walking";
 import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
@@ -5151,6 +5152,9 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const [pois, setPois] = useState<POI[]>([]);
   const [poiLoading, setPoiLoading] = useState(false);
   const [poiError, setPoiError] = useState("");
+  const [walkMode, setWalkMode] = useState(false);
+  const [recenterTick, setRecenterTick] = useState(0);
+  const {position:myPosition, error:walkError} = useMyPosition(walkMode);
   const segments = useMemo(() => folderScoped ? buildTrajectories(items) : [], [items, folderScoped]);
   useEffect(() => {
     setSelectedTrajectories(prev => prev.filter(index => index < segments.length));
@@ -5308,6 +5312,9 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <label className="map-trajectory-toggle" title="Hide all item and cluster markers, leaving only the basemap">
           <input type="checkbox" checked={hideMarkers} onChange={event => setHideMarkers(event.target.checked)}/> Map only
         </label>
+        <label className="map-trajectory-toggle" title="Show your own position and how far away each photo was taken">
+          <input type="checkbox" checked={walkMode} onChange={event => setWalkMode(event.target.checked)}/> Walk
+        </label>
       </span>
       <span className="bar-group">
         <label className="map-trajectory-toggle" title="Show points of interest (restaurants, fuel, hotels, …) from the configured provider">
@@ -5325,6 +5332,8 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       {poiError && <span className="map-render-status poi-error" role="alert">POI error: {poiError}</span>}
       {coordinateError && <span className="map-notice" role="alert">{coordinateError}</span>}
       {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
+      {walkMode && !myPosition && !walkError && <span className="map-render-status" role="status">Locating you…</span>}
+      {walkMode && walkError && <span className="map-render-status poi-error" role="alert">{walkError}</span>}
     </div></div>
     <div className="map-stage">
       {(mapError) && <div className="map-notice" role="alert">{mapError}</div>}
@@ -5334,11 +5343,13 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <ScaleControl position="bottomleft" imperial={false}/>
         <PlaceSearch/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
-        <MapItems items={displayItems} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo}/>
+        <MapItems items={displayItems} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition}/>
+        {myPosition && <MyPositionLayer position={myPosition} recenterTick={recenterTick}/>}
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
       {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
+      {walkMode && myPosition && !area && !(showNoGPS && folderScoped) && <NearbyPanel items={displayItems} position={myPosition} onRecenter={() => setRecenterTick(value => value + 1)} onClose={() => setWalkMode(false)}/>}
       {showNoGPS && folderScoped && <NoGPSPanel items={noGPSItems} loading={noGPSLoading} libraryId={Number(libraryParam)} folderId={Number(folderParam)} onClose={() => setShowNoGPS(false)}/>}
     </div>
   </main>;
@@ -5566,14 +5577,75 @@ function mapThumbTile(min:number, max:number) {
   return max > 0 ? `minmax(${min}px, ${max}px)` : `minmax(${min}px, 1fr)`;
 }
 
-function MapAreaItem({item,sort,selection}:{item:MapMedia; sort:"desc"|"asc"; selection:MapMedia[]}) {
+function MapAreaItem({item,sort,selection,note}:{item:MapMedia; sort:"desc"|"asc"; selection:MapMedia[]; note?:string}) {
   const list = selection.map(entry => entry.id).join(",");
   const query = new URLSearchParams({item:String(item.id), list});
   if (sort === "asc") query.set("sort", "date-asc"); else query.set("sort", "date");
   return <Link className="map-area-item" to={`/library/${item.libraryId}/view/${item.folderId}?${query.toString()}`} aria-label={`Open ${item.name} in folder`}>
     <span className="thumb-wrap"><ThumbImage src={api.thumbnailUrl(item.id)} kind={item.kind}/>{item.kind === "video" && <span className="play-badge" aria-hidden="true">▶</span>}</span>
     <small>{item.name}</small>
+    {note && <small className="walk-distance">{note}</small>}
   </Link>;
+}
+
+// "350 m · NE": distance plus the compass direction to walk.
+function distanceFromYou(position:MyPosition, target:[number,number]) {
+  const here:[number,number] = [position.lat, position.lng];
+  return `${formatDistance(distanceMeters(here, target))} · ${compassPoint(bearingDegrees(here, target))}`;
+}
+
+// Own position for walking mode: an accuracy circle plus a dot. The first fix
+// centers the map once; afterwards only the "Center on me" button recenters,
+// so panning around while walking is not fought by every new fix.
+function MyPositionLayer({position, recenterTick}:{position:MyPosition; recenterTick:number}) {
+  const map = useMap();
+  const centered = useRef(false);
+  const lastTick = useRef(recenterTick);
+  useEffect(() => {
+    if (!centered.current || lastTick.current !== recenterTick) {
+      centered.current = true;
+      lastTick.current = recenterTick;
+      map.setView([position.lat, position.lng], Math.max(map.getZoom(), 16));
+    }
+  }, [map, position, recenterTick]);
+  return <>
+    {position.accuracy > 0 && <Circle center={[position.lat, position.lng]} radius={position.accuracy} interactive={false}
+      pathOptions={{color:"#2563eb", weight:1, opacity:0.5, fillColor:"#3b82f6", fillOpacity:0.12}}/>}
+    <CircleMarker center={[position.lat, position.lng]} radius={8} interactive={false}
+      pathOptions={{color:"#ffffff", weight:3, fillColor:"#2563eb", fillOpacity:1}}/>
+  </>;
+}
+
+const NEARBY_LIMIT = 200;
+
+// Walking-mode side panel: the geotagged media nearest to the current
+// position first, each labelled with its distance and direction.
+function NearbyPanel({items, position, onRecenter, onClose}:{items:MapMedia[]; position:MyPosition; onRecenter:()=>void; onClose:()=>void}) {
+  const thumb = useContext(ThumbCtx);
+  const style = {"--thumb-tile": mapThumbTile(thumb.min, thumb.max)} as CSSProperties;
+  const nearby = useMemo(() => {
+    const here:[number,number] = [position.lat, position.lng];
+    return items
+      .map(item => ({item, point:parseGPS(item.gps)}))
+      .filter((entry): entry is {item:MapMedia; point:[number,number]} => entry.point !== null)
+      .map(entry => ({item:entry.item, meters:distanceMeters(here, entry.point), bearing:bearingDegrees(here, entry.point)}))
+      .sort((left, right) => left.meters - right.meters)
+      .slice(0, NEARBY_LIMIT);
+  }, [items, position]);
+  const selection = useMemo(() => nearby.map(entry => entry.item), [nearby]);
+  return <aside className="map-timeline-panel nearby" aria-label="Media near you" style={style}>
+    <div className="map-timeline-head">
+      <strong><span>Near you</span>{nearby.length > 0 && <span className="walk-distance"> {formatDistance(nearby[0].meters)}</span>}</strong>
+      <button className="secondary" onClick={onRecenter}>Center on me</button>
+      <button className="secondary" onClick={onClose}>Close</button>
+    </div>
+    {position.accuracy > 0 && <p className="map-render-status inline"><span>Accuracy</span> ±{formatDistance(position.accuracy)}</p>}
+    {nearby.length === 0 ? <div className="empty-state"><p>No geotagged media on this map.</p></div> :
+      <div className="timeline-grid map-area-grid"><div className="timeline-group-grid">{nearby.map(entry =>
+        <MapAreaItem key={entry.item.id} item={entry.item} sort="desc" selection={selection}
+          note={`${formatDistance(entry.meters)} · ${compassPoint(entry.bearing)}`}/>
+      )}</div></div>}
+  </aside>;
 }
 
 function NoGPSPanel({items,loading,libraryId,folderId,onClose}:{items:Media[]; loading:boolean; libraryId:ID; folderId:ID; onClose:()=>void}) {
@@ -5762,7 +5834,7 @@ function POILayer({active, categories, pois, onFetch, onError}:{active:boolean; 
   return <>{focused.slice(0, rendered).map(point => <POIMarker key={point.id} poi={point}/>)}</>;
 }
 
-function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string}) {
+function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
@@ -5840,7 +5912,8 @@ function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onR
         : clusterIcon(cluster.items.length);
       return <Marker key={cluster.id} position={[cluster.lat, cluster.lng]} icon={icon} eventHandlers={{click: () => { if (selectMode) return; onSelectCluster(cluster.items); }}}>
         {!selectMode && <Popup>
-          <MediaGPSCopyPopup title={cluster.items.length === 1 ? item.name : `${cluster.items.length} media · first item`} gps={item.gps}/>
+          <MediaGPSCopyPopup title={cluster.items.length === 1 ? item.name : `${cluster.items.length} media · first item`} gps={item.gps}
+            fromYou={myPosition ? distanceFromYou(myPosition, [cluster.lat, cluster.lng]) : ""}/>
         </Popup>}
       </Marker>;
     })}
@@ -5979,7 +6052,7 @@ function PickedPointPopup({gps,onSetGPS}:{gps:string; onSetGPS:(gps:string)=>voi
   </div>;
 }
 
-function MediaGPSCopyPopup({title, gps}:{title:string; gps:string}) {
+function MediaGPSCopyPopup({title, gps, fromYou = ""}:{title:string; gps:string; fromYou?:string}) {
   const [value, setValue] = useState(gps);
   const [status, setStatus] = useState("");
   useEffect(() => { setValue(gps); setStatus(""); }, [gps]);
@@ -5993,6 +6066,7 @@ function MediaGPSCopyPopup({title, gps}:{title:string; gps:string}) {
   }
   return <div className="map-item picked-point-popup">
     <strong>{title}</strong>
+    {fromYou && <small className="walk-distance"><span>From you</span> {fromYou}</small>}
     <small>Copy the GPS coordinates of this marker.</small>
     <input aria-label="GPS coordinates" value={value} onChange={event => setValue(event.target.value)} placeholder="lat, lng e.g. 50.45,30.52"/>
     <div className="picked-point-actions">

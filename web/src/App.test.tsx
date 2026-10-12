@@ -1620,6 +1620,35 @@ test("map in a folder can list the media without GPS in a side panel", async () 
   await waitFor(() => expect(screen.queryByRole("complementary", {name:"Media without GPS in this folder"})).not.toBeInTheDocument());
 });
 
+test("walking mode shows own position and lists media nearest first with distance", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  const start = vi.fn();
+  const stop = vi.fn();
+  window.MLLocation = {start, stop};
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    mockApi.map.mockResolvedValue([
+      {id:100, libraryId:1, folderId:20, relativePath:"far.jpg", name:"far.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.46,30.52", takenAt:"2020-08-21T12:34:00Z"},
+      {id:101, libraryId:1, folderId:20, relativePath:"near.jpg", name:"near.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.4501,30.5001", takenAt:"2021-01-01T01:01:01Z"}
+    ]);
+    render(<MemoryRouter initialEntries={["/map?library=1&folder=20"]}><App/></MemoryRouter>);
+    await waitFor(() => expect(mockApi.map).toHaveBeenCalled());
+    fireEvent.click(screen.getByLabelText("Walk"));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Locating you…")).toBeInTheDocument();
+    act(() => { window.dispatchEvent(new CustomEvent("ml-location", {detail:{lat:50.45, lng:30.5, accuracy:10}})); });
+    const panel = await screen.findByRole("complementary", {name:"Media near you"});
+    const notes = () => Array.from(panel.querySelectorAll(".map-area-item small")).map(el => el.textContent);
+    await waitFor(() => expect(notes()).toEqual(["near.jpg", "13 m · NE", "far.jpg", "1.8 km · NE"]));
+    fireEvent.click(screen.getByRole("button", {name:"Close"}));
+    await waitFor(() => expect(screen.queryByRole("complementary", {name:"Media near you"})).not.toBeInTheDocument());
+    expect(stop).toHaveBeenCalledTimes(1);
+  } finally {
+    delete window.MLLocation;
+  }
+});
+
 test("ctrl+space opens the favorite flow for the focused media item", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderMedia.mockResolvedValue([

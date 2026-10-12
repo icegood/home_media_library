@@ -1,11 +1,17 @@
 package com.icegood.medialibrary;
 
+import android.Manifest;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Looper;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.autofill.AutofillManager;
@@ -14,7 +20,14 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+
+import org.json.JSONObject;
+
+import java.util.Map;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -37,9 +50,48 @@ public class MainActivity extends BridgeActivity {
     private volatile int safeLeft = 0;
     private volatile int safeRight = 0;
 
+    // Map walking mode. The WebView only grants navigator.geolocation to secure
+    // origins, but self-hosted servers are often plain HTTP on the LAN, so the
+    // SPA asks for fixes through the MLLocation bridge instead. Fixes are pushed
+    // into the page as "ml-location" events.
+    private LocationManager locationManager;
+    private boolean locationWanted = false;
+    private ActivityResultLauncher<String[]> locationPermission;
+    private final LocationListener locationListener = new LocationListener() {
+        @Override
+        public void onLocationChanged(Location location) {
+            dispatchLocation(location);
+        }
+
+        @Override
+        public void onProviderEnabled(String provider) {
+        }
+
+        @Override
+        public void onProviderDisabled(String provider) {
+        }
+
+        @Override
+        public void onStatusChanged(String provider, int status, Bundle extras) {
+        }
+    };
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Must be registered before the activity is started.
+        locationPermission = registerForActivityResult(
+            new ActivityResultContracts.RequestMultiplePermissions(),
+            (Map<String, Boolean> granted) -> {
+                if (!locationWanted) {
+                    return;
+                }
+                if (hasLocationPermission()) {
+                    startLocationUpdates();
+                } else {
+                    dispatchLocationError("Location permission was denied.");
+                }
+            });
         // The app boots from the Capacitor origin (https://localhost) and then
         // fetches from the user's self-hosted server, which may be plain HTTP
         // (e.g. LAN-only installs). Without this, those http fetches are treated
@@ -202,6 +254,31 @@ public class MainActivity extends BridgeActivity {
             }
         }, "MLServerStore");
 
+        webView.addJavascriptInterface(new Object() {
+            @JavascriptInterface
+            public void start() {
+                runOnUiThread(() -> {
+                    locationWanted = true;
+                    if (hasLocationPermission()) {
+                        startLocationUpdates();
+                    } else {
+                        locationPermission.launch(new String[] {
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        });
+                    }
+                });
+            }
+
+            @JavascriptInterface
+            public void stop() {
+                runOnUiThread(() -> {
+                    locationWanted = false;
+                    stopLocationUpdates();
+                });
+            }
+        }, "MLLocation");
+
         // The SPA renders its login form asynchronously (auth probe first), so
         // the platform autofill framework may have already scanned the page
         // before any username/password input existed. The web side calls this
@@ -253,5 +330,92 @@ public class MainActivity extends BridgeActivity {
             return insets;
         });
         ViewCompat.requestApplyInsets(getWindow().getDecorView());
+    }
+
+    private boolean hasLocationPermission() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            || ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void startLocationUpdates() {
+        if (locationManager == null) {
+            locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        }
+        if (locationManager == null) {
+            dispatchLocationError("Location is unavailable on this device.");
+            return;
+        }
+        stopLocationUpdates();
+        boolean started = false;
+        Location best = null;
+        for (String provider : new String[] {LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+            try {
+                if (!locationManager.isProviderEnabled(provider)) {
+                    continue;
+                }
+                locationManager.requestLocationUpdates(provider, 2000L, 1f, locationListener, Looper.getMainLooper());
+                started = true;
+                Location last = locationManager.getLastKnownLocation(provider);
+                if (last != null && (best == null || last.getTime() > best.getTime())) {
+                    best = last;
+                }
+            } catch (SecurityException | IllegalArgumentException e) {
+                android.util.Log.w("MLLocation", "provider " + provider + " unavailable", e);
+            }
+        }
+        if (!started) {
+            dispatchLocationError("Location is turned off. Enable it in the system settings.");
+            return;
+        }
+        if (best != null) {
+            dispatchLocation(best);
+        }
+    }
+
+    private void stopLocationUpdates() {
+        if (locationManager != null) {
+            locationManager.removeUpdates(locationListener);
+        }
+    }
+
+    private void dispatchLocation(Location location) {
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView == null || !locationWanted) {
+            return;
+        }
+        try {
+            JSONObject detail = new JSONObject();
+            detail.put("lat", location.getLatitude());
+            detail.put("lng", location.getLongitude());
+            detail.put("accuracy", location.hasAccuracy() ? location.getAccuracy() : 0);
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('ml-location',{detail:" + detail + "}))", null);
+        } catch (Exception e) {
+            android.util.Log.w("MLLocation", "could not dispatch location", e);
+        }
+    }
+
+    private void dispatchLocationError(String message) {
+        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView == null) {
+            return;
+        }
+        webView.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('ml-location-error',{detail:" + JSONObject.quote(message) + "}))", null);
+    }
+
+    // Walking mode only runs while the app is in the foreground.
+    @Override
+    public void onPause() {
+        super.onPause();
+        stopLocationUpdates();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (locationWanted && hasLocationPermission()) {
+            startLocationUpdates();
+        }
     }
 }
