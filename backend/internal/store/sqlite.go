@@ -1804,13 +1804,15 @@ func (s *SQLite) SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, en
 // Every field is applied according to its MetadataWriteOptions flag: set →
 // overwrite, clear → only fill when currently empty. metadata_error follows
 // metadata_json so a skipped row keeps a consistent error with its stored
-// metadata. All CASEs read the pre-update row values (single UPDATE).
+// metadata; a row whose last extraction failed never counts as populated, so
+// every renew retries it. All CASEs read the pre-update row values (single
+// UPDATE).
 func (s *SQLite) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, opts domain.MetadataWriteOptions) error {
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	metadataPresent := `metadata_json NOT IN ('', '{}', 'null')`
+	metadataPresent := `(metadata_json NOT IN ('', '{}', 'null') AND COALESCE(metadata_error, '') = '')`
 	sets := []string{"metadata_json = ?", "metadata_error = ?"}
 	if !opts.RecreateExisting {
 		sets = []string{

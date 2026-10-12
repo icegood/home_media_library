@@ -1610,14 +1610,15 @@ func (s *Postgres) SetTrajectoryEnd(ctx context.Context, folderID, mediaID int, 
 // Every field is applied according to its MetadataWriteOptions flag: set →
 // overwrite, clear → only fill when currently empty. metadata_error follows
 // metadata_json so a skipped row keeps a consistent error with its stored
-// metadata. GPS needs no gps_lat/gps_lng mirror (unlike SQLite): the PostGIS
+// metadata; a row whose last extraction failed never counts as populated, so
+// every renew retries it. GPS needs no gps_lat/gps_lng mirror (unlike SQLite): the PostGIS
 // geom column is generated from gps and recomputes on its own.
 func (s *Postgres) UpdateMediaMetadata(ctx context.Context, id int, metadata map[string]any, gps string, takenAt string, metadataError string, opts domain.MetadataWriteOptions) error {
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	metadataPresent := `metadata_json NOT IN ('{}'::jsonb, 'null'::jsonb)`
+	metadataPresent := `(metadata_json NOT IN ('{}'::jsonb, 'null'::jsonb) AND COALESCE(metadata_error, '') = '')`
 	n := 1
 	var sets []string
 	var args []any

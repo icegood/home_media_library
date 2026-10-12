@@ -550,7 +550,9 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 /* ===== Thumbnail ===== */
 .thumb-wrap { position: relative; width: 100%; aspect-ratio: 4/3; background: var(--img-bg); overflow: hidden; }
 .thumb-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.thumb-frame { position: absolute; inset: 0; }
+/* isolate: the placeholder's z-index only orders it against the <img> inside
+   the frame, never above card overlays such as the ⋯ menu button. */
+.thumb-frame { position: absolute; inset: 0; isolation: isolate; }
 .thumb-frame img { position: relative; z-index: 0; }
 .thumb-placeholder { position: absolute; inset: 0; z-index: 1; }
 .thumb-default-picture { position: absolute; inset: 0; background-size: cover; background-position: center; }
@@ -797,6 +799,8 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 .map-timeline-panel { position: absolute; z-index: 1200; top: calc(var(--top-overlay-h, 64px) + var(--filters-h, 0px) + 12px); right: 12px; bottom: 12px; width: min(360px, calc(100vw - 24px)); overflow-y: auto; padding: 16px; background: var(--map-results-bg); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 14px 34px #0006; }
 .map-timeline-panel.nogps { left: 12px; right: auto; }
 .walk-distance { color: var(--primary); font-weight: 700; }
+.walk-radius { width: 6.5em; }
+form.map-trajectory-toggle { margin: 0; }
 .map-area-item .walk-distance { display: block; }
 /* Walking on a phone: the nearby list is a bottom sheet so the map and the own
    position dot stay visible above it. */

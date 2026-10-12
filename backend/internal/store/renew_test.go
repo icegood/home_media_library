@@ -26,7 +26,13 @@ func verifyMetadataRenewOptions(t *testing.T, repository store.Store) {
 	folderID := library.Roots[0].ID
 	full, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folderID,
 		Path: filepath.Join(root, "full.jpg"), Name: "full.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg",
-		Metadata: map[string]any{"stored": true}, GPS: "10.5,20.25", TakenAt: "2020-01-01T00:00:00Z", MetadataError: "old error"})
+		Metadata: map[string]any{"stored": true}, GPS: "10.5,20.25", TakenAt: "2020-01-01T00:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := repository.UpsertMedia(context.Background(), domain.Media{ID: domain.InvalidID, FolderID: folderID,
+		Path: filepath.Join(root, "failed.jpg"), Name: "failed.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg",
+		Metadata: map[string]any{"exifError": "old error"}, GPS: "10.5,20.25", TakenAt: "2020-01-01T00:00:00Z", MetadataError: "old error"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +69,18 @@ func verifyMetadataRenewOptions(t *testing.T, repository store.Store) {
 
 	// No options: populated fields survive, empty fields get filled.
 	apply(full.ID, domain.MetadataWriteOptions{})
-	if item := load(full.ID); metadataJSON(item) != `{"stored":true}` || item.MetadataError != "old error" || item.GPS != "10.5,20.25" || item.TakenAt != "2020-01-01T00:00:00Z" {
+	if item := load(full.ID); metadataJSON(item) != `{"stored":true}` || item.MetadataError != "" || item.GPS != "10.5,20.25" || item.TakenAt != "2020-01-01T00:00:00Z" {
 		t.Fatalf("unchecked renew must keep populated fields, got %#v", item)
 	}
 	apply(empty.ID, domain.MetadataWriteOptions{})
 	if item := load(empty.ID); metadataJSON(item) != `{"fresh":true}` || item.MetadataError != "new error" || item.GPS != "3,4" || item.TakenAt != "2021-02-03T04:05:06Z" {
 		t.Fatalf("unchecked renew must fill empty fields, got %#v", item)
+	}
+	// A failed previous extraction is retried even unchecked; gps/taken_at
+	// (possibly user overrides) still follow their own flags.
+	apply(failed.ID, domain.MetadataWriteOptions{})
+	if item := load(failed.ID); metadataJSON(item) != `{"fresh":true}` || item.MetadataError != "new error" || item.GPS != "10.5,20.25" || item.TakenAt != "2020-01-01T00:00:00Z" {
+		t.Fatalf("unchecked renew must retry failed metadata only, got %#v", item)
 	}
 
 	// recreateExisting: metadata and its error are rewritten, nothing else.

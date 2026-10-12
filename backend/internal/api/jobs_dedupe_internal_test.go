@@ -64,3 +64,21 @@ func TestApplyRenewResume(t *testing.T) {
 		t.Fatalf("processed beyond length must yield empty list, got %#v", got)
 	}
 }
+
+func TestRenewUnchanged(t *testing.T) {
+	ok := domain.Media{Metadata: map[string]any{"Make": "x"}}
+	failed := domain.Media{Metadata: map[string]any{"exifError": "boom"}, MetadataError: "boom"}
+	empty := domain.Media{}
+	none := domain.MetadataWriteOptions{}
+	if !renewUnchanged(ok, none) {
+		t.Fatal("populated row without options must be skipped")
+	}
+	if renewUnchanged(failed, none) || renewUnchanged(empty, none) {
+		t.Fatal("failed and empty rows must be re-extracted")
+	}
+	for _, opts := range []domain.MetadataWriteOptions{{RecreateExisting: true}, {UpdateGPS: true}, {UpdateTakenAt: true}} {
+		if renewUnchanged(ok, opts) {
+			t.Fatalf("overwrite option %#v must re-extract", opts)
+		}
+	}
+}

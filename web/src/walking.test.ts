@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { bearingDegrees, compassPoint, distanceMeters, formatDistance, useMyPosition } from "./walking";
+import { bearingDegrees, compassPoint, DEFAULT_WALK_RADIUS, distanceMeters, formatDistance, loadWalkRadius, parseWalkRadius, saveWalkRadius, useMyPosition } from "./walking";
 
 afterEach(() => {
   delete window.MLLocation;
@@ -24,6 +24,23 @@ test("distances are formatted at walking scale", () => {
   expect(formatDistance(999.4)).toBe("999 m");
   expect(formatDistance(1234)).toBe("1.2 km");
   expect(formatDistance(15400)).toBe("15 km");
+});
+
+test("the walk radius takes any positive meter count and is remembered", () => {
+  expect(parseWalkRadius(" 350 ")).toBe(350);
+  expect(parseWalkRadius("12.6")).toBe(13);
+  expect(parseWalkRadius("0")).toBeNull();
+  expect(parseWalkRadius("-5")).toBeNull();
+  expect(parseWalkRadius("")).toBeNull();
+  expect(parseWalkRadius("abc")).toBeNull();
+  expect(parseWalkRadius("1e12")).toBe(20000000);
+  localStorage.removeItem("ml_walk_radius");
+  expect(loadWalkRadius()).toBe(DEFAULT_WALK_RADIUS);
+  saveWalkRadius(123);
+  expect(loadWalkRadius()).toBe(123);
+  localStorage.setItem("ml_walk_radius", "nonsense");
+  expect(loadWalkRadius()).toBe(DEFAULT_WALK_RADIUS);
+  localStorage.removeItem("ml_walk_radius");
 });
 
 test("the native bridge feeds positions and is stopped on disable", () => {

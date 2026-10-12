@@ -321,6 +321,18 @@ versioned images, not local build contexts. Local source builds add
 Published deployments use only the files under `deploy/`, so the server does
 not need `backend/` or `web/`.
 
+### Android app versioning
+
+The Android app is versioned separately in [`ANDROID_VERSION`](ANDROID_VERSION).
+The app is only a launcher: it asks for the server address and then shows the
+UI served by that server, so server/UI releases (`VERSION`) reach it without a
+new APK. Bump `ANDROID_VERSION` only when the native shell changes
+(`web/android/**`, `web/capacitor.config.ts`, the bundled server-address page).
+Pushing that change to `main` builds the signed APK and publishes it as the
+GitHub release `android-v<ANDROID_VERSION>` (`media-library-android-<version>.apk`).
+Local builds: `sh deploy/start.sh android` (`ANDROID_BUILD_TYPE=debug` needs no
+keystore).
+
 ### Publishing Docker images
 
 Publishing is handled by GitHub Actions. The workflow lives at

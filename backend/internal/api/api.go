@@ -2924,6 +2924,10 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, rootID
 			item := item
 			work[i] = func(ctx context.Context) error {
 				a.updateJob(job.ID, func(job *JobStatus) { job.CurrentPath = item.RelativePath })
+				if renewUnchanged(item, opts) {
+					a.updateJob(job.ID, func(job *JobStatus) { job.Processed++ })
+					return nil
+				}
 				extracted, err := extractor.Extract(ctx, item.Path, item.MIMEType)
 				metadataError := ""
 				if err != nil {
@@ -2958,6 +2962,18 @@ func (a *API) runMetadataRenewJob(job *JobStatus, library domain.Library, rootID
 		}
 	}
 	return nil
+}
+
+// renewUnchanged reports whether a renew would leave the row as it is: with no
+// overwrite option set, a row holding successfully extracted metadata keeps
+// every field, so the costly extraction is skipped. Failed rows (stored
+// metadata error) and empty rows are always re-extracted. Skipping is done per
+// item rather than by filtering the list so the resume offset stays stable.
+func renewUnchanged(item domain.Media, opts domain.MetadataWriteOptions) bool {
+	if opts.RecreateExisting || opts.UpdateGPS || opts.UpdateTakenAt {
+		return false
+	}
+	return len(item.Metadata) > 0 && item.MetadataError == ""
 }
 
 // applyRenewResume drops the first processed items from a stable-ordered list

@@ -171,12 +171,23 @@ case "$mode" in
       release | debug) ;;
       *) echo "ANDROID_BUILD_TYPE must be release or debug (got: $build_type)." >&2; exit 1 ;;
     esac
-    # Wire the VERSION file into the APK so builds are identifiable and
-    # upgradeable: versionName = the full version, versionCode = a monotonic,
-    # injective integer from the numeric parts (major*1e6 + minor*1e3 + patch,
-    # each capped so it stays well inside int range). Without this every release
-    # APK kept the template's versionCode 1 / versionName "1.0".
-    version_name="$PROJECT_VERSION"
+    # The app has its own version (ANDROID_VERSION): it is only a launcher that
+    # opens the self-hosted server, so server/UI releases (VERSION) do not
+    # change it. Bump ANDROID_VERSION only when the native shell changes
+    # (web/android/**, capacitor.config.ts, the bundled server-address page).
+    # VERSION still selects the bundled web-assets image.
+    # versionName = the full app version, versionCode = a monotonic, injective
+    # integer from the numeric parts (major*1e6 + minor*1e3 + patch, each
+    # capped so it stays well inside int range).
+    if [ -f ../ANDROID_VERSION ]; then
+      version_name="$(sed -n '1p' ../ANDROID_VERSION | tr -d '[:space:]')"
+    else
+      version_name="$PROJECT_VERSION"
+    fi
+    if [ -z "$version_name" ]; then
+      echo "ANDROID_VERSION is empty." >&2
+      exit 1
+    fi
     version_parts="$(printf '%s' "$version_name" | tr -c '0-9.' ' ' | awk '{print $1}')"
     version_major="$(printf '%s' "$version_parts" | cut -sf1 -d. | grep -E '^[0-9]+$' || true)"
     version_minor="$(printf '%s' "$version_parts" | cut -sf2 -d. | grep -E '^[0-9]+$' || true)"

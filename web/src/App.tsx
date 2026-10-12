@@ -1,4 +1,4 @@
-import { createContext, FormEvent, Fragment, MouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, Fragment, MouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
@@ -7,9 +7,9 @@ import type { LanguageSetting } from "./api";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import { api, MAX_VIDEO_THUMBNAILS, type MapTileSource, type POISource, type UserSettings as UserSettingsPayload } from "./api";
+import { api, MAX_VIDEO_THUMBNAILS, type MediaAdjust, type MapTileSource, type POISource, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
-import { bearingDegrees, compassPoint, distanceMeters, formatDistance, type MyPosition, useMyPosition } from "./walking";
+import { bearingDegrees, compassPoint, distanceMeters, formatDistance, loadWalkRadius, type MyPosition, parseWalkRadius, saveWalkRadius, useMyPosition } from "./walking";
 import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
@@ -3850,6 +3850,9 @@ function MediaViewerPage() {
         jobs.delete(id);
       }
     }
+    // Saved adjustments follow the same window, so the image is never held
+    // back (hidden) waiting for its /adjust round trip.
+    for (const id of desired.keys()) prefetchAdjust(id);
     for (const [id, url] of desired) {
       if (jobs.has(id)) continue;
       const image = new Image();
@@ -4047,20 +4050,34 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   const [docUrl, setDocUrl] = useState<string>("");
   const [docNative, setDocNative] = useState(false);
   const [docError, setDocError] = useState<string>("");
-  useEffect(() => { setImagePan({x:0, y:0}); setDrag(null); setImageRotation(0); setAdjust({...defaultAdjust}); setAdjustReady(false); }, [item.id]);
-  useEffect(() => {
-    api.getAdjust(item.id).then(saved => {
-      setImageRotation(Number.isInteger(saved.rotation) && [0, 90, 180, 270].includes(saved.rotation) ? saved.rotation : 0);
-      setAdjust(prev => ({
-        brightness: Number.isFinite(saved.brightness) ? Math.round(Math.min(300, Math.max(20, saved.brightness * 100))) : prev.brightness,
-        hue: Number.isFinite(saved.hue) ? Math.round(Math.min(360, Math.max(-360, saved.hue))) : prev.hue,
-        saturation: Number.isFinite(saved.saturation) ? Math.round(Math.min(400, Math.max(0, saved.saturation * 100))) : prev.saturation,
-        gamma: Number.isFinite(saved.gamma) ? Math.round(Math.min(300, Math.max(20, saved.gamma * 100))) : prev.gamma,
-        contrast: Number.isFinite(saved.contrast) ? Math.round(Math.min(300, Math.max(20, saved.contrast * 100))) : prev.contrast,
-      }));
+  // The media stays hidden until its saved adjustments are known, so it never
+  // flashes unrotated/unadjusted. Neighbours' adjustments are prefetched and
+  // applied before the first paint of the new item (layout effect), so paging
+  // to a prefetched item shows it at once instead of a blank stage while
+  // /adjust makes a round trip.
+  useLayoutEffect(() => {
+    let alive = true;
+    setImagePan({x:0, y:0});
+    setDrag(null);
+    const apply = (saved:MediaAdjust|null) => {
+      setImageRotation(saved && Number.isInteger(saved.rotation) && [0, 90, 180, 270].includes(saved.rotation) ? saved.rotation : 0);
+      setAdjust(saved ? adjustFromSaved(saved) : {...defaultAdjust});
       setAdjustReady(true);
-    }).catch(() => { setImageRotation(0); setAdjustReady(true); });
+    };
+    const cached = adjustCache.get(item.id);
+    if (cached) {
+      apply(cached);
+    } else {
+      setImageRotation(0);
+      setAdjust({...defaultAdjust});
+      setAdjustReady(false);
+      loadAdjust(item.id).then(saved => { if (alive) apply(saved); }).catch(() => { if (alive) apply(null); });
+    }
+    return () => { alive = false; };
   }, [item.id]);
+  useEffect(() => {
+    for (const media of [previous, next]) if (media && media.kind !== "document") prefetchAdjust(media.id);
+  }, [previous?.id, next?.id]);
   useEffect(() => { if (imageZoom === 1) { setImagePan({x:0, y:0}); setDrag(null); } }, [imageZoom]);
   // Documents (PDFs, etc.) are shown in an <iframe> on desktop/iOS via a blob
   // URL fetched with credentials, so the request keeps the HttpOnly auth cookie
@@ -4130,7 +4147,9 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   }
   function persistAdjust(rotation:number) {
     const demo = {brightness:adjust.brightness / 100, hue:adjust.hue, saturation:adjust.saturation / 100, gamma:adjust.gamma / 100, contrast:adjust.contrast / 100, rotation};
-    api.saveAdjust(item.id, demo).then(() => {
+    const id = item.id;
+    api.saveAdjust(id, demo).then(() => {
+      rememberAdjust(id, demo);
       setSavedNotice(true);
       if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
       savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 1600);
@@ -4142,7 +4161,10 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   function resetAdjust() {
     setAdjust({...defaultAdjust});
     setImageRotation(0);
-    api.saveAdjust(item.id, {brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:0}).then(() => {
+    const id = item.id;
+    const neutral = {brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:0};
+    api.saveAdjust(id, neutral).then(() => {
+      rememberAdjust(id, neutral);
       setSavedNotice(true);
       if (savedNoticeTimer.current !== null) clearTimeout(savedNoticeTimer.current);
       savedNoticeTimer.current = setTimeout(() => setSavedNotice(false), 1600);
@@ -4463,7 +4485,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
       {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} adjust={adjust} ready={adjustReady} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         item.kind === "image" ?
-        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{opacity:adjustReady ? 1 : 0, transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={api.contentUrl(item.id)} alt={item.name}
+        <img className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{opacity:adjustReady ? 1 : 0, transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={api.contentUrl(item.id)} alt={item.name}
           onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         <>
           {docNative
@@ -4509,6 +4531,47 @@ function clampZoom(value:number) {
 }
 
 const defaultAdjust = {brightness:100, hue:0, saturation:100, gamma:100, contrast:100} as const;
+
+function adjustFromSaved(saved:MediaAdjust) {
+  return {
+    brightness: Number.isFinite(saved.brightness) ? Math.round(Math.min(300, Math.max(20, saved.brightness * 100))) : defaultAdjust.brightness,
+    hue: Number.isFinite(saved.hue) ? Math.round(Math.min(360, Math.max(-360, saved.hue))) : defaultAdjust.hue,
+    saturation: Number.isFinite(saved.saturation) ? Math.round(Math.min(400, Math.max(0, saved.saturation * 100))) : defaultAdjust.saturation,
+    gamma: Number.isFinite(saved.gamma) ? Math.round(Math.min(300, Math.max(20, saved.gamma * 100))) : defaultAdjust.gamma,
+    contrast: Number.isFinite(saved.contrast) ? Math.round(Math.min(300, Math.max(20, saved.contrast * 100))) : defaultAdjust.contrast,
+  };
+}
+
+// Saved per-media adjustments, shared by every viewer instance: filled by the
+// viewer's own fetch, by neighbour prefetch and by saves. Bounded so a long
+// paging session does not grow it forever.
+const ADJUST_CACHE_LIMIT = 500;
+const adjustCache = new Map<ID, MediaAdjust>();
+const adjustRequests = new Map<ID, Promise<MediaAdjust>>();
+
+function rememberAdjust(id:ID, saved:MediaAdjust) {
+  adjustCache.delete(id);
+  adjustCache.set(id, saved);
+  while (adjustCache.size > ADJUST_CACHE_LIMIT) adjustCache.delete(adjustCache.keys().next().value!);
+}
+
+function loadAdjust(id:ID) {
+  let request = adjustRequests.get(id);
+  if (!request) {
+    request = api.getAdjust(id).then(saved => { rememberAdjust(id, saved); return saved; }).finally(() => adjustRequests.delete(id));
+    adjustRequests.set(id, request);
+  }
+  return request;
+}
+
+function prefetchAdjust(id:ID) {
+  if (!adjustCache.has(id)) loadAdjust(id).catch(() => void 0);
+}
+
+export function clearAdjustCacheForTests() {
+  adjustCache.clear();
+  adjustRequests.clear();
+}
 // Brightness is intentionally NOT the CSS brightness() multiplier (that scales
 // highlights and clips them to white while leaving shadows untouched). Like
 // VLC's adjust filter it is an additive luma offset, applied in the SVG filter
@@ -5154,7 +5217,18 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const [poiError, setPoiError] = useState("");
   const [walkMode, setWalkMode] = useState(false);
   const [recenterTick, setRecenterTick] = useState(0);
-  const {position:myPosition, error:walkError} = useMyPosition(walkMode);
+  const [walkRadius, setWalkRadius] = useState(loadWalkRadius);
+  // A point the user picked on the map stands in for the device position, so
+  // walking mode also works for planning a walk elsewhere or without GPS.
+  const [walkAnchor, setWalkAnchor] = useState<[number,number]|null>(null);
+  // The device keeps being tracked meanwhile, so "Use my location" is instant.
+  const {position:devicePosition, error:walkError} = useMyPosition(walkMode);
+  const myPosition:MyPosition|null = !walkMode ? null : walkAnchor ? {lat:walkAnchor[0], lng:walkAnchor[1], accuracy:0} : devicePosition;
+  const walkFrom = useMemo(() => walkMode ? (gps:string) => {
+    const point = parseGPS(gps);
+    if (point) { setWalkAnchor(point); setPickedGPS(""); }
+  } : undefined, [walkMode]);
+  useEffect(() => { if (!walkMode) setWalkAnchor(null); }, [walkMode]);
   const segments = useMemo(() => folderScoped ? buildTrajectories(items) : [], [items, folderScoped]);
   useEffect(() => {
     setSelectedTrajectories(prev => prev.filter(index => index < segments.length));
@@ -5315,6 +5389,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <label className="map-trajectory-toggle" title="Show your own position and how far away each photo was taken">
           <input type="checkbox" checked={walkMode} onChange={event => setWalkMode(event.target.checked)}/> Walk
         </label>
+        {walkMode && <WalkRadiusInput radius={walkRadius} onChange={meters => { setWalkRadius(meters); saveWalkRadius(meters); }}/>}
       </span>
       <span className="bar-group">
         <label className="map-trajectory-toggle" title="Show points of interest (restaurants, fuel, hotels, …) from the configured provider">
@@ -5333,7 +5408,8 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       {coordinateError && <span className="map-notice" role="alert">{coordinateError}</span>}
       {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
       {walkMode && !myPosition && !walkError && <span className="map-render-status" role="status">Locating you…</span>}
-      {walkMode && walkError && <span className="map-render-status poi-error" role="alert">{walkError}</span>}
+      {walkMode && !walkAnchor && walkError && <span className="map-render-status poi-error" role="alert">{walkError}</span>}
+      {walkMode && !walkAnchor && walkError && <span className="map-render-status" role="status">Click the map, then “Walk from here”.</span>}
     </div></div>
     <div className="map-stage">
       {(mapError) && <div className="map-notice" role="alert">{mapError}</div>}
@@ -5341,15 +5417,15 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <TileLayer key={`${theme}-${isSatellite ? "satellite" : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}
           maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>
         <ScaleControl position="bottomleft" imperial={false}/>
-        <PlaceSearch/>
+        <PlaceSearch onWalkFrom={walkFrom}/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
-        <MapItems items={displayItems} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition}/>
-        {myPosition && <MyPositionLayer position={myPosition} recenterTick={recenterTick}/>}
+        <MapItems items={displayItems} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
+        {myPosition && <MyPositionLayer key={walkAnchor ? walkAnchor.join(",") : "device"} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} recenterTick={recenterTick}/>}
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
       {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
-      {walkMode && myPosition && !area && !(showNoGPS && folderScoped) && <NearbyPanel items={displayItems} position={myPosition} onRecenter={() => setRecenterTick(value => value + 1)} onClose={() => setWalkMode(false)}/>}
+      {walkMode && myPosition && !area && !(showNoGPS && folderScoped) && <NearbyPanel items={displayItems} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} onRecenter={() => setRecenterTick(value => value + 1)} onUseDevice={() => setWalkAnchor(null)} onClose={() => setWalkMode(false)}/>}
       {showNoGPS && folderScoped && <NoGPSPanel items={noGPSItems} loading={noGPSLoading} libraryId={Number(libraryParam)} folderId={Number(folderParam)} onClose={() => setShowNoGPS(false)}/>}
     </div>
   </main>;
@@ -5372,7 +5448,7 @@ function storeMapSelection(items:MapMedia[]) {
   }
 }
 
-function PlaceSearch() {
+function PlaceSearch({onWalkFrom}:{onWalkFrom?:(gps:string)=>void}) {
   const map = useMap();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GeocodeResult[]>([]);
@@ -5425,7 +5501,9 @@ function PlaceSearch() {
       )}
     </div>}
     {pickedGPS && <Marker position={pickedGPS} icon={searchedPointIcon()}>
-      <Popup><strong>{picked?.display_name}</strong><small>{pickedGPS[0].toFixed(5)}, {pickedGPS[1].toFixed(5)}</small></Popup>
+      <Popup><strong>{picked?.display_name}</strong><small>{pickedGPS[0].toFixed(5)}, {pickedGPS[1].toFixed(5)}</small>
+        {onWalkFrom && <button type="button" className="secondary" onClick={() => { onWalkFrom(formatGPS(pickedGPS[0], pickedGPS[1])); setPicked(null); }}>Walk from here</button>}
+      </Popup>
     </Marker>}
   </>;
 }
@@ -5594,33 +5672,61 @@ function distanceFromYou(position:MyPosition, target:[number,number]) {
   return `${formatDistance(distanceMeters(here, target))} · ${compassPoint(bearingDegrees(here, target))}`;
 }
 
-// Own position for walking mode: an accuracy circle plus a dot. The first fix
-// centers the map once; afterwards only the "Center on me" button recenters,
-// so panning around while walking is not fought by every new fix.
-function MyPositionLayer({position, recenterTick}:{position:MyPosition; recenterTick:number}) {
+// Walk radius in meters. Applied on Enter or when the field loses focus, so
+// typing a number digit by digit does not re-zoom the map on every keystroke;
+// an invalid entry snaps back to the current radius.
+function WalkRadiusInput({radius, onChange}:{radius:number; onChange:(meters:number)=>void}) {
+  const [draft, setDraft] = useState(String(radius));
+  useEffect(() => setDraft(String(radius)), [radius]);
+  const commit = () => {
+    const meters = parseWalkRadius(draft);
+    if (meters === null) setDraft(String(radius));
+    else if (meters !== radius) onChange(meters);
+    else setDraft(String(radius));
+  };
+  return <form className="map-trajectory-toggle" title="Only list media taken within this distance from you" onSubmit={event => { event.preventDefault(); commit(); }}>
+    <label><span>Radius</span> <input type="number" inputMode="numeric" min={1} step={1} className="walk-radius" aria-label="Walk radius"
+      value={draft} onChange={event => setDraft(event.target.value)} onBlur={commit}/> m</label>
+  </form>;
+}
+
+// Own position for walking mode: the walk radius, an accuracy circle and a
+// dot. The first fix centers the map once; afterwards only the "Center on me"
+// button recenters, so panning around while walking is not fought by every
+// new fix. Changing the radius zooms to fit the new circle. A point picked by
+// the user ("Walk from here") is drawn in orange instead of the GPS blue.
+function MyPositionLayer({position, custom, radius, recenterTick}:{position:MyPosition; custom:boolean; radius:number; recenterTick:number}) {
   const map = useMap();
   const centered = useRef(false);
   const lastTick = useRef(recenterTick);
+  const lastRadius = useRef(radius);
   useEffect(() => {
-    if (!centered.current || lastTick.current !== recenterTick) {
+    if (lastRadius.current !== radius) {
+      lastRadius.current = radius;
+      if (map.getSize().x > 0) map.fitBounds(L.latLng(position.lat, position.lng).toBounds(radius * 2));
+    } else if (!centered.current || lastTick.current !== recenterTick) {
       centered.current = true;
       lastTick.current = recenterTick;
       map.setView([position.lat, position.lng], Math.max(map.getZoom(), 16));
     }
-  }, [map, position, recenterTick]);
+  }, [map, position, radius, recenterTick]);
   return <>
+    <Circle center={[position.lat, position.lng]} radius={radius} interactive={false}
+      pathOptions={{color:"#2563eb", weight:2, opacity:0.7, dashArray:"6 6", fill:false}}/>
     {position.accuracy > 0 && <Circle center={[position.lat, position.lng]} radius={position.accuracy} interactive={false}
       pathOptions={{color:"#2563eb", weight:1, opacity:0.5, fillColor:"#3b82f6", fillOpacity:0.12}}/>}
     <CircleMarker center={[position.lat, position.lng]} radius={8} interactive={false}
-      pathOptions={{color:"#ffffff", weight:3, fillColor:"#2563eb", fillOpacity:1}}/>
+      pathOptions={{color:"#ffffff", weight:3, fillColor:custom ? "#ea580c" : "#2563eb", fillOpacity:1}}/>
   </>;
 }
 
 const NEARBY_LIMIT = 200;
 
-// Walking-mode side panel: the geotagged media nearest to the current
-// position first, each labelled with its distance and direction.
-function NearbyPanel({items, position, onRecenter, onClose}:{items:MapMedia[]; position:MyPosition; onRecenter:()=>void; onClose:()=>void}) {
+// Walking-mode side panel: the geotagged media within the walk radius,
+// nearest to the current position first, each labelled with its distance and
+// direction. The position is either the device fix or a point the user picked
+// ("custom"), which can be dropped again in favour of the device location.
+function NearbyPanel({items, position, custom, radius, onRecenter, onUseDevice, onClose}:{items:MapMedia[]; position:MyPosition; custom:boolean; radius:number; onRecenter:()=>void; onUseDevice:()=>void; onClose:()=>void}) {
   const thumb = useContext(ThumbCtx);
   const style = {"--thumb-tile": mapThumbTile(thumb.min, thumb.max)} as CSSProperties;
   const nearby = useMemo(() => {
@@ -5629,18 +5735,20 @@ function NearbyPanel({items, position, onRecenter, onClose}:{items:MapMedia[]; p
       .map(item => ({item, point:parseGPS(item.gps)}))
       .filter((entry): entry is {item:MapMedia; point:[number,number]} => entry.point !== null)
       .map(entry => ({item:entry.item, meters:distanceMeters(here, entry.point), bearing:bearingDegrees(here, entry.point)}))
+      .filter(entry => entry.meters <= radius)
       .sort((left, right) => left.meters - right.meters)
       .slice(0, NEARBY_LIMIT);
-  }, [items, position]);
+  }, [items, position, radius]);
   const selection = useMemo(() => nearby.map(entry => entry.item), [nearby]);
   return <aside className="map-timeline-panel nearby" aria-label="Media near you" style={style}>
     <div className="map-timeline-head">
-      <strong><span>Near you</span>{nearby.length > 0 && <span className="walk-distance"> {formatDistance(nearby[0].meters)}</span>}</strong>
-      <button className="secondary" onClick={onRecenter}>Center on me</button>
+      <strong><span>{custom ? "Near this point" : "Near you"}</span> <span className="walk-distance">{nearby.length} · ≤ {formatDistance(radius)}</span></strong>
+      <button className="secondary" onClick={onRecenter}>{custom ? "Center on point" : "Center on me"}</button>
+      {custom && <button className="secondary" onClick={onUseDevice}>Use my location</button>}
       <button className="secondary" onClick={onClose}>Close</button>
     </div>
     {position.accuracy > 0 && <p className="map-render-status inline"><span>Accuracy</span> ±{formatDistance(position.accuracy)}</p>}
-    {nearby.length === 0 ? <div className="empty-state"><p>No geotagged media on this map.</p></div> :
+    {nearby.length === 0 ? <div className="empty-state"><p>No media within this radius.</p></div> :
       <div className="timeline-grid map-area-grid"><div className="timeline-group-grid">{nearby.map(entry =>
         <MapAreaItem key={entry.item.id} item={entry.item} sort="desc" selection={selection}
           note={`${formatDistance(entry.meters)} · ${compassPoint(entry.bearing)}`}/>
@@ -5834,7 +5942,7 @@ function POILayer({active, categories, pois, onFetch, onError}:{active:boolean; 
   return <>{focused.slice(0, rendered).map(point => <POIMarker key={point.id} poi={point}/>)}</>;
 }
 
-function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null}) {
+function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
@@ -5918,7 +6026,7 @@ function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onR
       </Marker>;
     })}
     {pickedGPS && parseGPS(pickedGPS) && <Marker position={parseGPS(pickedGPS)!} icon={pickedPointIcon()}>
-      <Popup><PickedPointPopup gps={pickedGPS} onSetGPS={gps => { onPick(gps); flyToPoint(gps); }}/></Popup>
+      <Popup><PickedPointPopup gps={pickedGPS} onSetGPS={gps => { onPick(gps); flyToPoint(gps); }} onWalkFrom={onWalkFrom}/></Popup>
     </Marker>}
   </>;
 }
@@ -6022,7 +6130,7 @@ function TrajectoryFilterPanel({anchor, segments, selected, onChange, onClose}:{
   </div>;
 }
 
-function PickedPointPopup({gps,onSetGPS}:{gps:string; onSetGPS:(gps:string)=>void}) {
+function PickedPointPopup({gps,onSetGPS,onWalkFrom}:{gps:string; onSetGPS:(gps:string)=>void; onWalkFrom?:(gps:string)=>void}) {
   const [value, setValue] = useState(gps);
   const [status, setStatus] = useState("");
   useEffect(() => { setValue(gps); setStatus(""); }, [gps]);
@@ -6047,6 +6155,11 @@ function PickedPointPopup({gps,onSetGPS}:{gps:string; onSetGPS:(gps:string)=>voi
     <div className="picked-point-actions">
       <button type="button" className="secondary" onClick={copyPickedGPS}>Copy</button>
       <button type="button" className="secondary" onClick={setPoint}>Set point</button>
+      {onWalkFrom && <button type="button" onClick={() => {
+        const pt = parseGPS(value.trim());
+        if (pt) onWalkFrom(formatGPS(pt[0], pt[1]));
+        else setStatus("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614).");
+      }}>Walk from here</button>}
     </div>
     {status && <small className={status === "Point set." || status === "Copied." ? "success" : "error"}>{status}</small>}
   </div>;
