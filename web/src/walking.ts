@@ -60,6 +60,35 @@ export function formatDistance(meters:number) {
   return `${Math.round(meters / 1000)} km`;
 }
 
+// Walking radius in meters, typed in by the user: the "Near you" list only
+// shows media taken inside this circle, which is also drawn on the map.
+export const DEFAULT_WALK_RADIUS = 1000;
+const MAX_WALK_RADIUS = 20000000; // half the Earth's circumference
+const WALK_RADIUS_KEY = "ml_walk_radius";
+
+// Whole meters from 1 up to MAX_WALK_RADIUS; anything else is rejected (null).
+export function parseWalkRadius(value:string) {
+  const meters = Math.round(Number(value.trim()));
+  return value.trim() !== "" && Number.isFinite(meters) && meters >= 1 ? Math.min(meters, MAX_WALK_RADIUS) : null;
+}
+
+// The radius is a per-device convenience; storage may be unavailable.
+export function loadWalkRadius() {
+  try {
+    return parseWalkRadius(localStorage.getItem(WALK_RADIUS_KEY) ?? "") ?? DEFAULT_WALK_RADIUS;
+  } catch {
+    return DEFAULT_WALK_RADIUS;
+  }
+}
+
+export function saveWalkRadius(meters:number) {
+  try {
+    localStorage.setItem(WALK_RADIUS_KEY, String(meters));
+  } catch {
+    // Not persisted; the in-memory choice still applies.
+  }
+}
+
 // Watches the device position while enabled. The native bridge wins when
 // present; otherwise the browser Geolocation API is used, which only works on
 // secure (HTTPS or localhost) pages.

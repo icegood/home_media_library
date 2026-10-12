@@ -1,9 +1,10 @@
-# Builds a signed Android release APK and attaches it to the GitHub Release
-# for the version in the VERSION file. This follows the SAME release rule as
-# the web/docker images (see publish-images.yml): editing VERSION and pushing
-# it to `main` releases. Nothing runs before the commit — no pre-commit hooks,
-# no tag-push requirement; the tag/release is (re)created from the VERSION
-# change itself.
+# Builds a signed Android release APK and publishes it as its own GitHub
+# Release (tag android-v<ANDROID_VERSION>). The app is versioned separately
+# from the server: it is only a launcher that opens the self-hosted server,
+# so server/UI releases (VERSION, see publish-images.yml) do not rebuild it.
+# Editing ANDROID_VERSION and pushing it to `main` releases the app; bump it
+# only when the native shell changes (web/android/**, capacitor.config.ts,
+# the bundled server-address page).
 #
 # The APK is produced by `sh deploy/start.sh android`, which reads KEYSTORE_*
 # from the environment — this workflow wires those values from repository
@@ -14,7 +15,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [VERSION]
+    paths: [ANDROID_VERSION]
 
 permissions:
   contents: write
@@ -33,11 +34,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(sed -n '1p' VERSION 2>/dev/null || printf '0.1.0')"
+          version="$(sed -n '1p' ANDROID_VERSION 2>/dev/null | tr -d '[:space:]')"
           if [ -z "$version" ]; then
-            echo "ERROR: cannot read version from VERSION" >&2; exit 1
+            echo "ERROR: cannot read version from ANDROID_VERSION" >&2; exit 1
           fi
+          # The bundled web assets come from the current server release.
+          web_version="$(sed -n '1p' VERSION 2>/dev/null | tr -d '[:space:]')"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'web_version=%s\n' "$web_version" >> "$GITHUB_OUTPUT"
 
       - name: Decode release keystore
         env:
@@ -91,11 +95,11 @@ jobs:
           KEYSTORE_KEY_ALIAS: ${{ secrets.ANDROID_KEYSTORE_KEY_ALIAS }}
           KEYSTORE_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_KEY_PASSWORD }}
           # Reuse the web-assets base image published by publish-images.yml
-          # (same VERSION push) instead of re-running npm ci / vite build.
-          # start.sh pulls it; if the publish job hasn't landed yet it falls
-          # back to a local build — either way the Dockerfile.android stages
-          # cannot go stale.
-          WEB_ASSETS_IMAGE: ghcr.io/${{ vars.IMAGE_NAMESPACE || format('{0}/home-media-library', github.repository_owner) }}-web-assets:${{ steps.version.outputs.version }}
+          # for the current VERSION instead of re-running npm ci / vite build.
+          # start.sh pulls it; if it is not published (yet) it falls back to a
+          # local build — either way the Dockerfile.android stages cannot go
+          # stale.
+          WEB_ASSETS_IMAGE: ghcr.io/${{ vars.IMAGE_NAMESPACE || format('{0}/home-media-library', github.repository_owner) }}-web-assets:${{ steps.version.outputs.web_version }}
           ANDROID_GRADLE_CACHE_DIR: ${{ github.workspace }}/.android-cache/gradle
           ANDROID_ANDROID_HOME_DIR: ${{ github.workspace }}/.android-cache/android
         shell: bash
@@ -134,19 +138,16 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          tag="v${version}"
+          tag="android-v${version}"
           apk="build/android/app-release.apk"
-          upload="media-library-${version}.apk"
+          upload="media-library-android-${version}.apk"
           cp "$apk" "$upload"
-          # publish-images.yml fires on the same VERSION push and also creates
-          # the v$version tag+release (but later, after its docker builds), so
-          # create it here when missing. A concurrent create from the other
-          # workflow is fine — `|| true` tolerates it, and --clobber replaces
-          # the previous asset when re-running for the same version so the
-          # latest signed APK always wins.
+          # The app has its own release; --target pins a new tag to this
+          # commit, and --clobber replaces the asset when re-running for the
+          # same version so the latest signed APK always wins.
           if ! gh release view "${tag}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release create "${tag}" --title "Media Library ${version}" \
-              --generate-notes --repo "${{ github.repository }}" 2>/dev/null || true
+            gh release create "${tag}" --title "Media Library Android ${version}" \
+              --target "${GITHUB_SHA}" --generate-notes --repo "${{ github.repository }}"
           fi
           gh release upload "${tag}" "$upload" --clobber \
             --repo "${{ github.repository }}"
@@ -155,6 +156,6 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: media-library-${{ steps.version.outputs.version }}-signed
+          name: media-library-android-${{ steps.version.outputs.version }}-signed
           path: build/android/app-release.apk
           if-no-files-found: error

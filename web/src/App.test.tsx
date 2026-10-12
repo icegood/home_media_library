@@ -1620,12 +1620,13 @@ test("map in a folder can list the media without GPS in a side panel", async () 
   await waitFor(() => expect(screen.queryByRole("complementary", {name:"Media without GPS in this folder"})).not.toBeInTheDocument());
 });
 
-test("walking mode shows own position and lists media nearest first with distance", async () => {
+test("walking mode shows own position and lists media within the walk radius nearest first", async () => {
   const L = (await import("leaflet")).default;
   (L.Browser as Record<string, unknown>).svg = true;
   const start = vi.fn();
   const stop = vi.fn();
   window.MLLocation = {start, stop};
+  localStorage.removeItem("ml_walk_radius");
   try {
     mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
     mockApi.map.mockResolvedValue([
@@ -1640,12 +1641,38 @@ test("walking mode shows own position and lists media nearest first with distanc
     act(() => { window.dispatchEvent(new CustomEvent("ml-location", {detail:{lat:50.45, lng:30.5, accuracy:10}})); });
     const panel = await screen.findByRole("complementary", {name:"Media near you"});
     const notes = () => Array.from(panel.querySelectorAll(".map-area-item small")).map(el => el.textContent);
+    await waitFor(() => expect(notes()).toEqual(["near.jpg", "13 m · NE"]));
+    const radius = screen.getByLabelText("Walk radius");
+    fireEvent.change(radius, {target:{value:"2000"}});
+    expect(notes()).toEqual(["near.jpg", "13 m · NE"]);
+    fireEvent.blur(radius);
     await waitFor(() => expect(notes()).toEqual(["near.jpg", "13 m · NE", "far.jpg", "1.8 km · NE"]));
+    expect(localStorage.getItem("ml_walk_radius")).toBe("2000");
+    fireEvent.change(radius, {target:{value:"0"}});
+    fireEvent.blur(radius);
+    expect(radius).toHaveValue(2000);
+    fireEvent.change(radius, {target:{value:"100"}});
+    fireEvent.submit(radius.closest("form")!);
+    await waitFor(() => expect(notes()).toEqual(["near.jpg", "13 m · NE"]));
+    // Any picked point can stand in for the device position.
+    fireEvent.change(screen.getByLabelText("Set point by coordinates"), {target:{value:"50.4599,30.5199"}});
+    fireEvent.click(screen.getByRole("button", {name:"Set point"}));
+    await waitFor(() => expect(document.querySelector(".picked-point-marker")).not.toBeNull());
+    fireEvent.click(document.querySelector(".picked-point-marker")!);
+    const popup = await waitFor(() => { const el = document.querySelector(".picked-point-popup"); expect(el).not.toBeNull(); return el as HTMLElement; });
+    fireEvent.click(within(popup).getByRole("button", {name:"Walk from here"}));
+    await waitFor(() => expect(within(panel).getByText("Near this point")).toBeInTheDocument());
+    await waitFor(() => expect(notes()).toEqual(["far.jpg", "13 m · NE"]));
+    expect(document.querySelector(".picked-point-marker")).toBeNull();
+    fireEvent.click(within(panel).getByRole("button", {name:"Use my location"}));
+    await waitFor(() => expect(within(panel).getByText("Near you")).toBeInTheDocument());
+    await waitFor(() => expect(notes()).toEqual(["near.jpg", "13 m · NE"]));
     fireEvent.click(screen.getByRole("button", {name:"Close"}));
     await waitFor(() => expect(screen.queryByRole("complementary", {name:"Media near you"})).not.toBeInTheDocument());
     expect(stop).toHaveBeenCalledTimes(1);
   } finally {
     delete window.MLLocation;
+    localStorage.removeItem("ml_walk_radius");
   }
 });
 

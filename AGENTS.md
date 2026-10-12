@@ -95,6 +95,10 @@ host Go/Node toolchain is used.
 - `sh deploy/start.sh local-build` — builds backend + web (each image build runs its tests:
   `go test ./...` and `npm test && npm run build`) and brings the stack up.
 - `sh deploy/start.sh prod` — pull published images and restart the stack.
+- `sh deploy/start.sh android` — build the APK. The app has its own version in
+  `ANDROID_VERSION` (release tag `android-v<version>`); bump it only when the
+  native shell changes (`web/android/**`, `capacitor.config.ts`), not for
+  server/UI releases (`VERSION`).
 - `sh deploy/start.sh e2e` — run the Playwright suites in web/e2e against the
   running stack inside a dedicated Docker runner (web/Dockerfile.playwright);
   artifacts land in web/test-output/. Requires the stack to be up. Functional
