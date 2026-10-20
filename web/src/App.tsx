@@ -4749,8 +4749,8 @@ function MediaInfo({item, onUpdated, activeTab, onTabChange, adjust, onAdjustCha
     </div>
     {activeTab === "details" && <div className="media-edit" role="tabpanel" aria-label="Details" aria-labelledby="media-tab-details">
       <label className="media-edit-row"><span>Name</span><input value={name} onChange={event => setName(event.target.value)} required/></label>
-      <label className="media-edit-row"><span>Date</span><span className="media-date-editor"><input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/>{currentDate && <button type="button" className="secondary media-date-icon" aria-label="Copy date" title="Copy date" onClick={() => void copyDate()}>{copied ? "✓" : "⧉"}</button>}<button ref={pickerAnchorRef} type="button" className="secondary media-date-icon media-date-picker-trigger" aria-label="Pick date and time" title="Pick date and time" aria-expanded={calendarOpen} onClick={() => setCalendarOpen(value => !value)}><span className="calendar-glyph" aria-hidden="true">📅</span></button>{calendarOpen && pickerAnchorRef.current && createPortal(<DateCalendar anchor={pickerAnchorRef.current} initialDate={pickerInitialDate()} onSelect={pickDate} onClose={() => setCalendarOpen(false)}/>, document.body)}</span></label>
-      <div className="media-edit-row"><span><label htmlFor={`media-gps-${current.id}`}>GPS</label></span><span className={`media-gps-editor${gps ? " has-map" : ""}`}><input id={`media-gps-${current.id}`} value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/>{gps && <Link to={`/map?item=${current.id}`} className="media-date-icon media-gps-map-link" aria-label="Open on map" data-hint="Open on map">🗺️</Link>}</span></div>
+      <label className="media-edit-row"><span>Date</span><span className="media-date-editor joined-field"><input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/>{currentDate && <button type="button" className="joined-action" aria-label="Copy date" data-hint="Copy date" onClick={() => void copyDate()}>{copied ? "✓" : "⧉"}</button>}<button ref={pickerAnchorRef} type="button" className="joined-action" aria-label="Pick date and time" data-hint="Pick date and time" aria-expanded={calendarOpen} onClick={() => setCalendarOpen(value => !value)}><span className="calendar-glyph" aria-hidden="true">📅</span></button>{calendarOpen && pickerAnchorRef.current && createPortal(<DateCalendar anchor={pickerAnchorRef.current} initialDate={pickerInitialDate()} onSelect={pickDate} onClose={() => setCalendarOpen(false)}/>, document.body)}</span></label>
+      <div className="media-edit-row"><span><label htmlFor={`media-gps-${current.id}`}>GPS</label></span><span className="joined-field"><input id={`media-gps-${current.id}`} value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/>{gps && <Link to={`/map?item=${current.id}`} className="joined-action" aria-label="Open on map" data-hint="Open on map">🗺️</Link>}</span></div>
       {(item.kind === "image" || item.kind === "video") && adjust && onAdjustChange && <div className="media-adjust" role="group" aria-label="Media adjustments">
         <span className="media-adjust-title">Media adjustments</span>
         {([
@@ -6663,18 +6663,18 @@ function SavedServers({servers, onServersChanged, onPick}:{servers:SavedServer[]
       const host = serverHost(server.url);
       const label = server.name || host;
       if (editing && editing.url === server.url) {
-        return <div key={server.url} className="server-row">
+        return <div key={server.url} className="server-row joined-field">
           <label className="server-name-field">Name<input aria-label="Server name" value={editing.name} placeholder={host} onChange={event => setEditing({url:server.url, name:event.target.value})}/></label>
-          <button type="button" className="server-icon" aria-label={`Save name for ${host}`} onClick={() => { renameServer(server.url, editing.name.trim()); onServersChanged(loadServerList()); setEditing(null); }}>✓</button>
-          <button type="button" className="server-icon" aria-label={`Cancel rename of ${host}`} onClick={() => setEditing(null)}>✕</button>
+          <button type="button" className="server-icon joined-action" aria-label={`Save name for ${host}`} onClick={() => { renameServer(server.url, editing.name.trim()); onServersChanged(loadServerList()); setEditing(null); }}>✓</button>
+          <button type="button" className="server-icon joined-action" aria-label={`Cancel rename of ${host}`} onClick={() => setEditing(null)}>✕</button>
         </div>;
       }
-      return <div key={server.url} className="server-row">
+      return <div key={server.url} className="server-row joined-field">
         <button type="button" className="server-pick" onClick={() => onPick(server)}>
           <span title={label}>{label}</span>{server.name ? <small title={host}>{host}</small> : null}
         </button>
-        <button type="button" className="server-icon" aria-label={`Rename ${label}`} onClick={() => setEditing({url:server.url, name:server.name})}>✎</button>
-        <button type="button" className="server-icon" aria-label={`Forget ${label}`} onClick={() => { forgetServer(server.url); onServersChanged(loadServerList()); }}>✕</button>
+        <button type="button" className="server-icon joined-action" aria-label={`Rename ${label}`} onClick={() => setEditing({url:server.url, name:server.name})}>✎</button>
+        <button type="button" className="server-icon joined-action" aria-label={`Forget ${label}`} onClick={() => { forgetServer(server.url); onServersChanged(loadServerList()); }}>✕</button>
       </div>;
     })}
   </div>;

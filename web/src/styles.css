@@ -220,12 +220,11 @@ main.browser-page { position: relative; max-width: none; }
 .login input { width: 100%; min-width: 0; }
 /* Native server gate: remembered servers, most recently used first. */
 .server-list { display: grid; gap: 8px; }
-.server-row { display: flex; align-items: center; gap: 8px; }
-.server-row .server-pick { flex: 1; min-width: 0; text-align: left; display: grid; }
+.server-row .server-pick { flex: 1; min-width: 0; text-align: left; display: grid; border-radius: 8px 0 0 8px; box-shadow: none; }
 .server-pick span, .server-pick { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .server-pick small { color: var(--text-muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.server-row .server-icon { width: 40px; min-width: 40px; height: 40px; padding: 0; display: grid; place-items: center; }
-.server-row .server-name-field { flex: 1; min-width: 0; grid-template-columns: 52px minmax(0, 1fr); }
+.server-row .server-name-field { flex: 1; min-width: 0; grid-template-columns: 52px minmax(0, 1fr); padding-left: 10px; }
+.server-row .server-name-field input { border: 0; background: transparent; outline: none; }
 
 /* ===== Messages ===== */
 .error { color: var(--danger); }
@@ -723,21 +722,19 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 .media-notes-row textarea { flex: 1; min-height: 0; width: 100%; min-width: 0; resize: none; color: var(--text); padding: 10px 12px; border: 1px solid var(--border-input); border-radius: 8px; background: var(--surface); font: inherit; line-height: 1.5; }
 .media-action-row { margin-top: 10px; }
 .media-edit .error { flex-shrink: 0; }
-.media-date-editor { display: grid; grid-template-columns: minmax(0, 1fr) 38px 38px; align-items: center; gap: 8px; min-width: 0; }
-.media-date-editor > input:first-child { grid-column: auto; }
-.media-gps-editor { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
-.media-gps-editor.has-map { grid-template-columns: minmax(0, 1fr) 38px; }
-.media-gps-map-link { box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-hover); text-decoration: none; cursor: pointer; }
-.media-gps-map-link:hover { background: var(--border); }
-/* Custom hint anchored to the button's right edge so it opens leftwards and stays on screen. */
-.media-gps-map-link { position: relative; }
-.media-gps-map-link[data-hint]::after { content: attr(data-hint); position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 20; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); color: var(--text); box-shadow: var(--menu-shadow); font-size: .75rem; font-weight: 600; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .12s ease .4s; }
-.media-gps-map-link[data-hint]:hover::after, .media-gps-map-link[data-hint]:focus-visible::after { opacity: 1; }
-.media-date-editor .media-date-icon { width: 38px; height: 38px; min-width: 38px; padding: 0; display: grid; place-items: center; font-size: 18px; line-height: 1; }
-/* Pick-date button: opens a custom themed calendar popup (anchored to
-   bottom-right of the button via portal + getBoundingClientRect). */
-.media-date-picker-trigger { font-size: 18px; }
-.media-date-picker-trigger .calendar-glyph { font-size: 18px; line-height: 1; }
+/* Joined field: an input (or pick button) and its icon actions share one
+   bordered box; actions are equal 38px cells split by hairline separators
+   instead of separate buttons with gaps. */
+.joined-field { display: flex; align-items: stretch; min-width: 0; border: 1px solid var(--border-input); border-radius: 8px; background: var(--surface); }
+.joined-field:focus-within { border-color: var(--primary-text); }
+.joined-field > input, .media-edit .joined-field > input { flex: 1; min-width: 0; border: 0; border-radius: 8px 0 0 8px; background: transparent; outline: none; }
+.joined-field > .joined-action { position: relative; flex: none; margin: 0; width: 38px; min-width: 38px; min-height: 38px; padding: 0; display: grid; place-items: center; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: transparent; box-shadow: none; color: var(--text); font-size: 18px; line-height: 1; text-decoration: none; cursor: pointer; }
+.joined-field > .joined-action:last-child { border-radius: 0 8px 8px 0; }
+.joined-field > .joined-action:hover { background: var(--surface-hover); }
+.joined-field > .joined-action .calendar-glyph { font-size: 18px; line-height: 1; }
+/* Custom hint anchored to the action's right edge so it opens leftwards and stays on screen. */
+.joined-action[data-hint]::after { content: attr(data-hint); position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 20; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); color: var(--text); box-shadow: var(--menu-shadow); font-size: .75rem; font-weight: 600; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .12s ease .4s; }
+.joined-action[data-hint]:hover::after, .joined-action[data-hint]:focus-visible::after { opacity: 1; }
 
 /* ===== Custom date calendar popup ===== */
 .media-date-calendar { position: fixed; z-index: 1700; width: min(280px, calc(100vw - 24px)); padding: 10px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-raised); color: var(--text); box-shadow: 0 18px 40px rgba(0,0,0,.45); }
