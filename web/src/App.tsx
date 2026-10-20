@@ -207,6 +207,29 @@ export function App() {
     if (viewerMode && wasViewer) return;
     setTopMenuOpen(false);
   }, [viewerMode, location.pathname]);
+  // Toggling the top menu (or any other shell-only state) must not re-render
+  // the page under it: a folder grid re-renders every tile, which stalls the
+  // toggle on phones. The routed page and the context values only change with
+  // their own inputs.
+  const topMenuValue = useMemo(() => ({open:topMenuOpen, toggle:() => setTopMenuOpen(v => !v)}), [topMenuOpen]);
+  const thumbValue = useMemo(() => ({min:thumb.min, max:thumb.max, size:thumbSize, setSize:setThumbSize}), [thumb.min, thumb.max, thumbSize]);
+  const libraryDialogValue = useMemo(() => ({dialogLibrary, setDialogLibrary, canManage: user?.role === "admin"}), [dialogLibrary, user?.role]);
+  const routes = useMemo(() => <Routes>
+      <Route path="/" element={<Libraries/>}/>
+      <Route path="/library/:id" element={<Browser/>}/>
+      <Route path="/library/:id/folder/:folderId" element={<Browser/>}/>
+      <Route path="/library/:id/timeline" element={<LibraryTimeline/>}/>
+      <Route path="/library/:id/timeline/:folderId" element={<LibraryTimeline/>}/>
+      <Route path="/library/:id/view/:folderId" element={<MediaViewerPage/>}/>
+      <Route path="/favorites" element={<Favorites/>}/>
+      <Route path="/favorites/:viewId" element={<FavoriteViewPage/>}/>
+      <Route path="/favorites/view/:mediaId" element={<FavoriteMediaViewerPage/>}/>
+      <Route path="/map" element={<GeoMap theme={resolvedTheme} tileSettings={mapTileSettings}/>}/>
+      <Route path="/reset" element={<ResetPassword/>}/>
+      <Route path="/admin" element={user?.role === "admin" ? <AdminPanel/> : <Navigate to="/"/>}/>
+      <Route path="/admin/settings" element={<Navigate to="/admin"/>}/>
+      <Route path="*" element={<NotFound/>}/>
+    </Routes>, [resolvedTheme, mapTileSettings, user?.role]);
   if (serverGate) return serverGate;
   if (!ready) return <main className="center">Loading…</main>;
   if (setupRequired) return <FirstSetup onComplete={user => { setSetupRequired(false); setUser(user); }}/>;
@@ -222,7 +245,7 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  return <TopMenuCtx.Provider value={{open:topMenuOpen, toggle:()=>setTopMenuOpen(v=>!v)}}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={{min:thumb.min, max:thumb.max, size:thumbSize, setSize:setThumbSize}}><LibraryDialogContext.Provider value={{ dialogLibrary, setDialogLibrary, canManage: user.role === "admin" }}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
+  return <TopMenuCtx.Provider value={topMenuValue}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={thumbValue}><LibraryDialogContext.Provider value={libraryDialogValue}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     {settingsWarn && <div className="shell-warning" role="alert">Couldn't load your account preferences (theme, zoom, …) — showing defaults. <button type="button" className="secondary" onClick={() => setSettingsWarn(false)}>Dismiss</button></div>}
     <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to} state={crumb.returnToFolderId != null || crumb.returnToMediaId != null ? {returnToFolderId: crumb.returnToFolderId, returnToMediaId: crumb.returnToMediaId} : undefined}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
@@ -245,22 +268,7 @@ export function App() {
     <LanguageWatcher/>
     {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} streamChunkSize={streamChunkSize} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onStreamChunkSizeChange={setStreamChunkSize} mapTileSettings={mapTileSettings} onMapTileChange={setMapTileSettings} thumb={thumb} onThumbChange={setThumb} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
     {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)}/>}
-    <Routes>
-      <Route path="/" element={<Libraries/>}/>
-      <Route path="/library/:id" element={<Browser/>}/>
-      <Route path="/library/:id/folder/:folderId" element={<Browser/>}/>
-      <Route path="/library/:id/timeline" element={<LibraryTimeline/>}/>
-      <Route path="/library/:id/timeline/:folderId" element={<LibraryTimeline/>}/>
-      <Route path="/library/:id/view/:folderId" element={<MediaViewerPage/>}/>
-      <Route path="/favorites" element={<Favorites/>}/>
-      <Route path="/favorites/:viewId" element={<FavoriteViewPage/>}/>
-      <Route path="/favorites/view/:mediaId" element={<FavoriteMediaViewerPage/>}/>
-      <Route path="/map" element={<GeoMap theme={resolvedTheme} tileSettings={mapTileSettings}/>}/>
-      <Route path="/reset" element={<ResetPassword/>}/>
-      <Route path="/admin" element={user.role === "admin" ? <AdminPanel/> : <Navigate to="/"/>}/>
-      <Route path="/admin/settings" element={<Navigate to="/admin"/>}/>
-      <Route path="*" element={<NotFound/>}/>
-    </Routes>
+    {routes}
     {dialogLibrary && <LibraryDialog library={dialogLibrary} onClose={() => setDialogLibrary(null)}/>}
   </div></LibraryDialogContext.Provider></ThumbCtx.Provider></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
 }
