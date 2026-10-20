@@ -303,6 +303,18 @@ function folderCrumbName(folder:MediaFolder) {
   return parts[parts.length - 1] || folder.relativePath || `Folder ${folder.id}`;
 }
 
+// Names of the items the viewer showed, published for the header title.
+const VIEWER_ITEM_EVENT = "ml-viewer-item";
+const VIEWER_ITEM_NAMES_LIMIT = 200;
+const viewerItemNames = new Map<ID, string>();
+
+function publishViewerItem(id:ID, name:string) {
+  viewerItemNames.delete(id);
+  viewerItemNames.set(id, name);
+  while (viewerItemNames.size > VIEWER_ITEM_NAMES_LIMIT) viewerItemNames.delete(viewerItemNames.keys().next().value!);
+  window.dispatchEvent(new CustomEvent(VIEWER_ITEM_EVENT, {detail:{id, name}}));
+}
+
 const FOLDER_ENTRIES_TTL_MS = 5000;
 type CachedEntries = {promise: Promise<FolderEntries>; expires: number};
 const folderEntriesCache = new Map<string, CachedEntries>();
@@ -364,17 +376,21 @@ function useBreadcrumb(): Crumb[] | null {
   const [viewerItemName, setViewerItemName] = useState<string|null>(null);
   const favoriteViewerMatch = pathname.match(/^\/favorites\/view\/([^/]+)$/);
   const viewerItemId = favoriteViewerMatch ? Number(favoriteViewerMatch[1]) : viewerMatch && searchParams.get("item") != null ? Number(searchParams.get("item")) : NaN;
+  // Paging in the viewer changes the URL on every step; the library list and
+  // the favorite view name only depend on which library/view is open, so they
+  // are not cleared and refetched per item (the title would blank out while
+  // the request queued behind image downloads).
   useEffect(() => {
     let cancelled = false;
-    setLibraries(null);
     if (!Number.isFinite(libraryID)) return;
-    api.libraries().then(items => { if (!cancelled) setLibraries(items); }).catch(() => setLibraries(null));
+    api.libraries().then(items => { if (!cancelled) setLibraries(items); }).catch(() => { if (!cancelled) setLibraries(null); });
     return () => { cancelled = true; };
-  }, [pathname, location.search]);
+  }, [libraryID]);
+  const favViewParam = favoriteViewMatch ? favoriteViewMatch[1] : favoritesMatch ? searchParams.get("viewId") : searchParams.get("fav");
   useEffect(() => {
     let cancelled = false;
     setFavViewName(null);
-    const viewParam = favoriteViewMatch ? favoriteViewMatch[1] : favoritesMatch ? searchParams.get("viewId") : searchParams.get("fav");
+    const viewParam = favViewParam;
     if (!viewParam) return;
     api.favoriteViews().then(views => {
       if (cancelled) return;
@@ -382,17 +398,28 @@ function useBreadcrumb(): Crumb[] | null {
       if (v) setFavViewName(v.name);
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [pathname, location.search]);
+  }, [favViewParam]);
   useEffect(() => {
     let cancelled = false;
-    setViewerItemName(null);
     const params = new URLSearchParams(location.search);
     const scopedViewer = viewerMatch != null && (params.get("root") != null || ["w","s","e","n"].every(key => params.get(key) != null));
     const favViewer = viewerMatch != null && params.get("fav") != null;
-    if (!favoriteViewerMatch && !scopedViewer && !favViewer) return;
-    if (!Number.isFinite(viewerItemId) || viewerItemId <= 0) return;
-    api.media(viewerItemId).then(media => { if (!cancelled) setViewerItemName(media.name); }).catch(() => undefined);
-    return () => { cancelled = true; };
+    if (!favoriteViewerMatch && !scopedViewer && !favViewer) { setViewerItemName(null); return; }
+    if (!Number.isFinite(viewerItemId) || viewerItemId <= 0) { setViewerItemName(null); return; }
+    // The viewer publishes the item it shows, so paging updates the title at
+    // once; /media/:id is only asked for once the item settled and nobody
+    // published it.
+    const known = viewerItemNames.get(viewerItemId);
+    if (known != null) setViewerItemName(known);
+    function onViewerItem(event:Event) {
+      const detail = (event as CustomEvent<{id:ID; name:string}>).detail;
+      if (detail.id === viewerItemId) setViewerItemName(detail.name);
+    }
+    window.addEventListener(VIEWER_ITEM_EVENT, onViewerItem);
+    const settle = known != null ? undefined : window.setTimeout(() => {
+      api.media(viewerItemId).then(media => { if (!cancelled) setViewerItemName(media.name); }).catch(() => undefined);
+    }, VIEWER_SETTLE_MS);
+    return () => { cancelled = true; window.clearTimeout(settle); window.removeEventListener(VIEWER_ITEM_EVENT, onViewerItem); };
   }, [pathname, location.search]);
   return useMemo(() => {
     if (favoritesMatch) {
@@ -3777,6 +3804,8 @@ function MediaViewerPage() {
   }, [libraryId, rootParam, kindParam, gpsParam, listParam, w, s, e, n]);
   const rootMode = rootParam != null;
   const [neighbors, setNeighbors] = useState<{anchor:Media; before:Media[]; after:Media[]}|null>(null);
+  const neighborsRef = useRef(neighbors);
+  neighborsRef.current = neighbors;
   useEffect(() => {
     if (!Number.isFinite(currentMediaId)) {
       setNeighbors(null);
@@ -3901,14 +3930,25 @@ function MediaViewerPage() {
     let cancelled = false;
     setFallbackItem(null);
     setFallback({loading:true, failed:false});
-    api.media(currentMediaId).then(media => {
-      if (cancelled) return;
-      setFallbackItem(media);
-      setFallback({loading:false, failed:false});
-    }).catch(() => {
-      if (!cancelled) setFallback({loading:false, failed:true});
-    });
-    return () => { cancelled = true; };
+    // In root mode the neighbors walk already delivers the item; the direct
+    // lookup only runs if it has not arrived once the item settled, so fast
+    // paging does not queue one /media/:id per step.
+    const lookup = () => {
+      if (neighborsRef.current?.anchor.id === currentMediaId) {
+        setFallback({loading:false, failed:false});
+        return;
+      }
+      api.media(currentMediaId).then(media => {
+        if (cancelled) return;
+        setFallbackItem(media);
+        setFallback({loading:false, failed:false});
+      }).catch(() => {
+        if (!cancelled) setFallback({loading:false, failed:true});
+      });
+    };
+    const settle = rootMode ? window.setTimeout(lookup, VIEWER_SETTLE_MS) : undefined;
+    if (!rootMode) lookup();
+    return () => { cancelled = true; window.clearTimeout(settle); };
   }, [currentMediaId, index]);
   const nav:ItemNav = useMemo(() => {
     const fav = query.get("fav") ?? undefined;
@@ -4104,6 +4144,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   useEffect(() => {
     for (const media of [previous, next]) if (media && media.kind !== "document") prefetchAdjust(media.id);
   }, [previous?.id, next?.id]);
+  useEffect(() => { publishViewerItem(item.id, item.name); }, [item.id, item.name]);
   // The image element shows the item's own thumbnail until its full-size
   // bytes arrive, never the previous item's picture under the new title.
   const [fullSrc, setFullSrc] = useState<{id:ID; src:string}|null>(null);
