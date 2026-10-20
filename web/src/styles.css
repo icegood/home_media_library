@@ -215,6 +215,8 @@ main.browser-page { position: relative; max-width: none; }
 /* minmax(0, 1fr) keeps long server names / values from widening the card past its white background. */
 .login { width: min(400px, calc(100vw - 32px)); padding: 28px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; overflow-wrap: anywhere; }
 .login fieldset { min-width: 0; }
+/* A touch device turned sideways (any phone or tablet size) has width to spare but little height: use it so the card is not a tall narrow column. */
+@media (orientation: landscape) and (pointer: coarse) { .login { width: min(720px, calc(100vw - 32px)); } }
 .login label { display: grid; grid-template-columns: 80px minmax(0, 1fr); align-items: center; gap: 12px; }
 .login label > span { font-weight: 800; }
 .login input { width: 100%; min-width: 0; }
@@ -777,9 +779,10 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 .video-ctrl-icon { min-width: 40px; height: 38px; padding: 0 8px; display: grid; place-items: center; font-size: 16px; line-height: 1; }
 .video-volume-control { position: relative; display: grid; place-items: center; }
 .video-volume-popover { position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 5; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 8px 8px; border: 1px solid var(--video-controls-border); border-radius: 12px; background: var(--video-bg); box-shadow: 0 6px 24px #00000066; }
-.video-volume-popover .video-volume-slot { width: 26px; height: 110px; display: grid; place-items: center; }
+.video-volume-popover .video-volume-slot { position: relative; width: 26px; height: 110px; }
 .video-volume { width: 72px; min-width: 48px; margin: 0; padding: 0; accent-color: #5da2ff; cursor: pointer; }
-.video-volume-popover .video-volume { width: 90px; transform: rotate(-90deg); }
+/* Rotation does not change the slider's 90px layout width, so it is centred in the narrow slot explicitly before turning upright. */
+.video-volume-popover .video-volume { position: absolute; left: 50%; top: 50%; width: 90px; min-width: 0; transform: translate(-50%, -50%) rotate(-90deg); }
 .video-volume-mute { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border-radius: 8px; background: var(--overlay-btn-bg); border: 1px solid var(--video-controls-border); color: #fff; font-size: 1rem; line-height: 1; cursor: pointer; }
 .media-adjust { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; overflow-y: auto; margin-top: 4px; padding: 12px 4px 4px 0; border-top: 1px solid var(--overlay-border); }
 .media-adjust-title { font-weight: 800; }
