@@ -642,6 +642,8 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .viewer-media > .viewer-fullscreen { top: calc(134px + var(--ml-safe-top, 0px)); }
 .viewer-media > .viewer-download:hover, .viewer-media > .viewer-fullscreen:hover { background: var(--handle-hover); color: white; }
 .viewer-media > img { display: block; max-width: 100%; max-height: calc(100vh - 86px); object-fit: contain; background: var(--surface); transition: transform .12s ease; transform-origin: center; user-select: none; touch-action: none; }
+/* Letterboxed square thumbnail stretched to the stage while the full image loads. */
+.viewer-media > img.placeholder-image { width: min(100%, calc(100vh - 86px)); aspect-ratio: 1; }
 .viewer-media > img.zoomed-image, .video-stack.zoomed-image { cursor: grab; touch-action: none; }
 .viewer-media > img.panning-image, .video-stack.panning-image { cursor: grabbing; transition: none; }
 .viewer-media > .viewer-document { display: block; width: 100%; height: calc(100vh - 130px); border: 0; background: var(--surface); }

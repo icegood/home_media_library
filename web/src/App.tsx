@@ -3817,6 +3817,8 @@ function MediaViewerPage() {
   const next = rootMode
     ? (anchorItem && neighbors ? withOverride(neighbors.after[0] ?? null) : null)
     : (index >= 0 ? (index < folderMedia.length - 1 ? folderMedia[index + 1] : null) : (neighbors ? withOverride(neighbors.after[0] ?? null) : null));
+  const itemId = item?.id ?? null;
+  const itemKind = item?.kind ?? null;
   useEffect(() => {
     // Rebuild the desired prefetch window around the current item. In the
     // ordered list modes the whole neighbourhood is known, so a few items
@@ -3826,46 +3828,62 @@ function MediaViewerPage() {
     // swap is a cache hit; videos warm the cover frame only (the play URL
     // would download or even transcode every neighbouring clip).
     const jobs = prefetchJobsRef.current;
-    const desired = new Map<number, string>();
+    const images:ID[] = [];
+    const covers = new Map<number, string>();
+    const want = (media:Media) => {
+      if (media.kind === "image") images.push(media.id);
+      else if (media.kind === "video") covers.set(media.id, api.thumbnailUrl(media.id, 0));
+    };
     if (index >= 0) {
       for (let i = Math.max(0, index - PREFETCH_BACKWARD); i <= index + PREFETCH_FORWARD && i < folderMedia.length; i++) {
         if (i === index) continue;
         const media = folderMedia[i];
         if (!media) continue;
         if (Math.abs(i - index) >= PREFETCH_MAX_DISTANCE) continue;
-        if (media.kind === "image") desired.set(media.id, api.contentUrl(media.id));
-        else if (media.kind === "video") desired.set(media.id, api.thumbnailUrl(media.id, 0));
+        want(media);
       }
     } else {
-      for (const media of [previous, next]) {
-        if (!media) continue;
-        if (media.kind === "image") desired.set(media.id, api.contentUrl(media.id));
-        else if (media.kind === "video") desired.set(media.id, api.thumbnailUrl(media.id, 0));
-      }
+      for (const media of [previous, next]) if (media) want(media);
     }
-    // Anything that left the window is cancelled, not left to download.
+    // Anything that left the window is aborted, not left to download: the
+    // current item and the new window are all that may hold a connection.
+    retainFullImages(new Set(itemId != null && itemKind === "image" ? [itemId, ...images] : images));
     for (const [id, image] of Array.from(jobs.entries())) {
-      if (!desired.has(id)) {
+      if (!covers.has(id)) {
         image.src = "";
         jobs.delete(id);
       }
     }
     // Saved adjustments follow the same window, so the image is never held
     // back (hidden) waiting for its /adjust round trip.
-    for (const id of desired.keys()) prefetchAdjust(id);
-    for (const [id, url] of desired) {
-      if (jobs.has(id)) continue;
-      const image = new Image();
-      image.decoding = "async";
-      image.src = url;
-      jobs.set(id, image);
-    }
-  }, [folderMedia, index, previous, next]);
+    for (const id of [...images, ...covers.keys()]) prefetchAdjust(id);
+    // Once the item settles, other in-flight downloads are paused and it
+    // loads alone; neighbours start (or restart) only after it is in.
+    let alive = true;
+    const settle = window.setTimeout(() => {
+      const isImage = itemId != null && itemKind === "image";
+      if (isImage && !loadedFullImage(itemId)) pauseFullImages(itemId);
+      const current = isImage ? loadFullImage(itemId) : Promise.resolve("");
+      void current.catch(() => "").then(() => {
+        if (!alive) return;
+        for (const id of images) loadFullImage(id).catch(() => void 0);
+        for (const [id, url] of covers) {
+          if (jobs.has(id)) continue;
+          const image = new Image();
+          image.decoding = "async";
+          image.src = url;
+          jobs.set(id, image);
+        }
+      });
+    }, VIEWER_SETTLE_MS);
+    return () => { alive = false; window.clearTimeout(settle); };
+  }, [folderMedia, index, previous, next, itemId, itemKind]);
   useEffect(() => () => {
     // Only unmount aborts every in-flight prefetch; the window effect above
     // evicts single jobs as they scroll out so forward paging never restarts.
     for (const image of prefetchJobsRef.current.values()) image.src = "";
     prefetchJobsRef.current.clear();
+    retainFullImages(new Set());
   }, []);
   useEffect(() => {
     if (index >= 0 || !Number.isFinite(currentMediaId)) {
@@ -4078,6 +4096,20 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
   useEffect(() => {
     for (const media of [previous, next]) if (media && media.kind !== "document") prefetchAdjust(media.id);
   }, [previous?.id, next?.id]);
+  // The image element shows the item's own thumbnail until its full-size
+  // bytes arrive, never the previous item's picture under the new title.
+  const [fullSrc, setFullSrc] = useState<{id:ID; src:string}|null>(null);
+  useLayoutEffect(() => {
+    if (item.kind !== "image") return;
+    let alive = true;
+    const ready = loadedFullImage(item.id);
+    setFullSrc(ready ? {id:item.id, src:ready} : null);
+    const settle = ready ? undefined : window.setTimeout(() => loadFullImage(item.id).then(
+      src => { if (alive) setFullSrc({id:item.id, src}); },
+      () => { if (alive) setFullSrc({id:item.id, src:api.contentUrl(item.id)}); }), VIEWER_SETTLE_MS);
+    return () => { alive = false; window.clearTimeout(settle); };
+  }, [item.id, item.kind]);
+  const imageSrc = fullSrc?.id === item.id ? fullSrc.src : api.thumbnailUrl(item.id, 0);
   useEffect(() => { if (imageZoom === 1) { setImagePan({x:0, y:0}); setDrag(null); } }, [imageZoom]);
   // Documents (PDFs, etc.) are shown in an <iframe> on desktop/iOS via a blob
   // URL fetched with credentials, so the request keeps the HttpOnly auth cookie
@@ -4485,7 +4517,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
       {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} adjust={adjust} ready={adjustReady} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         item.kind === "image" ?
-        <img className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}`} style={{opacity:adjustReady ? 1 : 0, transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={api.contentUrl(item.id)} alt={item.name}
+        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}${fullSrc?.id === item.id ? "" : " placeholder-image"}`} style={{opacity:adjustReady ? 1 : 0, transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={imageSrc} alt={item.name}
           onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         <>
           {docNative
@@ -4567,6 +4599,79 @@ function loadAdjust(id:ID) {
 function prefetchAdjust(id:ID) {
   if (!adjustCache.has(id)) loadAdjust(id).catch(() => void 0);
 }
+
+// Full-size viewer images are fetched as blobs rather than set as a plain
+// <img src>/Image() so a download can really be aborted the moment its item
+// leaves the paging window. An abandoned <img> load keeps its connection busy
+// to the end, and fast paging then queues the current item (and its /adjust)
+// behind several stale multi-MB downloads. Without fetch/blob support the
+// plain content URL is used as before.
+const FULL_IMAGE_LIMIT = 8;
+interface FullImage { controller:AbortController|null; promise:Promise<string>; url:string|null }
+const fullImages = new Map<ID, FullImage>();
+
+function dropFullImage(id:ID) {
+  const entry = fullImages.get(id);
+  if (!entry) return;
+  fullImages.delete(id);
+  entry.controller?.abort();
+  if (entry.url?.startsWith("blob:")) URL.revokeObjectURL(entry.url);
+}
+
+function loadedFullImage(id:ID) {
+  return fullImages.get(id)?.url ?? null;
+}
+
+function loadFullImage(id:ID):Promise<string> {
+  const existing = fullImages.get(id);
+  if (existing) {
+    fullImages.delete(id);
+    fullImages.set(id, existing);
+    return existing.promise;
+  }
+  const direct = api.contentUrl(id);
+  if (typeof fetch !== "function" || typeof AbortController === "undefined" || typeof URL.createObjectURL !== "function") {
+    return Promise.resolve(direct);
+  }
+  const controller = new AbortController();
+  const entry:FullImage = {controller, url:null, promise:Promise.resolve(direct)};
+  entry.promise = fetch(direct, {credentials:"same-origin", signal:controller.signal})
+    .then(response => {
+      if (!response.ok) throw new Error(`${response.status}`);
+      return response.blob();
+    })
+    .then(blob => {
+      entry.controller = null;
+      if (fullImages.get(id) !== entry) return direct;
+      entry.url = URL.createObjectURL(blob);
+      return entry.url;
+    }, cause => {
+      entry.controller = null;
+      if (controller.signal.aborted) throw cause;
+      // Let the <img> hit the URL itself (and surface its own error state).
+      if (fullImages.get(id) === entry) fullImages.delete(id);
+      return direct;
+    });
+  fullImages.set(id, entry);
+  while (fullImages.size > FULL_IMAGE_LIMIT) dropFullImage(fullImages.keys().next().value!);
+  return entry.promise;
+}
+
+// Aborts (or frees) every full image outside the given window.
+function retainFullImages(keep:Set<ID>) {
+  for (const id of Array.from(fullImages.keys())) if (!keep.has(id)) dropFullImage(id);
+}
+
+// Pauses prefetching: every download still in flight except the given one is
+// aborted (already loaded images stay), so the item on screen gets the whole
+// bandwidth. The window effect restarts them once that item is in.
+function pauseFullImages(except:ID) {
+  for (const [id, entry] of Array.from(fullImages.entries())) if (id !== except && entry.controller) dropFullImage(id);
+}
+
+// An item counts as the one being looked at only after it stayed on screen
+// this long; while paging through faster than that only thumbnails load.
+const VIEWER_SETTLE_MS = 200;
 
 export function clearAdjustCacheForTests() {
   adjustCache.clear();
