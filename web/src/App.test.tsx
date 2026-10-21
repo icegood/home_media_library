@@ -1851,7 +1851,7 @@ test("media name and gps are saved only after explicit save", async () => {
   expect(mockApi.updateMediaDetails).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
   await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"renamed.jpg", gps:"50.45,30.52", takenAt:"", notes:""}));
-  expect(screen.getByRole("link", {name:"Open on map"})).toHaveAttribute("href", "/map?item=100");
+  expect(screen.getByRole("link", {name:"Open on map"})).toHaveAttribute("href", "/map?item=100&inLibrary=1&inFolder=20");
   fireEvent.click(screen.getByRole("button", {name:"Hide info panel"}));
   expect(screen.getByRole("button", {name:"Show info panel"})).toHaveTextContent("<<");
 });

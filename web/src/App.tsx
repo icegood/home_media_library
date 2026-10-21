@@ -368,14 +368,20 @@ function useBreadcrumb(): Crumb[] | null {
   const timelineMatch = pathname.match(/^\/library\/([^/]+)\/timeline$/);
   const timelineFolderMatch = pathname.match(/^\/library\/([^/]+)\/timeline\/([^/]+)$/);
   const isMap = pathname === "/map";
-  const libraryID = rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : timelineMatch ? Number(timelineMatch[1]) : timelineFolderMatch ? Number(timelineFolderMatch[1]) : isMap && searchParams.get("library") ? Number(searchParams.get("library")) : NaN;
-  const folderID = folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : timelineFolderMatch ? Number(timelineFolderMatch[2]) : isMap && searchParams.get("folder") ? Number(searchParams.get("folder")) : null;
+  // "Open on map" from play mode: /map?item=… plus the context the item was
+  // played in (inLibrary+inFolder, or inFavorite), so the title shows its path.
+  const mapItemId = isMap && searchParams.get("item") != null ? Number(searchParams.get("item")) : NaN;
+  const mapInLibrary = isMap && searchParams.get("inLibrary") ? Number(searchParams.get("inLibrary")) : NaN;
+  const mapInFolder = isMap && searchParams.get("inFolder") ? Number(searchParams.get("inFolder")) : null;
+  const mapInFavorite = isMap ? searchParams.get("inFavorite") : null;
+  const libraryID = Number.isFinite(mapInLibrary) ? mapInLibrary : rootMatch ? Number(rootMatch[1]) : folderMatch ? Number(folderMatch[1]) : viewerMatch ? Number(viewerMatch[1]) : timelineMatch ? Number(timelineMatch[1]) : timelineFolderMatch ? Number(timelineFolderMatch[1]) : isMap && searchParams.get("library") ? Number(searchParams.get("library")) : NaN;
+  const folderID = mapInFolder != null ? mapInFolder : folderMatch ? Number(folderMatch[2]) : viewerMatch ? Number(viewerMatch[2]) : timelineFolderMatch ? Number(timelineFolderMatch[2]) : isMap && searchParams.get("folder") ? Number(searchParams.get("folder")) : null;
   const folderData = useFolderEntries(folderID != null ? libraryID : NaN, folderID, true);
   const [libraries, setLibraries] = useState<Library[]|null>(null);
   const [favViewName, setFavViewName] = useState<string|null>(null);
   const [viewerItemName, setViewerItemName] = useState<string|null>(null);
   const favoriteViewerMatch = pathname.match(/^\/favorites\/view\/([^/]+)$/);
-  const viewerItemId = favoriteViewerMatch ? Number(favoriteViewerMatch[1]) : viewerMatch && searchParams.get("item") != null ? Number(searchParams.get("item")) : NaN;
+  const viewerItemId = favoriteViewerMatch ? Number(favoriteViewerMatch[1]) : viewerMatch && searchParams.get("item") != null ? Number(searchParams.get("item")) : mapItemId;
   // Paging in the viewer changes the URL on every step; the library list and
   // the favorite view name only depend on which library/view is open, so they
   // are not cleared and refetched per item (the title would blank out while
@@ -386,7 +392,7 @@ function useBreadcrumb(): Crumb[] | null {
     api.libraries().then(items => { if (!cancelled) setLibraries(items); }).catch(() => { if (!cancelled) setLibraries(null); });
     return () => { cancelled = true; };
   }, [libraryID]);
-  const favViewParam = favoriteViewMatch ? favoriteViewMatch[1] : favoritesMatch ? searchParams.get("viewId") : searchParams.get("fav");
+  const favViewParam = favoriteViewMatch ? favoriteViewMatch[1] : favoritesMatch ? searchParams.get("viewId") : isMap ? mapInFavorite ?? searchParams.get("favorite") : searchParams.get("fav");
   useEffect(() => {
     let cancelled = false;
     setFavViewName(null);
@@ -404,7 +410,8 @@ function useBreadcrumb(): Crumb[] | null {
     const params = new URLSearchParams(location.search);
     const scopedViewer = viewerMatch != null && (params.get("root") != null || ["w","s","e","n"].every(key => params.get(key) != null));
     const favViewer = viewerMatch != null && params.get("fav") != null;
-    if (!favoriteViewerMatch && !scopedViewer && !favViewer) { setViewerItemName(null); return; }
+    const mapItem = isMap && Number.isFinite(mapItemId);
+    if (!favoriteViewerMatch && !scopedViewer && !favViewer && !mapItem) { setViewerItemName(null); return; }
     if (!Number.isFinite(viewerItemId) || viewerItemId <= 0) { setViewerItemName(null); return; }
     // The viewer publishes the item it shows, so paging updates the title at
     // once; /media/:id is only asked for once the item settled and nobody
@@ -432,6 +439,16 @@ function useBreadcrumb(): Crumb[] | null {
       if (!favViewName) return null;
       return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}, {label:favViewName, to:null, current:true}];
     }
+    if (isMap && mapInFavorite) {
+      // Favorite context: Libraries / Favorites / <view> / <file>, as in play mode.
+      const crumbs: Crumb[] = [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:`/map?favorite=${encodeURIComponent(mapInFavorite)}`}];
+      if (viewerItemName) crumbs.push({label:viewerItemName, to:null, current:true});
+      else crumbs[crumbs.length - 1] = {...crumbs[crumbs.length - 1], current:true};
+      return crumbs;
+    }
+    if (isMap && !Number.isFinite(libraryID) && searchParams.get("favorite")) {
+      return [{label:"Libraries", to:"/"}, {label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:null, current:true}];
+    }
     if (isMap) {
       if (!Number.isFinite(libraryID) || !libraries) return null;
       const library = libraries.find(item => item.id === libraryID);
@@ -439,6 +456,10 @@ function useBreadcrumb(): Crumb[] | null {
       const base: Crumb[] = [{label:`Map of ${library.name}`, to:`/map?library=${libraryID}`}];
       if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
         base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:`/map?library=${libraryID}&folder=${folder.id}`})));
+      }
+      if (Number.isFinite(mapItemId) && viewerItemName) {
+        base.push({label:viewerItemName, to:null, current:true});
+        return base;
       }
       base[base.length - 1] = {...base[base.length - 1], current:true};
       return base;
@@ -2872,7 +2893,7 @@ function FavoriteMediaViewerPage() {
   }, [previous,next,navigate]);
   if (!item) return <main className="viewer-page"><p>Loading media…</p></main>;
   return <main className="viewer-page">
-    <Viewer item={item} favoriteViewId={favoriteViewId} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)} onUpdated={onMediaUpdated}/>
+    <Viewer item={item} favoriteViewId={favoriteViewId} mapContext={`inFavorite=${encodeURIComponent(viewId)}`} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)} onUpdated={onMediaUpdated}/>
   </main>;
 }
 
@@ -4002,8 +4023,14 @@ function MediaViewerPage() {
   </main>;
   if (!item) return <main className="viewer-page"><p>Loading media…</p></main>;
   return <main className="viewer-page">
-    <Viewer item={item} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)} onUpdated={onMediaUpdated}/>
+    <Viewer item={item} mapContext={mapContextOf(libraryId, item, query.get("fav"))} infoOpen={infoOpen} previous={previous} next={next} onGo={go} onToggleInfo={() => setInfoOpen(value => !value)} onUpdated={onMediaUpdated}/>
   </main>;
+}
+
+// Context query for "Open on map": the favorite view the item is played in,
+// otherwise its library and folder, so the map title shows the item's path.
+function mapContextOf(libraryId:ID, item:Media, fav:string|null) {
+  return fav ? `inFavorite=${encodeURIComponent(fav)}` : `inLibrary=${libraryId}&inFolder=${item.folderId}`;
 }
 
 export interface ItemNav {
@@ -4100,7 +4127,7 @@ function unlockOrientation() {
   }
 }
 
-function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,onUpdated}:{item:Media; favoriteViewId?:ID; infoOpen:boolean; previous:Media|null; next:Media|null; onGo:(media:Media|null)=>void; onToggleInfo:()=>void; onUpdated?:(updated:Media)=>void}) {
+function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onToggleInfo,onUpdated}:{item:Media; favoriteViewId?:ID; mapContext?:string; infoOpen:boolean; previous:Media|null; next:Media|null; onGo:(media:Media|null)=>void; onToggleInfo:()=>void; onUpdated?:(updated:Media)=>void}) {
   const supported = supportedVideoCodecs();
   const navigate = useNavigate();
   const mediaRef = useRef<HTMLDivElement|null>(null);
@@ -4602,7 +4629,7 @@ function Viewer({item,favoriteViewId,infoOpen,previous,next,onGo,onToggleInfo,on
     </div>
     <button type="button" className="info-handle" aria-label={infoOpen ? "Hide info panel" : "Show info panel"} onClick={onToggleInfo}>{infoOpen ? ">>" : "<<"}</button>
     <aside className={`info-drawer ${infoOpen ? "open" : ""}`} aria-hidden={!infoOpen}>
-      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} onUpdated={onUpdated} activeTab={infoTab} onTabChange={setInfoTab} adjust={adjust} onAdjustChange={patch => setAdjust(prev => ({...prev, ...patch}))} adjustSaved={savedNotice} onSaveAdjust={saveAdjust} onResetAdjust={resetAdjust}/>}
+      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} mapContext={mapContext} onUpdated={onUpdated} activeTab={infoTab} onTabChange={setInfoTab} adjust={adjust} onAdjustChange={patch => setAdjust(prev => ({...prev, ...patch}))} adjustSaved={savedNotice} onSaveAdjust={saveAdjust} onResetAdjust={resetAdjust}/>}
     </aside>
   </div>;
 }
@@ -4817,7 +4844,7 @@ function dropdownBelow(anchor:HTMLElement, popupWidth:number):{top:number; left:
   };
 }
 
-function MediaInfo({item, onUpdated, activeTab, onTabChange, adjust, onAdjustChange, adjustSaved, onSaveAdjust, onResetAdjust}:{item:Media; onUpdated?:(updated:Media)=>void; activeTab:"details"|"metadata"|"notes"; onTabChange:(tab:"details"|"metadata"|"notes")=>void; adjust?:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; onAdjustChange?:(patch:Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)=>void; adjustSaved?:boolean; onSaveAdjust?:()=>void; onResetAdjust?:()=>void}) {
+function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust, onAdjustChange, adjustSaved, onSaveAdjust, onResetAdjust}:{item:Media; mapContext?:string; onUpdated?:(updated:Media)=>void; activeTab:"details"|"metadata"|"notes"; onTabChange:(tab:"details"|"metadata"|"notes")=>void; adjust?:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; onAdjustChange?:(patch:Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)=>void; adjustSaved?:boolean; onSaveAdjust?:()=>void; onResetAdjust?:()=>void}) {
   const dateFormat = useUserDateFormat();
   const [name, setName] = useState(item.name);
   const [gpsValue, setGPSValue] = useState(item.gps ?? "");
@@ -4904,7 +4931,7 @@ function MediaInfo({item, onUpdated, activeTab, onTabChange, adjust, onAdjustCha
     {activeTab === "details" && <div className="media-edit" role="tabpanel" aria-label="Details" aria-labelledby="media-tab-details">
       <label className="media-edit-row"><span>Name</span><input value={name} onChange={event => setName(event.target.value)} required/></label>
       <label className="media-edit-row"><span>Date</span><span className="media-date-editor joined-field"><input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/>{currentDate && <button type="button" className="joined-action" aria-label="Copy date" data-hint="Copy date" onClick={() => void copyDate()}>{copied ? "✓" : "⧉"}</button>}<button ref={pickerAnchorRef} type="button" className="joined-action" aria-label="Pick date and time" data-hint="Pick date and time" aria-expanded={calendarOpen} onClick={() => setCalendarOpen(value => !value)}><span className="calendar-glyph" aria-hidden="true">📅</span></button>{calendarOpen && pickerAnchorRef.current && createPortal(<DateCalendar anchor={pickerAnchorRef.current} initialDate={pickerInitialDate()} onSelect={pickDate} onClose={() => setCalendarOpen(false)}/>, document.body)}</span></label>
-      <div className="media-edit-row"><span><label htmlFor={`media-gps-${current.id}`}>GPS</label></span><span className="joined-field"><input id={`media-gps-${current.id}`} value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/>{gps && <Link to={`/map?item=${current.id}`} className="joined-action" aria-label="Open on map" data-hint="Open on map">🗺️</Link>}</span></div>
+      <div className="media-edit-row"><span><label htmlFor={`media-gps-${current.id}`}>GPS</label></span><span className="joined-field"><input id={`media-gps-${current.id}`} value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/>{gps && <Link to={`/map?item=${current.id}${mapContext ? `&${mapContext}` : ""}`} className="joined-action" aria-label="Open on map" data-hint="Open on map">🗺️</Link>}</span></div>
       {(item.kind === "image" || item.kind === "video") && adjust && onAdjustChange && <div className="media-adjust" role="group" aria-label="Media adjustments">
         <span className="media-adjust-title">Media adjustments</span>
         {([
