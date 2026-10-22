@@ -161,6 +161,12 @@ type UserSettings struct {
 	// keeps the whole list in that direction.
 	PlayCacheForward  int `json:"playCacheForward"`
 	PlayCacheBackward int `json:"playCacheBackward"`
+	// PlayCacheKeep keeps items that were already downloaded while they stay
+	// within this many items of the current one, even outside the forward /
+	// backward window; beyond it their memory is released. 0 releases them as
+	// soon as they leave the window; PlayCacheUnlimited keeps everything
+	// loaded during the play session.
+	PlayCacheKeep int `json:"playCacheKeep"`
 }
 
 // PlayCacheUnlimited is the play-mode cache count meaning "every item".

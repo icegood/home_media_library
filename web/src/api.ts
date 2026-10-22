@@ -297,6 +297,8 @@ export interface UserSettings {
   // Play-mode cache counts ahead/behind the current item; -1 = unlimited.
   playCacheForward?:number;
   playCacheBackward?:number;
+  // Already loaded items kept within this distance of the current one; -1 = unlimited.
+  playCacheKeep?:number;
 }
 
 export interface MediaAdjust {

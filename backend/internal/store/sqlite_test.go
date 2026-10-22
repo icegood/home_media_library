@@ -1522,3 +1522,93 @@ func TestSQLiteUpdateLibraryDropsIndexOfRemovedRootUnlessSharedOrCovered(t *test
 		t.Fatalf("empty folder under kept root was deleted: %v", err)
 	}
 }
+
+func TestSQLiteFolderTimelineUsesMarkersOfTheListedFolder(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Trips", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := library.Roots[0].ID
+	sub, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: parent, Path: filepath.Join(root, "day1"), RelativePath: "day1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gps := "50.45,30.52"
+	add := func(name string) domain.Media {
+		t.Helper()
+		media, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: sub.ID, Path: filepath.Join(root, "day1", name), Name: name, Kind: domain.KindImage, MIMEType: "image/jpeg", Size: 10, Metadata: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.UpdateMediaDetails(ctx, media.ID, domain.MediaDetailsPatch{GPS: &gps}); err != nil {
+			t.Fatal(err)
+		}
+		return media
+	}
+	first, last := add("a.jpg"), add("b.jpg")
+	// Markers set on the parent folder's timeline belong to the parent, even
+	// though the photos live in the subfolder.
+	if err := repository.SetTrajectoryStart(ctx, parent, first.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetTrajectoryEnd(ctx, parent, last.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	flags := func(items []domain.Media) (start, end bool) {
+		for _, item := range items {
+			start = start || (item.ID == first.ID && item.TrajectoryStart)
+			end = end || (item.ID == last.ID && item.TrajectoryEnd)
+		}
+		return start, end
+	}
+	parentTimeline, err := repository.MediaForFolder(ctx, 1, library.ID, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start, end := flags(parentTimeline); !start || !end {
+		t.Fatalf("parent timeline must show the parent's markers, got start=%v end=%v", start, end)
+	}
+	parentMap, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapStart, mapEnd := false, false
+	for _, item := range parentMap {
+		mapStart = mapStart || (item.ID == first.ID && item.TrajectoryStart)
+		mapEnd = mapEnd || (item.ID == last.ID && item.TrajectoryEnd)
+	}
+	if !mapStart || !mapEnd {
+		t.Fatalf("parent map must show the same markers as the parent timeline, got start=%v end=%v", mapStart, mapEnd)
+	}
+	subTimeline, err := repository.MediaForFolder(ctx, 1, library.ID, sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start, end := flags(subTimeline); start || end {
+		t.Fatalf("subfolder timeline must not show the parent's markers, got start=%v end=%v", start, end)
+	}
+	// And the other way round: a subfolder marker stays on the subfolder.
+	if err := repository.SetTrajectoryStart(ctx, parent, first.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetTrajectoryStart(ctx, sub.ID, first.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	subTimeline, err = repository.MediaForFolder(ctx, 1, library.ID, sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start, _ := flags(subTimeline); !start {
+		t.Fatal("subfolder timeline must show the subfolder's own marker")
+	}
+	parentTimeline, err = repository.MediaForFolder(ctx, 1, library.ID, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start, _ := flags(parentTimeline); start {
+		t.Fatal("parent timeline must not show a marker set on the subfolder")
+	}
+}

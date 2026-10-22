@@ -2715,8 +2715,8 @@ func TestUserSettingsPlayCache(t *testing.T) {
 		return request(f.handler, http.MethodPut, settingsURL, alice, body).Code
 	}
 
-	if got := fetch(); got.PlayCacheForward != 3 || got.PlayCacheBackward != 1 {
-		t.Fatalf("default play cache = %d/%d, want 3/1", got.PlayCacheForward, got.PlayCacheBackward)
+	if got := fetch(); got.PlayCacheForward != 3 || got.PlayCacheBackward != 1 || got.PlayCacheKeep != 0 {
+		t.Fatalf("default play cache = %d/%d keep %d, want 3/1 keep 0", got.PlayCacheForward, got.PlayCacheBackward, got.PlayCacheKeep)
 	}
 	cases := []struct {
 		name              string
@@ -2739,14 +2739,22 @@ func TestUserSettingsPlayCache(t *testing.T) {
 			t.Fatalf("%s: saved play cache = %d/%d, want %d/%d", tc.name, got.PlayCacheForward, got.PlayCacheBackward, tc.forward, tc.backward)
 		}
 	}
+	for _, keep := range []int{0, 1, 25, 123456, domain.PlayCacheUnlimited} {
+		if code := put(map[string]any{"playCacheKeep": keep}); code != http.StatusOK {
+			t.Fatalf("keep %d: put status = %d", keep, code)
+		}
+		if got := fetch(); got.PlayCacheKeep != keep {
+			t.Fatalf("saved play cache keep = %d, want %d", got.PlayCacheKeep, keep)
+		}
+	}
 	// Older clients that do not send the fields get the defaults back.
 	if code := put(nil); code != http.StatusOK {
 		t.Fatalf("put without play cache status = %d", code)
 	}
-	if got := fetch(); got.PlayCacheForward != 3 || got.PlayCacheBackward != 1 {
-		t.Fatalf("absent play cache = %d/%d, want defaults 3/1", got.PlayCacheForward, got.PlayCacheBackward)
+	if got := fetch(); got.PlayCacheForward != 3 || got.PlayCacheBackward != 1 || got.PlayCacheKeep != 0 {
+		t.Fatalf("absent play cache = %d/%d keep %d, want defaults 3/1 keep 0", got.PlayCacheForward, got.PlayCacheBackward, got.PlayCacheKeep)
 	}
-	for _, bad := range []map[string]any{{"playCacheForward": -2}, {"playCacheBackward": -5}} {
+	for _, bad := range []map[string]any{{"playCacheForward": -2}, {"playCacheBackward": -5}, {"playCacheKeep": -3}} {
 		if code := put(bad); code != http.StatusBadRequest {
 			t.Fatalf("put %v status = %d, want 400", bad, code)
 		}

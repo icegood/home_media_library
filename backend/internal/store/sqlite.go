@@ -2330,7 +2330,10 @@ func (s *SQLite) enrichMapMediaTrajectory(ctx context.Context, out []domain.MapM
 // scopedMedia drains the result set shared by the MediaFor* queries below
 // (mediaColumns + relative-path expression + favorite flag) and enriches the
 // batch with trajectory flags.
-func (s *SQLite) scopedMedia(ctx context.Context, rows *sql.Rows) ([]domain.Media, error) {
+// scopeFolderID is the folder being listed (its timeline): as on that
+// folder's map, trajectory markers set while viewing it apply; 0 keeps the
+// markers of each media's own folder (library-wide listings and jobs).
+func (s *SQLite) scopedMedia(ctx context.Context, rows *sql.Rows, scopeFolderID int) ([]domain.Media, error) {
 	out := []domain.Media{}
 	for rows.Next() {
 		var relativePath string
@@ -2343,7 +2346,7 @@ func (s *SQLite) scopedMedia(ctx context.Context, rows *sql.Rows) ([]domain.Medi
 		item.Favorite = favorite
 		out = append(out, item)
 	}
-	_ = s.enrichMediaTrajectory(ctx, out, 0)
+	_ = s.enrichMediaTrajectory(ctx, out, scopeFolderID)
 	return out, rows.Err()
 }
 
@@ -2363,7 +2366,7 @@ func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	return s.scopedMedia(ctx, rows)
+	return s.scopedMedia(ctx, rows, 0)
 }
 
 func (s *SQLite) MediaForFolder(ctx context.Context, userID, libraryID, folderID int) ([]domain.Media, error) {
@@ -2375,7 +2378,7 @@ func (s *SQLite) MediaForFolder(ctx context.Context, userID, libraryID, folderID
 		return nil, err
 	}
 	defer rows.Close()
-	return s.scopedMedia(ctx, rows)
+	return s.scopedMedia(ctx, rows, folderID)
 }
 
 func (s *SQLite) MediaForSubtree(ctx context.Context, folderID int) ([]domain.Media, error) {
@@ -2386,7 +2389,7 @@ func (s *SQLite) MediaForSubtree(ctx context.Context, folderID int) ([]domain.Me
 		return nil, err
 	}
 	defer rows.Close()
-	return s.scopedMedia(ctx, rows)
+	return s.scopedMedia(ctx, rows, 0)
 }
 
 func (s *SQLite) FoldersForLibrary(ctx context.Context, libraryID int) ([]domain.MediaFolder, error) {

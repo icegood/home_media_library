@@ -176,7 +176,7 @@ export function App() {
   }, [overlayLocation.pathname]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}, maxZoom: settings.mapMaxZoom || 19}); setThumb(normalizeThumb(settings.thumbMin, settings.thumbMax)); setPlayCache({forward: normalizePlayCache(settings.playCacheForward, DEFAULT_PLAY_CACHE.forward), backward: normalizePlayCache(settings.playCacheBackward, DEFAULT_PLAY_CACHE.backward)}); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}, maxZoom: settings.mapMaxZoom || 19}); setThumb(normalizeThumb(settings.thumbMin, settings.thumbMax)); setPlayCache({forward: normalizePlayCache(settings.playCacheForward, DEFAULT_PLAY_CACHE.forward), backward: normalizePlayCache(settings.playCacheBackward, DEFAULT_PLAY_CACHE.backward), keep: normalizePlayCache(settings.playCacheKeep, DEFAULT_PLAY_CACHE.keep)}); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
   }, [user?.id]);
   useEffect(() => {
     setThumbSize(current => {
@@ -249,7 +249,10 @@ export function App() {
   return <TopMenuCtx.Provider value={topMenuValue}><PlayCacheCtx.Provider value={playCache}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={thumbValue}><LibraryDialogContext.Provider value={libraryDialogValue}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     {settingsWarn && <div className="shell-warning" role="alert">Couldn't load your account preferences (theme, zoom, …) — showing defaults. <button type="button" className="secondary" onClick={() => setSettingsWarn(false)}>Dismiss</button></div>}
-    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to} state={crumb.returnToFolderId != null || crumb.returnToMediaId != null ? {returnToFolderId: crumb.returnToFolderId, returnToMediaId: crumb.returnToMediaId} : undefined}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
+    {/* Crumbs are keyed by position: links repeat (the timeline library crumb
+        and its root folder share a URL), and duplicate keys left orphaned
+        crumbs behind whenever the title switched to a different first crumb. */}
+    <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={index}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to} state={crumb.returnToFolderId != null || crumb.returnToMediaId != null ? {returnToFolderId: crumb.returnToFolderId, returnToMediaId: crumb.returnToMediaId} : undefined}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
       {user.role === "admin" && <details className="nav-menu" onPointerDown={closeOtherTopMenus} onToggle={closeOtherTopMenus}>
         <summary className="menu-trigger" aria-label="Admin panel menu">Admin panel</summary>
         <div className="nav-submenu" role="menu" onClick={closeParentDetails}>
@@ -1794,7 +1797,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   onMapTileChange:(settings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number})=>void;
   thumb:{min:number; max:number};
   onThumbChange:(thumb:{min:number; max:number})=>void;
-  onPlayCacheChange?:(cache:{forward:number; backward:number})=>void;
+  onPlayCacheChange?:(cache:{forward:number; backward:number; keep:number})=>void;
   onUserChanged:(user:User)=>void; onClose:()=>void;
 }) {
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"forest"|"system">(theme);
@@ -1815,6 +1818,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   const [draftThumbMax, setDraftThumbMax] = useState(thumb.max);
   const [playCacheForward, setPlayCacheForward] = useState(DEFAULT_PLAY_CACHE.forward);
   const [playCacheBackward, setPlayCacheBackward] = useState(DEFAULT_PLAY_CACHE.backward);
+  const [playCacheKeep, setPlayCacheKeep] = useState(DEFAULT_PLAY_CACHE.keep);
   const [poiProviderLight, setPoiProviderLight] = useState<POISource>("overpass");
   const [poiProviderDark, setPoiProviderDark] = useState<POISource>("overpass");
   const [poiProviders, setPoiProviders] = useState<Record<string, Record<string, string>>>({overpass:{}});
@@ -1847,6 +1851,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       setDraftThumbMax(thumbPrefs.max);
       setPlayCacheForward(normalizePlayCache(settings.playCacheForward, DEFAULT_PLAY_CACHE.forward));
       setPlayCacheBackward(normalizePlayCache(settings.playCacheBackward, DEFAULT_PLAY_CACHE.backward));
+      setPlayCacheKeep(normalizePlayCache(settings.playCacheKeep, DEFAULT_PLAY_CACHE.keep));
       setLoaded(true);
     }).catch((cause: unknown) => setLoadError((cause as Error).message));
   }, [user.id]);
@@ -1873,7 +1878,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
     setSaving(true); setError(""); setSaved(false);
     try {
       const thumbPrefs = normalizeThumb(draftThumbMin, draftThumbMax);
-      const payload = {theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders, thumbMin: thumbPrefs.min, thumbMax: thumbPrefs.max, playCacheForward, playCacheBackward};
+      const payload = {theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders, thumbMin: thumbPrefs.min, thumbMax: thumbPrefs.max, playCacheForward, playCacheBackward, playCacheKeep};
       await api.updateUserSettings(payload);
       applyUserLanguage(draftLanguage);
       syncUserDefaultThumbs(payload);
@@ -1882,7 +1887,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       onStreamChunkSizeChange(normalizeStreamChunkSize(draftStreamChunkSize));
       onMapTileChange({providerLight: mapTileProviderLight, providerDark: mapTileProviderDark, mapProviders: mapTileSettings.mapProviders, maxZoom: mapMaxZoom});
       onThumbChange(thumbPrefs);
-      onPlayCacheChange?.({forward: playCacheForward, backward: playCacheBackward});
+      onPlayCacheChange?.({forward: playCacheForward, backward: playCacheBackward, keep: playCacheKeep});
       setSaved(true);
     } catch (cause) { setError(notify(cause)); } finally { setSaving(false); }
   }
@@ -1937,6 +1942,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
         <PlayCacheField label="Items ahead" value={playCacheForward} onChange={value => { setPlayCacheForward(value); setSaved(false); }}/>
         <PlayCacheField label="Items behind" value={playCacheBackward} onChange={value => { setPlayCacheBackward(value); setSaved(false); }}/>
         <small>How many items after and before the one on screen play mode keeps downloaded, so paging that way shows them at once. Any whole number from 0 (no caching that way); Unlimited keeps the whole folder or favorite view. Larger windows use more data and memory — every cached photo is its full original.</small>
+        <PlayCacheField label="Keep loaded within" value={playCacheKeep} onChange={value => { setPlayCacheKeep(value); setSaved(false); }}/>
+        <small>Items already downloaded stay in memory while they are within this many items of the one on screen, even after paging moves them out of the range above, so going back to them needs no new download. Beyond it their memory is released. 0 releases them as soon as they leave the range; Unlimited keeps everything loaded until you leave play mode.</small>
       </fieldset>
       <fieldset><legend>Thumbnails</legend>
         <label>Minimum size, px<input type="number" min={40} max={640} value={draftThumbMin}
@@ -2460,7 +2467,7 @@ function LibraryTimeline() {
         <div className="timeline-group" key={group.label}>
           <div className="timeline-group-caption">{group.label}</div>
           <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(gpsFilter !== "all" ? {gps:gpsFilter} : {}), ...(favParam ? {fav:favParam} : {})}} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
+            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} trajectoryFolderId={currentFolderId ?? undefined} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(gpsFilter !== "all" ? {gps:gpsFilter} : {}), ...(favParam ? {fav:favParam} : {})}} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
           )}</div>
         </div>
       )}</div>}
@@ -3546,7 +3553,7 @@ function FolderCover({folderId, priority}:{folderId?:ID; priority?:boolean}) {
   return <div className="folder-cover"><ThumbImage src={api.folderThumbnailUrl(folderId)} priority={priority} kind="folder"/></div>;
 }
 
-function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort,nav,kbId,kbFocused=false,kbRange=false,kbFocus}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string; nav?:ItemNav; kbId?:string; kbFocused?:boolean; kbRange?:boolean; kbFocus?:()=>void}) {
+function MediaCard({item,view,libraryId,favoriteViewId,trajectoryFolderId,selected=false,priority,onToggleSelected,onFavoriteChange,caption,sort,nav,kbId,kbFocused=false,kbRange=false,kbFocus}:{item:Media; view:"tile"|"list"; libraryId?:ID; favoriteViewId?:ID; trajectoryFolderId?:ID; selected?:boolean; priority?:boolean; onToggleSelected?:(id:ID)=>void; onFavoriteChange?:(item:Media)=>void; caption?: "name-date"|"date-name"; sort?:string; nav?:ItemNav; kbId?:string; kbFocused?:boolean; kbRange?:boolean; kbFocus?:()=>void}) {
   const navigate = useNavigate();
   const favoriteSort = sort === "asc" ? "date-asc" : sort === "desc" ? "date" : null;
   const url = favoriteViewId != null || libraryId == null
@@ -3573,11 +3580,14 @@ function MediaCard({item,view,libraryId,favoriteViewId,selected=false,priority,o
         : <><strong>{item.name}</strong><small>{item.kind} · {formatBytes(item.size)}</small></>}
     </div>
     <FavoriteButton item={item} viewId={favoriteViewId} onChange={onFavoriteChange}/>
-    <TrajectoryControls item={item}/>
+    <TrajectoryControls item={item} folderId={trajectoryFolderId ?? item.folderId}/>
   </article>;
 }
 
-function TrajectoryControls({item}:{item:Media}) {
+// Trajectory markers belong to the folder they are set in: the folder being
+// viewed (a folder timeline spans its subfolders), not necessarily the media's
+// own folder, so that folder's timeline and map show the same trajectory.
+function TrajectoryControls({item, folderId}:{item:Media; folderId:ID}) {
   const [start, setStart] = useState(Boolean(item.trajectoryStart));
   const [startName, setStartName] = useState(item.trajectoryName ?? "");
   const [end, setEnd] = useState(Boolean(item.trajectoryEnd));
@@ -3588,7 +3598,7 @@ function TrajectoryControls({item}:{item:Media}) {
     setStartName(item.trajectoryName ?? "");
     setEnd(Boolean(item.trajectoryEnd));
   }, [item.id, item.trajectoryStart, item.trajectoryName, item.trajectoryEnd]);
-  if (!Number.isFinite(item.folderId)) return null;
+  if (!Number.isFinite(folderId)) return null;
   function setFlag(kind:"start"|"end", value:boolean) {
     if (kind === "start") {
       // One button: it always opens the name form. When the start is already
@@ -3600,10 +3610,10 @@ function TrajectoryControls({item}:{item:Media}) {
     setBusy(true);
     const done = () => setBusy(false);
     if (!value) {
-      api.setTrajectoryEnd(item.id, item.folderId, false).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(done);
+      api.setTrajectoryEnd(item.id, folderId, false).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(done);
       return;
     }
-    api.setTrajectoryEnd(item.id, item.folderId, value).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(done);
+    api.setTrajectoryEnd(item.id, folderId, value).then(r => setEnd(r.trajectoryEnd)).catch(() => undefined).finally(done);
   }
   return <>
     <span className="trajectory-controls" role="group" aria-label={`Trajectory markers for ${item.name}`}>
@@ -3613,13 +3623,13 @@ function TrajectoryControls({item}:{item:Media}) {
     {startOpen && createPortal(
       <TrajectoryNameDialog item={item} initialName={start ? startName : ""} rename={start} onClose={() => setStartOpen(false)} onSave={async (newName) => {
         if (!start) {
-          const r = await api.setTrajectoryStart(item.id, item.folderId, true);
+          const r = await api.setTrajectoryStart(item.id, folderId, true);
           setStart(r.trajectoryStart);
         }
-        await api.setTrajectoryName(item.id, item.folderId, newName);
+        await api.setTrajectoryName(item.id, folderId, newName);
         setStartName(newName);
       }} onRemove={start ? async () => {
-        const r = await api.setTrajectoryStart(item.id, item.folderId, false);
+        const r = await api.setTrajectoryStart(item.id, folderId, false);
         setStart(r.trajectoryStart);
         setStartName("");
       } : undefined}/>,
@@ -4705,9 +4715,14 @@ function loadFullImage(id:ID):Promise<string> {
   return entry.promise;
 }
 
-// Aborts (or frees) every full image outside the given window.
-function retainFullImages(keep:Set<ID>) {
-  for (const id of Array.from(fullImages.keys())) if (!keep.has(id)) dropFullImage(id);
+// Aborts (or frees) every full image outside the given window. Images in
+// `loadedKeep` survive too, but only once fully loaded: a download still in
+// flight outside the window is aborted either way.
+function retainFullImages(keep:Set<ID>, loadedKeep:Set<ID> = new Set()) {
+  for (const [id, entry] of Array.from(fullImages.entries())) {
+    if (keep.has(id) || (loadedKeep.has(id) && entry.url != null)) continue;
+    dropFullImage(id);
+  }
 }
 
 // Pauses prefetching: every download still in flight except the given one is
@@ -4720,7 +4735,7 @@ function pauseFullImages(except:ID) {
 // Play-mode cache: how many items ahead of / behind the current one stay
 // downloaded (user setting; PLAY_CACHE_UNLIMITED keeps the whole list).
 export const PLAY_CACHE_UNLIMITED = -1;
-export const DEFAULT_PLAY_CACHE = {forward:3, backward:1};
+export const DEFAULT_PLAY_CACHE = {forward:3, backward:1, keep:0};
 export const PlayCacheCtx = createContext(DEFAULT_PLAY_CACHE);
 const MEDIA_NEIGHBORS_MAX = 50;
 // Neighbour downloads run a few at a time, nearest first, so even an
@@ -4739,13 +4754,13 @@ export function normalizePlayCache(value:number|undefined, fallback:number) {
 // in-flight downloads pause so it loads alone, then the window fills nearest
 // first, alternating ahead and behind.
 function usePlayPrefetch(list:Media[], index:number, item:Media|null) {
-  const {forward, backward} = useContext(PlayCacheCtx);
+  const {forward, backward, keep} = useContext(PlayCacheCtx);
   const coversRef = useRef<Map<number, HTMLImageElement>>(new Map());
   const itemId = item?.id ?? null;
   const itemKind = item?.kind ?? null;
   useEffect(() => {
-    const unlimited = forward < 0 || backward < 0;
-    fullImageLimit = unlimited ? Infinity : forward + backward + 1;
+    const unlimited = forward < 0 || backward < 0 || keep < 0;
+    fullImageLimit = unlimited ? Infinity : Math.max(forward + backward + 1, 2 * keep + 1);
     const ordered:Media[] = [];
     if (index >= 0) {
       const ahead = forward < 0 ? list.length : forward;
@@ -4758,9 +4773,15 @@ function usePlayPrefetch(list:Media[], index:number, item:Media|null) {
     }
     const images = ordered.filter(media => media.kind === "image").map(media => media.id);
     const covers = new Set(ordered.filter(media => media.kind === "video").map(media => media.id));
-    // Anything that left the window is aborted, not left to download: the
-    // current item and the window are all that may hold a connection.
-    retainFullImages(new Set(itemId != null && itemKind === "image" ? [itemId, ...images] : images));
+    // Already loaded items within the keep distance stay in memory; anything
+    // else that left the window is released or aborted: the current item and
+    // the window are all that may hold a connection.
+    const kept = new Set<ID>();
+    if (index >= 0 && keep !== 0) {
+      const reach = keep < 0 ? list.length : keep;
+      for (let i = Math.max(0, index - reach); i <= Math.min(list.length - 1, index + reach); i++) kept.add(list[i].id);
+    }
+    retainFullImages(new Set(itemId != null && itemKind === "image" ? [itemId, ...images] : images), kept);
     const jobs = coversRef.current;
     for (const [id, image] of Array.from(jobs.entries())) {
       if (!covers.has(id)) {
@@ -4801,7 +4822,7 @@ function usePlayPrefetch(list:Media[], index:number, item:Media|null) {
       });
     }, VIEWER_SETTLE_MS);
     return () => { alive = false; window.clearTimeout(settle); };
-  }, [list, index, itemId, itemKind, forward, backward]);
+  }, [list, index, itemId, itemKind, forward, backward, keep]);
   useEffect(() => () => {
     // Leaving play mode aborts everything still downloading.
     for (const image of coversRef.current.values()) image.src = "";
