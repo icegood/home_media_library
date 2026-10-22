@@ -100,6 +100,7 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const [zoom, setZoom] = useState(100);
   const [streamChunkSize, setStreamChunkSize] = useState(DEFAULT_STREAM_CHUNK_SIZE);
+  const [playCache, setPlayCache] = useState(DEFAULT_PLAY_CACHE);
   const [thumb, setThumb] = useState<{min:number; max:number}>({min:THUMB_MIN_DEFAULT, max:THUMB_MAX_DEFAULT});
   const [thumbSize, setThumbSize] = useState(THUMB_SIZE_DEFAULT);
   const [mapTileSettings, setMapTileSettings] = useState<{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number}>({providerLight:"osm", providerDark:"osm", mapProviders:{carto:{apiKey:""}}, maxZoom:19});
@@ -175,7 +176,7 @@ export function App() {
   }, [overlayLocation.pathname]);
   useEffect(() => {
     if (!user) return;
-    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}, maxZoom: settings.mapMaxZoom || 19}); setThumb(normalizeThumb(settings.thumbMin, settings.thumbMax)); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
+    api.userSettings().then(settings => { setTheme(settings.theme); setZoom(settings.zoom); setStreamChunkSize(normalizeStreamChunkSize(settings.streamChunkSize)); syncUserDefaultThumbs(settings); applyUserLanguage(settings.language); setMapTileSettings({providerLight: normalizeMapTileSource(settings.mapTileProviderLight), providerDark: normalizeMapTileSource(settings.mapTileProviderDark), mapProviders: settings.mapTileProviders ?? {carto:{apiKey:""}}, maxZoom: settings.mapMaxZoom || 19}); setThumb(normalizeThumb(settings.thumbMin, settings.thumbMax)); setPlayCache({forward: normalizePlayCache(settings.playCacheForward, DEFAULT_PLAY_CACHE.forward), backward: normalizePlayCache(settings.playCacheBackward, DEFAULT_PLAY_CACHE.backward)}); setSettingsWarn(false); }).catch(() => setSettingsWarn(true));
   }, [user?.id]);
   useEffect(() => {
     setThumbSize(current => {
@@ -245,7 +246,7 @@ export function App() {
       if (details !== opened) details.removeAttribute("open");
     });
   }
-  return <TopMenuCtx.Provider value={topMenuValue}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={thumbValue}><LibraryDialogContext.Provider value={libraryDialogValue}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
+  return <TopMenuCtx.Provider value={topMenuValue}><PlayCacheCtx.Provider value={playCache}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={thumbValue}><LibraryDialogContext.Provider value={libraryDialogValue}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
     {settingsWarn && <div className="shell-warning" role="alert">Couldn't load your account preferences (theme, zoom, …) — showing defaults. <button type="button" className="secondary" onClick={() => setSettingsWarn(false)}>Dismiss</button></div>}
     <header>{crumbs ? <div className="brand header-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => <span className="crumb" key={crumb.to ?? crumb.label}>{index > 0 && <span className="crumb-sep" aria-hidden="true"> / </span>}{crumb.current || !crumb.to ? <span className="crumb-current">{crumb.label}</span> : <Link to={crumb.to} state={crumb.returnToFolderId != null || crumb.returnToMediaId != null ? {returnToFolderId: crumb.returnToFolderId, returnToMediaId: crumb.returnToMediaId} : undefined}>{crumb.label}</Link>}</span>)}</div> : <Link to="/" className="brand">Media Library</Link>}<nav><Link to="/">Library</Link><Link to="/favorites">Favorites</Link>
@@ -266,11 +267,11 @@ export function App() {
         </div>
       </details></header>
     <LanguageWatcher/>
-    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} streamChunkSize={streamChunkSize} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onStreamChunkSizeChange={setStreamChunkSize} mapTileSettings={mapTileSettings} onMapTileChange={setMapTileSettings} thumb={thumb} onThumbChange={setThumb} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
+    {userSettingsOpen && <UserSettingsModal user={user} theme={theme} zoom={zoom} streamChunkSize={streamChunkSize} resolvedTheme={resolvedTheme} onThemeChange={setTheme} onZoomChange={setZoom} onStreamChunkSizeChange={setStreamChunkSize} mapTileSettings={mapTileSettings} onMapTileChange={setMapTileSettings} thumb={thumb} onThumbChange={setThumb} onPlayCacheChange={setPlayCache} onUserChanged={setUser} onClose={() => setUserSettingsOpen(false)}/>}
     {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)}/>}
     {routes}
     {dialogLibrary && <LibraryDialog library={dialogLibrary} onClose={() => setDialogLibrary(null)}/>}
-  </div></LibraryDialogContext.Provider></ThumbCtx.Provider></StreamChunkSizeCtx.Provider></TopMenuCtx.Provider>;
+  </div></LibraryDialogContext.Provider></ThumbCtx.Provider></StreamChunkSizeCtx.Provider></PlayCacheCtx.Provider></TopMenuCtx.Provider>;
 }
 
 // Applies DOM translations for the active language and re-installs them when
@@ -1784,7 +1785,7 @@ function ResetPassword() {
   </form></main>;
 }
 
-function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, onThemeChange, onZoomChange, onStreamChunkSizeChange, mapTileSettings, onMapTileChange, thumb, onThumbChange, onUserChanged, onClose}:{
+function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, onThemeChange, onZoomChange, onStreamChunkSizeChange, mapTileSettings, onMapTileChange, thumb, onThumbChange, onPlayCacheChange, onUserChanged, onClose}:{
   user:User; theme:"light"|"dark"|"forest"|"system"; zoom:number; streamChunkSize:number; resolvedTheme:"light"|"dark"|"forest";
   onThemeChange:(theme:"light"|"dark"|"forest"|"system")=>void;
   onZoomChange:(zoom:number)=>void;
@@ -1793,6 +1794,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   onMapTileChange:(settings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number})=>void;
   thumb:{min:number; max:number};
   onThumbChange:(thumb:{min:number; max:number})=>void;
+  onPlayCacheChange?:(cache:{forward:number; backward:number})=>void;
   onUserChanged:(user:User)=>void; onClose:()=>void;
 }) {
   const [draftTheme, setDraftTheme] = useState<"light"|"dark"|"forest"|"system">(theme);
@@ -1811,6 +1813,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   const [mapMaxZoom, setMapMaxZoom] = useState(19);
   const [draftThumbMin, setDraftThumbMin] = useState(thumb.min);
   const [draftThumbMax, setDraftThumbMax] = useState(thumb.max);
+  const [playCacheForward, setPlayCacheForward] = useState(DEFAULT_PLAY_CACHE.forward);
+  const [playCacheBackward, setPlayCacheBackward] = useState(DEFAULT_PLAY_CACHE.backward);
   const [poiProviderLight, setPoiProviderLight] = useState<POISource>("overpass");
   const [poiProviderDark, setPoiProviderDark] = useState<POISource>("overpass");
   const [poiProviders, setPoiProviders] = useState<Record<string, Record<string, string>>>({overpass:{}});
@@ -1841,6 +1845,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       const thumbPrefs = normalizeThumb(settings.thumbMin, settings.thumbMax);
       setDraftThumbMin(thumbPrefs.min);
       setDraftThumbMax(thumbPrefs.max);
+      setPlayCacheForward(normalizePlayCache(settings.playCacheForward, DEFAULT_PLAY_CACHE.forward));
+      setPlayCacheBackward(normalizePlayCache(settings.playCacheBackward, DEFAULT_PLAY_CACHE.backward));
       setLoaded(true);
     }).catch((cause: unknown) => setLoadError((cause as Error).message));
   }, [user.id]);
@@ -1867,7 +1873,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
     setSaving(true); setError(""); setSaved(false);
     try {
       const thumbPrefs = normalizeThumb(draftThumbMin, draftThumbMax);
-      const payload = {theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders, thumbMin: thumbPrefs.min, thumbMax: thumbPrefs.max};
+      const payload = {theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders, thumbMin: thumbPrefs.min, thumbMax: thumbPrefs.max, playCacheForward, playCacheBackward};
       await api.updateUserSettings(payload);
       applyUserLanguage(draftLanguage);
       syncUserDefaultThumbs(payload);
@@ -1876,6 +1882,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       onStreamChunkSizeChange(normalizeStreamChunkSize(draftStreamChunkSize));
       onMapTileChange({providerLight: mapTileProviderLight, providerDark: mapTileProviderDark, mapProviders: mapTileSettings.mapProviders, maxZoom: mapMaxZoom});
       onThumbChange(thumbPrefs);
+      onPlayCacheChange?.({forward: playCacheForward, backward: playCacheBackward});
       setSaved(true);
     } catch (cause) { setError(notify(cause)); } finally { setSaving(false); }
   }
@@ -1925,6 +1932,11 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
         <label>Items per request<input type="number" min={1} max={10000} value={draftStreamChunkSize}
           onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftStreamChunkSize(next); setSaved(false); } }}/></label>
         <small>Folder items are fetched in chunks of this size. A value above your largest folder (for example 10000) loads every folder with a single request. Lower values (about 10) show the first pictures sooner on slow connections; thumbnails always appear independently as they load.</small>
+      </fieldset>
+      <fieldset><legend>Play mode cache</legend>
+        <PlayCacheField label="Items ahead" value={playCacheForward} onChange={value => { setPlayCacheForward(value); setSaved(false); }}/>
+        <PlayCacheField label="Items behind" value={playCacheBackward} onChange={value => { setPlayCacheBackward(value); setSaved(false); }}/>
+        <small>How many items after and before the one on screen play mode keeps downloaded, so paging that way shows them at once. Any whole number from 0 (no caching that way); Unlimited keeps the whole folder or favorite view. Larger windows use more data and memory — every cached photo is its full original.</small>
       </fieldset>
       <fieldset><legend>Thumbnails</legend>
         <label>Minimum size, px<input type="number" min={40} max={640} value={draftThumbMin}
@@ -2856,6 +2868,7 @@ function FavoriteMediaViewerPage() {
   const item = index >= 0 ? orderedItems[index] : mediaOverrides[currentMediaId] ?? fallbackItem;
   const previous = index > 0 ? orderedItems[index - 1] : null;
   const next = index >= 0 && index < orderedItems.length - 1 ? orderedItems[index + 1] : null;
+  usePlayPrefetch(orderedItems, index, item ?? null);
   useEffect(() => {
     if (!Number.isFinite(favoriteViewId)) return;
     let cancelled = false;
@@ -3239,6 +3252,29 @@ export function normalizeThumb(min:number|undefined, max:number|undefined) {
   const clampedMax = okMax ? Math.max(40, Math.min(640, Math.round(max as number))) : THUMB_MAX_DEFAULT;
   const boundedMax = clampedMax > 0 && clampedMax < clampedMin ? clampedMin : clampedMax;
   return {min: clampedMin, max: boundedMax};
+}
+
+// One play cache count: a whole number typed in, or Unlimited.
+function PlayCacheField({label, value, onChange}:{label:string; value:number; onChange:(value:number)=>void}) {
+  const unlimited = value === PLAY_CACHE_UNLIMITED;
+  // While typing, the raw text is shown (so clearing the box to type a new
+  // number does not snap back); otherwise the field always shows the setting.
+  const [draft, setDraft] = useState<string|null>(null);
+  const lastBounded = useRef(unlimited ? DEFAULT_PLAY_CACHE.forward : value);
+  if (!unlimited) lastBounded.current = value;
+  return <div className="play-cache-field">
+    <label>{label}<input type="number" inputMode="numeric" min={0} step={1} disabled={unlimited} aria-label={label}
+      value={unlimited ? "" : draft ?? String(value)} placeholder={unlimited ? "∞" : undefined}
+      onChange={event => {
+        const raw = event.target.value;
+        setDraft(raw);
+        const next = Number(raw);
+        if (raw.trim() !== "" && Number.isInteger(next) && next >= 0) onChange(next);
+      }}
+      onBlur={() => setDraft(null)}/></label>
+    <label className="check"><input type="checkbox" checked={unlimited} aria-label={`${label}: unlimited`}
+      onChange={event => { setDraft(null); onChange(event.target.checked ? PLAY_CACHE_UNLIMITED : lastBounded.current); }}/>Unlimited</label>
+  </div>;
 }
 
 // The on-screen thumbnail size bar: a range input bounded by the user's
@@ -3749,15 +3785,7 @@ function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{fo
 }
 
 function MediaViewerPage() {
-  // Viewer paging shows the next full media on a fresh <img>, so a cold item
-  // costs a full download before anything renders. A bounded run of neighbours
-  // is prefetched while the current item is on screen; jobs that leave the
-  // window (fast paging) are cancelled instead of being left to finish, and
-  // nothing outside the hard distance cap is ever kept.
-  const PREFETCH_FORWARD = 3;
-  const PREFETCH_BACKWARD = 1;
-  const PREFETCH_MAX_DISTANCE = 10;
-  const prefetchJobsRef = useRef<Map<number, HTMLImageElement>>(new Map());
+  const playCache = useContext(PlayCacheCtx);
   const {id="", folderId=""} = useParams();
   const libraryId = Number(id);
   const routeFolderId = Number(folderId);
@@ -3838,11 +3866,14 @@ function MediaViewerPage() {
     // Folder mode scopes prev/next to the folder (like the index-based list);
     // root/timeline mode scopes to the requested subtree (rootParam).
     const folder = rootMode ? (rootParam === "all" ? "all" as const : Number(rootParam)) : routeFolderId;
-    api.mediaNeighbors(libraryId, folder, currentMediaId, {sort: sortParam, kind, gps, before:1, after:1})
+    // Root mode only knows the items the neighbors walk returns, so it asks
+    // for the play cache window (capped by the API at 50 each way).
+    const span = (count:number) => rootMode ? Math.min(MEDIA_NEIGHBORS_MAX, count < 0 ? MEDIA_NEIGHBORS_MAX : Math.max(1, count)) : 1;
+    api.mediaNeighbors(libraryId, folder, currentMediaId, {sort: sortParam, kind, gps, before:span(playCache.backward), after:span(playCache.forward)})
       .then(result => { if (!cancelled) setNeighbors(result); })
       .catch(() => { if (!cancelled) setNeighbors(null); });
     return () => { cancelled = true; };
-  }, [rootMode, rootParam, routeFolderId, libraryId, currentMediaId, sortParam, kindParam, gpsParam]);
+  }, [rootMode, rootParam, routeFolderId, libraryId, currentMediaId, sortParam, kindParam, gpsParam, playCache.forward, playCache.backward]);
   useEffect(() => {
     // Once the neighbors response confirms the currently shown root-mode item,
     // the transition placeholder is no longer needed.
@@ -3875,74 +3906,13 @@ function MediaViewerPage() {
   const next = rootMode
     ? (anchorItem && neighbors ? withOverride(neighbors.after[0] ?? null) : null)
     : (index >= 0 ? (index < folderMedia.length - 1 ? folderMedia[index + 1] : null) : (neighbors ? withOverride(neighbors.after[0] ?? null) : null));
-  const itemId = item?.id ?? null;
-  const itemKind = item?.kind ?? null;
-  useEffect(() => {
-    // Rebuild the desired prefetch window around the current item. In the
-    // ordered list modes the whole neighbourhood is known, so a few items
-    // ahead (and the one just passed) are warmed from their index window; in
-    // root/map mode only the immediate before/after neighbours exist, so the
-    // window degrades to those two. Images prefetch their real bytes so the
-    // swap is a cache hit; videos warm the cover frame only (the play URL
-    // would download or even transcode every neighbouring clip).
-    const jobs = prefetchJobsRef.current;
-    const images:ID[] = [];
-    const covers = new Map<number, string>();
-    const want = (media:Media) => {
-      if (media.kind === "image") images.push(media.id);
-      else if (media.kind === "video") covers.set(media.id, api.thumbnailUrl(media.id, 0));
-    };
-    if (index >= 0) {
-      for (let i = Math.max(0, index - PREFETCH_BACKWARD); i <= index + PREFETCH_FORWARD && i < folderMedia.length; i++) {
-        if (i === index) continue;
-        const media = folderMedia[i];
-        if (!media) continue;
-        if (Math.abs(i - index) >= PREFETCH_MAX_DISTANCE) continue;
-        want(media);
-      }
-    } else {
-      for (const media of [previous, next]) if (media) want(media);
-    }
-    // Anything that left the window is aborted, not left to download: the
-    // current item and the new window are all that may hold a connection.
-    retainFullImages(new Set(itemId != null && itemKind === "image" ? [itemId, ...images] : images));
-    for (const [id, image] of Array.from(jobs.entries())) {
-      if (!covers.has(id)) {
-        image.src = "";
-        jobs.delete(id);
-      }
-    }
-    // Saved adjustments follow the same window, so the image is never held
-    // back (hidden) waiting for its /adjust round trip.
-    for (const id of [...images, ...covers.keys()]) prefetchAdjust(id);
-    // Once the item settles, other in-flight downloads are paused and it
-    // loads alone; neighbours start (or restart) only after it is in.
-    let alive = true;
-    const settle = window.setTimeout(() => {
-      const isImage = itemId != null && itemKind === "image";
-      if (isImage && !loadedFullImage(itemId)) pauseFullImages(itemId);
-      const current = isImage ? loadFullImage(itemId) : Promise.resolve("");
-      void current.catch(() => "").then(() => {
-        if (!alive) return;
-        for (const id of images) loadFullImage(id).catch(() => void 0);
-        for (const [id, url] of covers) {
-          if (jobs.has(id)) continue;
-          const image = new Image();
-          image.decoding = "async";
-          image.src = url;
-          jobs.set(id, image);
-        }
-      });
-    }, VIEWER_SETTLE_MS);
-    return () => { alive = false; window.clearTimeout(settle); };
-  }, [folderMedia, index, previous, next, itemId, itemKind]);
-  useEffect(() => () => {
-    // Only unmount aborts every in-flight prefetch; the window effect above
-    // evicts single jobs as they scroll out so forward paging never restarts.
-    for (const image of prefetchJobsRef.current.values()) image.src = "";
-    prefetchJobsRef.current.clear();
-    retainFullImages(new Set());
-  }, []);
+  // The play cache walks the ordered folder list when the item is in it;
+  // otherwise (root/timeline mode, or an item outside the list) the
+  // neighbors walk around the current anchor is the known list.
+  const neighborList = useMemo(() => neighbors && neighbors.anchor.id === currentMediaId
+    ? [...neighbors.before.slice().reverse(), neighbors.anchor, ...neighbors.after].map(media => mediaOverrides[media.id] ?? media)
+    : [], [neighbors, currentMediaId, mediaOverrides]);
+  usePlayPrefetch(index >= 0 ? folderMedia : neighborList, index >= 0 ? index : neighbors && neighbors.anchor.id === currentMediaId ? neighbors.before.length : -1, item ?? null);
   useEffect(() => {
     if (index >= 0 || !Number.isFinite(currentMediaId)) {
       setFallback({loading:false, failed:false});
@@ -4682,7 +4652,9 @@ function prefetchAdjust(id:ID) {
 // to the end, and fast paging then queues the current item (and its /adjust)
 // behind several stale multi-MB downloads. Without fetch/blob support the
 // plain content URL is used as before.
-const FULL_IMAGE_LIMIT = 8;
+// Upper bound of kept full images; usePlayPrefetch sizes it to the user's
+// play cache window (unlimited windows keep everything).
+let fullImageLimit = 8;
 interface FullImage { controller:AbortController|null; promise:Promise<string>; url:string|null }
 const fullImages = new Map<ID, FullImage>();
 
@@ -4729,7 +4701,7 @@ function loadFullImage(id:ID):Promise<string> {
       return direct;
     });
   fullImages.set(id, entry);
-  while (fullImages.size > FULL_IMAGE_LIMIT) dropFullImage(fullImages.keys().next().value!);
+  while (fullImages.size > fullImageLimit) dropFullImage(fullImages.keys().next().value!);
   return entry.promise;
 }
 
@@ -4743,6 +4715,99 @@ function retainFullImages(keep:Set<ID>) {
 // bandwidth. The window effect restarts them once that item is in.
 function pauseFullImages(except:ID) {
   for (const [id, entry] of Array.from(fullImages.entries())) if (id !== except && entry.controller) dropFullImage(id);
+}
+
+// Play-mode cache: how many items ahead of / behind the current one stay
+// downloaded (user setting; PLAY_CACHE_UNLIMITED keeps the whole list).
+export const PLAY_CACHE_UNLIMITED = -1;
+export const DEFAULT_PLAY_CACHE = {forward:3, backward:1};
+export const PlayCacheCtx = createContext(DEFAULT_PLAY_CACHE);
+const MEDIA_NEIGHBORS_MAX = 50;
+// Neighbour downloads run a few at a time, nearest first, so even an
+// unlimited window never floods the connection ahead of the next item.
+const PREFETCH_CONCURRENCY = 3;
+
+export function normalizePlayCache(value:number|undefined, fallback:number) {
+  if (typeof value !== "number" || !Number.isInteger(value)) return fallback;
+  return value < 0 ? PLAY_CACHE_UNLIMITED : value;
+}
+
+// Prefetches the play cache window around list[index]: images download their
+// full bytes (abortable, see loadFullImage), videos warm their cover frame
+// only (the play URL would download or even transcode every clip). Items
+// leaving the window are aborted; once the current item settles, other
+// in-flight downloads pause so it loads alone, then the window fills nearest
+// first, alternating ahead and behind.
+function usePlayPrefetch(list:Media[], index:number, item:Media|null) {
+  const {forward, backward} = useContext(PlayCacheCtx);
+  const coversRef = useRef<Map<number, HTMLImageElement>>(new Map());
+  const itemId = item?.id ?? null;
+  const itemKind = item?.kind ?? null;
+  useEffect(() => {
+    const unlimited = forward < 0 || backward < 0;
+    fullImageLimit = unlimited ? Infinity : forward + backward + 1;
+    const ordered:Media[] = [];
+    if (index >= 0) {
+      const ahead = forward < 0 ? list.length : forward;
+      const behind = backward < 0 ? list.length : backward;
+      for (let distance = 1; distance <= Math.max(ahead, behind); distance++) {
+        if (distance <= ahead && index + distance < list.length) ordered.push(list[index + distance]);
+        if (distance <= behind && index - distance >= 0) ordered.push(list[index - distance]);
+        if (index + distance >= list.length && index - distance < 0) break;
+      }
+    }
+    const images = ordered.filter(media => media.kind === "image").map(media => media.id);
+    const covers = new Set(ordered.filter(media => media.kind === "video").map(media => media.id));
+    // Anything that left the window is aborted, not left to download: the
+    // current item and the window are all that may hold a connection.
+    retainFullImages(new Set(itemId != null && itemKind === "image" ? [itemId, ...images] : images));
+    const jobs = coversRef.current;
+    for (const [id, image] of Array.from(jobs.entries())) {
+      if (!covers.has(id)) {
+        image.src = "";
+        jobs.delete(id);
+      }
+    }
+    let alive = true;
+    const settle = window.setTimeout(() => {
+      const isImage = itemId != null && itemKind === "image";
+      if (isImage && !loadedFullImage(itemId)) pauseFullImages(itemId);
+      const current = isImage ? loadFullImage(itemId) : Promise.resolve("");
+      void current.catch(() => "").then(() => {
+        const queue = ordered.slice();
+        let running = 0;
+        const pump = () => {
+          while (alive && running < PREFETCH_CONCURRENCY && queue.length > 0) {
+            const media = queue.shift()!;
+            let job:Promise<unknown>|null = null;
+            if (media.kind === "image" && !loadedFullImage(media.id)) {
+              job = loadFullImage(media.id);
+            } else if (media.kind === "video" && !jobs.has(media.id)) {
+              const image = new Image();
+              image.decoding = "async";
+              job = new Promise(done => { image.onload = image.onerror = done; });
+              image.src = api.thumbnailUrl(media.id, 0);
+              jobs.set(media.id, image);
+            }
+            // Saved adjustments follow the window, so a paged-to item is
+            // never held back (hidden) waiting for its /adjust round trip.
+            if (media.kind !== "document") prefetchAdjust(media.id);
+            if (!job) continue;
+            running++;
+            void job.catch(() => void 0).finally(() => { running--; pump(); });
+          }
+        };
+        if (alive) pump();
+      });
+    }, VIEWER_SETTLE_MS);
+    return () => { alive = false; window.clearTimeout(settle); };
+  }, [list, index, itemId, itemKind, forward, backward]);
+  useEffect(() => () => {
+    // Leaving play mode aborts everything still downloading.
+    for (const image of coversRef.current.values()) image.src = "";
+    coversRef.current.clear();
+    retainFullImages(new Set());
+  }, []);
 }
 
 // An item counts as the one being looked at only after it stayed on screen

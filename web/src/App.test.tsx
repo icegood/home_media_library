@@ -419,7 +419,7 @@ test("regular user has no settings menu and picks theme in user settings", async
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
@@ -441,7 +441,7 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   pickOption(within(dialog).getByRole("combobox", {name:"Theme"}), "System — match device");
   expect(document.documentElement.dataset.theme).toBe("light");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
@@ -535,7 +535,7 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await within(dialog).findByRole("option", {name:/VP9 \+ Opus → WebM/}));
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
 
   fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
   fireEvent.blur(within(dialog).getByLabelText("Email address"));
@@ -565,11 +565,11 @@ test("user settings modal changes zoom grade numerically", async () => {
   expect(document.documentElement.style.fontSize).toBe("120%");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
   pickOption(within(dialog).getByRole("combobox", {name:"Zoom"}), "80%");
   expect(document.documentElement.style.fontSize).toBe("80%");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
 });
 
 test("user settings saves a configured date format", async () => {
@@ -581,7 +581,7 @@ test("user settings saves a configured date format", async () => {
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   pickOption(within(dialog).getByRole("combobox", {name:"Date format"}), "16.08.2026 14:30");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
 });
 
 test("user settings saves the date format with seconds", async () => {
@@ -596,7 +596,7 @@ test("user settings saves the date format with seconds", async () => {
   expect(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"})).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
 });
 
 test("user settings saves the american date format with seconds", async () => {
@@ -611,7 +611,7 @@ test("user settings saves the american date format with seconds", async () => {
   expect(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"})).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
 });
 
 test("user settings customizes map sidebar thumbnail size", async () => {
@@ -723,6 +723,56 @@ test("buffered folder list survives scrolling with a single full request", async
   expect(screen.getByText("img-1.jpg")).toBeInTheDocument();
 });
 
+async function openPlayCacheSettings() {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
+  const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  return dialog;
+}
+
+test.each([
+  ["typed counts both ways", "17", "9", 17, 9],
+  ["no caching either way", "0", "0", 0, 0],
+  ["forward only", "250", "0", 250, 0],
+  ["large typed values", "123456", "98765", 123456, 98765],
+])("user settings saves play cache %s", async (_name, forwardText, backwardText, forward, backward) => {
+  const dialog = await openPlayCacheSettings();
+  const ahead = within(dialog).getByRole("spinbutton", {name:"Items ahead"});
+  const behind = within(dialog).getByRole("spinbutton", {name:"Items behind"});
+  expect(ahead).toHaveValue(3);
+  expect(behind).toHaveValue(1);
+  fireEvent.change(ahead, {target:{value:forwardText}});
+  fireEvent.change(behind, {target:{value:backwardText}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({playCacheForward:forward, playCacheBackward:backward})));
+});
+
+test("user settings saves unlimited play cache both ways and restores the typed count when unchecked", async () => {
+  const dialog = await openPlayCacheSettings();
+  const ahead = within(dialog).getByRole("spinbutton", {name:"Items ahead"});
+  fireEvent.change(ahead, {target:{value:"42"}});
+  fireEvent.click(within(dialog).getByRole("checkbox", {name:"Items ahead: unlimited"}));
+  fireEvent.click(within(dialog).getByRole("checkbox", {name:"Items behind: unlimited"}));
+  expect(ahead).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({playCacheForward:-1, playCacheBackward:-1})));
+  fireEvent.click(within(dialog).getByRole("checkbox", {name:"Items ahead: unlimited"}));
+  expect(ahead).toBeEnabled();
+  expect(ahead).toHaveValue(42);
+});
+
+test("user settings shows saved unlimited play cache", async () => {
+  mockApi.userSettings.mockResolvedValue({...(await mockApi.userSettings()), playCacheForward:-1, playCacheBackward:5});
+  const dialog = await openPlayCacheSettings();
+  expect(within(dialog).getByRole("checkbox", {name:"Items ahead: unlimited"})).toBeChecked();
+  expect(within(dialog).getByRole("spinbutton", {name:"Items ahead"})).toBeDisabled();
+  expect(within(dialog).getByRole("checkbox", {name:"Items behind: unlimited"})).not.toBeChecked();
+  expect(within(dialog).getByRole("spinbutton", {name:"Items behind"})).toHaveValue(5);
+});
+
 test("user settings saves the media loading batch size", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
   render(<MemoryRouter><App/></MemoryRouter>);
@@ -735,7 +785,7 @@ test("user settings saves the media loading batch size", async () => {
   fireEvent.change(batchInput, {target:{value:"25"}});
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1}));
 });
 
 test("native gate shows the server picker despite a saved default when asked to change server", async () => {
@@ -2096,6 +2146,65 @@ test("native app opens documents through the MLSafeInsets bridge instead of an i
     expect(mockApi.documentContent).not.toHaveBeenCalled();
   } finally {
     delete (window as unknown as {MLSafeInsets?:unknown}).MLSafeInsets;
+  }
+});
+
+function playCacheFolder(count:number, videoIds:number[] = []) {
+  return {entries:Array.from({length:count}, (_, offset) => {
+    const id = 200 + offset;
+    const video = videoIds.includes(id);
+    const name = `p${id}.${video ? "mp4" : "jpg"}`;
+    return {id, name, relativePath:name, type:"media", media:{id, folderId:20, relativePath:name, name, kind:video ? "video" : "image", mimeType:video ? "video/mp4" : "image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}};
+  }), chain:[]};
+}
+
+async function renderPlayCache(forward:number, backward:number, anchor:number, videoIds:number[] = []) {
+  const fetched:string[] = [];
+  const fetchStub = vi.fn(async (url:string) => { fetched.push(String(url)); return new Response(new Blob(["x"])); });
+  vi.stubGlobal("fetch", fetchStub);
+  const urls = URL as unknown as {createObjectURL?:unknown; revokeObjectURL?:unknown};
+  const saved = {create:urls.createObjectURL, revoke:urls.revokeObjectURL};
+  let blobs = 0;
+  urls.createObjectURL = vi.fn(() => `blob:test-${++blobs}`);
+  urls.revokeObjectURL = vi.fn();
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.userSettings.mockResolvedValue({...(await mockApi.userSettings()), playCacheForward:forward, playCacheBackward:backward});
+  mockApi.folderEntries.mockResolvedValue(playCacheFolder(10, videoIds));
+  const view = render(<MemoryRouter initialEntries={[`/library/1/view/20?item=${anchor}`]}><App/></MemoryRouter>);
+  await screen.findByRole("img", {name:`p${anchor}.jpg`});
+  const contentIds = () => fetched.map(url => Number(url.match(/media\/(\d+)\/content/)?.[1])).filter(Number.isFinite).sort((a, b) => a - b);
+  const restore = () => { view.unmount(); urls.createObjectURL = saved.create; urls.revokeObjectURL = saved.revoke; vi.unstubAllGlobals(); };
+  return {contentIds, restore};
+}
+
+test.each([
+  ["3 ahead and 1 behind by default", 3, 1, 204, [203, 204, 205, 206, 207]],
+  ["typed counts", 2, 3, 204, [201, 202, 203, 204, 205, 206]],
+  ["nothing either way", 0, 0, 204, [204]],
+  ["forward only", 4, 0, 204, [204, 205, 206, 207, 208]],
+  ["counts beyond the folder", 1000, 1000, 204, [200, 201, 202, 203, 204, 205, 206, 207, 208, 209]],
+  ["unlimited both ways", -1, -1, 204, [200, 201, 202, 203, 204, 205, 206, 207, 208, 209]],
+  ["unlimited ahead, 1 behind", -1, 1, 206, [205, 206, 207, 208, 209]],
+  ["1 ahead, unlimited behind", 1, -1, 203, [200, 201, 202, 203, 204]],
+])("play mode caches %s", async (_name, forward, backward, anchor, expected) => {
+  const {contentIds, restore} = await renderPlayCache(forward, backward, anchor);
+  try {
+    await waitFor(() => expect(contentIds()).toEqual(expected));
+    // Nothing outside the window is requested later either.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(contentIds()).toEqual(expected);
+  } finally {
+    restore();
+  }
+});
+
+test("play mode cache warms video covers instead of downloading clips", async () => {
+  const {contentIds, restore} = await renderPlayCache(2, 0, 204, [205]);
+  try {
+    await waitFor(() => expect(contentIds()).toEqual([204, 206]));
+    expect(mockApi.thumbnailUrl).toHaveBeenCalledWith(205, 0);
+  } finally {
+    restore();
   }
 });
 

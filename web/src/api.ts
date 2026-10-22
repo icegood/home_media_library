@@ -294,6 +294,9 @@ export interface UserSettings {
   poiProviders?:Record<string, Record<string, string>>;
   thumbMin:number;
   thumbMax:number;
+  // Play-mode cache counts ahead/behind the current item; -1 = unlimited.
+  playCacheForward?:number;
+  playCacheBackward?:number;
 }
 
 export interface MediaAdjust {

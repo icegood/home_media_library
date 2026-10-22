@@ -155,7 +155,16 @@ type UserSettings struct {
 	// ThumbMax caps how wide thumbnails may grow, in CSS px. 0 means no cap
 	// (map-panel tiles scale with the panel; the UI size bar caps at 640).
 	ThumbMax int `json:"thumbMax"`
+	// PlayCacheForward/Backward are how many items ahead of / behind the one
+	// on screen play mode keeps downloaded, so paging either way is instant.
+	// Any count from 0 (no caching that way) up is allowed; PlayCacheUnlimited
+	// keeps the whole list in that direction.
+	PlayCacheForward  int `json:"playCacheForward"`
+	PlayCacheBackward int `json:"playCacheBackward"`
 }
+
+// PlayCacheUnlimited is the play-mode cache count meaning "every item".
+const PlayCacheUnlimited = -1
 
 func DefaultUserSettings() UserSettings {
 	return UserSettings{
@@ -164,6 +173,7 @@ func DefaultUserSettings() UserSettings {
 		MapTileProviderLight: "osm", MapTileProviderDark: "osm",
 		MapMaxZoom: 19,
 		ThumbMin: 90, ThumbMax: 0,
+		PlayCacheForward: 3, PlayCacheBackward: 1,
 	}
 }
 

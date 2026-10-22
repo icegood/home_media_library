@@ -2691,3 +2691,64 @@ func TestUserSettingsHidePOISecrets(t *testing.T) {
 		t.Fatalf("user settings leak POI credentials: %s", body)
 	}
 }
+
+func TestUserSettingsPlayCache(t *testing.T) {
+	f := setup(t)
+	alice := login(t, f.handler, "alice")
+	settingsURL := "/api/v1/settings"
+	fetch := func() domain.UserSettings {
+		t.Helper()
+		var settings domain.UserSettings
+		if err := json.Unmarshal(request(f.handler, http.MethodGet, settingsURL, alice, nil).Body.Bytes(), &settings); err != nil {
+			t.Fatal(err)
+		}
+		return settings
+	}
+	put := func(extra map[string]any) int {
+		t.Helper()
+		payload := map[string]any{"theme": "light", "codec": "h264-aac-mp4", "zoom": 100, "dateFormat": "auto",
+			"streamChunkSize": 10000, "defaultThumbImage": "mountains", "defaultThumbVideo": "mountains", "defaultThumbFolder": "mountains"}
+		for key, value := range extra {
+			payload[key] = value
+		}
+		body, _ := json.Marshal(payload)
+		return request(f.handler, http.MethodPut, settingsURL, alice, body).Code
+	}
+
+	if got := fetch(); got.PlayCacheForward != 3 || got.PlayCacheBackward != 1 {
+		t.Fatalf("default play cache = %d/%d, want 3/1", got.PlayCacheForward, got.PlayCacheBackward)
+	}
+	cases := []struct {
+		name              string
+		forward, backward int
+	}{
+		{"no caching either way", 0, 0},
+		{"forward only", 5, 0},
+		{"backward only", 0, 4},
+		{"typed values", 17, 9},
+		{"large typed value", 123456, 98765},
+		{"unlimited both", domain.PlayCacheUnlimited, domain.PlayCacheUnlimited},
+		{"unlimited forward, bounded backward", domain.PlayCacheUnlimited, 2},
+		{"bounded forward, unlimited backward", 6, domain.PlayCacheUnlimited},
+	}
+	for _, tc := range cases {
+		if code := put(map[string]any{"playCacheForward": tc.forward, "playCacheBackward": tc.backward}); code != http.StatusOK {
+			t.Fatalf("%s: put status = %d", tc.name, code)
+		}
+		if got := fetch(); got.PlayCacheForward != tc.forward || got.PlayCacheBackward != tc.backward {
+			t.Fatalf("%s: saved play cache = %d/%d, want %d/%d", tc.name, got.PlayCacheForward, got.PlayCacheBackward, tc.forward, tc.backward)
+		}
+	}
+	// Older clients that do not send the fields get the defaults back.
+	if code := put(nil); code != http.StatusOK {
+		t.Fatalf("put without play cache status = %d", code)
+	}
+	if got := fetch(); got.PlayCacheForward != 3 || got.PlayCacheBackward != 1 {
+		t.Fatalf("absent play cache = %d/%d, want defaults 3/1", got.PlayCacheForward, got.PlayCacheBackward)
+	}
+	for _, bad := range []map[string]any{{"playCacheForward": -2}, {"playCacheBackward": -5}} {
+		if code := put(bad); code != http.StatusBadRequest {
+			t.Fatalf("put %v status = %d, want 400", bad, code)
+		}
+	}
+}

@@ -270,6 +270,10 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .card.settings label:not(.check):not(.favorite-picker-item) { display: flex; flex-direction: column; gap: 4px; }
 .settings fieldset > label:not(.check) > input, .settings fieldset > label:not(.check) > select, .settings fieldset .combobox-wrap { width: 100%; min-width: 0; }
 .settings fieldset > label > input[type="checkbox"], .settings fieldset > label > input[type="radio"] { width: 18px; height: 18px; }
+/* Play cache count: number field with an Unlimited switch beside it. */
+.play-cache-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.play-cache-field > label:first-child > input { width: 100%; min-width: 0; }
+.play-cache-field > label.check { padding-bottom: 10px; white-space: nowrap; }
 
 /* ===== Panel title ===== */
 .panel-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
