@@ -3862,9 +3862,17 @@ function MediaViewerPage() {
     return () => { cancelled = true; };
   }, [libraryId, rootParam, kindParam, gpsParam, listParam, w, s, e, n]);
   const rootMode = rootParam != null;
-  const [neighbors, setNeighbors] = useState<{anchor:Media; before:Media[]; after:Media[]}|null>(null);
-  const neighborsRef = useRef(neighbors);
-  neighborsRef.current = neighbors;
+  // The last neighbors walk, kept across steps: paging to an item it already
+  // lists needs no round trip (the refresh for the new anchor only extends
+  // it). The scope key drops a walk made for another folder/sort/filter.
+  const neighborsScope = `${libraryId}|${rootParam}|${routeFolderId}|${sortParam}|${kindParam}|${gpsParam}`;
+  const [neighbors, setNeighbors] = useState<{scope:string; anchor:Media; before:Media[]; after:Media[]}|null>(null);
+  const walk = useMemo(() => neighbors && neighbors.scope === neighborsScope
+    ? [...neighbors.before.slice().reverse(), neighbors.anchor, ...neighbors.after].map(media => mediaOverrides[media.id] ?? media)
+    : [], [neighbors, neighborsScope, mediaOverrides]);
+  const walkIndex = walk.findIndex(media => media.id === currentMediaId);
+  const walkIndexRef = useRef(walkIndex);
+  walkIndexRef.current = walkIndex;
   useEffect(() => {
     if (!Number.isFinite(currentMediaId)) {
       setNeighbors(null);
@@ -3880,15 +3888,15 @@ function MediaViewerPage() {
     // for the play cache window (capped by the API at 50 each way).
     const span = (count:number) => rootMode ? Math.min(MEDIA_NEIGHBORS_MAX, count < 0 ? MEDIA_NEIGHBORS_MAX : Math.max(1, count)) : 1;
     api.mediaNeighbors(libraryId, folder, currentMediaId, {sort: sortParam, kind, gps, before:span(playCache.backward), after:span(playCache.forward)})
-      .then(result => { if (!cancelled) setNeighbors(result); })
-      .catch(() => { if (!cancelled) setNeighbors(null); });
+      .then(result => { if (!cancelled) setNeighbors({...result, scope:neighborsScope}); })
+      .catch(() => { if (!cancelled) setNeighbors(current => current && current.scope === neighborsScope && current.anchor.id === currentMediaId ? null : current); });
     return () => { cancelled = true; };
   }, [rootMode, rootParam, routeFolderId, libraryId, currentMediaId, sortParam, kindParam, gpsParam, playCache.forward, playCache.backward]);
   useEffect(() => {
-    // Once the neighbors response confirms the currently shown root-mode item,
-    // the transition placeholder is no longer needed.
-    if (rootMode && neighbors && neighbors.anchor.id === currentMediaId) setTransitionItem(null);
-  }, [rootMode, neighbors, currentMediaId]);
+    // Once the known walk holds the currently shown root-mode item, the
+    // transition placeholder is no longer needed.
+    if (rootMode && walkIndex >= 0) setTransitionItem(null);
+  }, [rootMode, walkIndex]);
   const folderMedia = useMemo(() => {
     const scoped = scopedMedia
       ?? (listIds.length > 0
@@ -3904,25 +3912,22 @@ function MediaViewerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopedMedia, items, routeFolderId, sortParam, mediaOverrides, listIds.length, listParam]);
   const index = rootMode ? -1 : folderMedia.findIndex(media => media.id === currentMediaId);
-  const anchorItem = rootMode && neighbors && neighbors.anchor.id === currentMediaId
-    ? mediaOverrides[currentMediaId] ?? neighbors.anchor
-    : null;
+  // In root mode, and for an item outside the folder list, the current item
+  // and its previous/next come from the known walk.
+  const fromWalk = (rootMode || index < 0) && walkIndex >= 0;
+  const anchorItem = rootMode && fromWalk ? walk[walkIndex] : null;
   const item = anchorItem
     ?? (index >= 0 ? folderMedia[index] : mediaOverrides[currentMediaId] ?? transitionItem ?? fallbackItem);
-  const withOverride = (media: Media|null) => media ? mediaOverrides[media.id] ?? media : null;
-  const previous = rootMode
-    ? (anchorItem && neighbors ? withOverride(neighbors.before[0] ?? null) : null)
-    : (index >= 0 ? (index > 0 ? folderMedia[index - 1] : null) : (neighbors ? withOverride(neighbors.before[0] ?? null) : null));
-  const next = rootMode
-    ? (anchorItem && neighbors ? withOverride(neighbors.after[0] ?? null) : null)
-    : (index >= 0 ? (index < folderMedia.length - 1 ? folderMedia[index + 1] : null) : (neighbors ? withOverride(neighbors.after[0] ?? null) : null));
+  const previous = fromWalk
+    ? walk[walkIndex - 1] ?? null
+    : !rootMode && index > 0 ? folderMedia[index - 1] : null;
+  const next = fromWalk
+    ? walk[walkIndex + 1] ?? null
+    : !rootMode && index >= 0 && index < folderMedia.length - 1 ? folderMedia[index + 1] : null;
   // The play cache walks the ordered folder list when the item is in it;
-  // otherwise (root/timeline mode, or an item outside the list) the
-  // neighbors walk around the current anchor is the known list.
-  const neighborList = useMemo(() => neighbors && neighbors.anchor.id === currentMediaId
-    ? [...neighbors.before.slice().reverse(), neighbors.anchor, ...neighbors.after].map(media => mediaOverrides[media.id] ?? media)
-    : [], [neighbors, currentMediaId, mediaOverrides]);
-  usePlayPrefetch(index >= 0 ? folderMedia : neighborList, index >= 0 ? index : neighbors && neighbors.anchor.id === currentMediaId ? neighbors.before.length : -1, item ?? null);
+  // otherwise (root/timeline mode, or an item outside the list) the known
+  // neighbors walk is the list.
+  usePlayPrefetch(fromWalk ? walk : folderMedia, fromWalk ? walkIndex : index, item ?? null);
   useEffect(() => {
     if (index >= 0 || !Number.isFinite(currentMediaId)) {
       setFallback({loading:false, failed:false});
@@ -3935,7 +3940,7 @@ function MediaViewerPage() {
     // lookup only runs if it has not arrived once the item settled, so fast
     // paging does not queue one /media/:id per step.
     const lookup = () => {
-      if (neighborsRef.current?.anchor.id === currentMediaId) {
+      if (walkIndexRef.current >= 0) {
         setFallback({loading:false, failed:false});
         return;
       }
@@ -4085,6 +4090,27 @@ function mediaDimensions(metadata:Record<string, unknown>): {width:number; heigh
     }
   }
   return null;
+}
+
+// Video volume/mute is a per-device convenience; storage may be unavailable.
+const VIDEO_SOUND_KEY = "ml.videoSound";
+
+export function loadVideoSound():{volume:number; muted:boolean} {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VIDEO_SOUND_KEY) ?? "null") as {volume?:unknown; muted?:unknown}|null;
+    const volume = typeof saved?.volume === "number" && saved.volume >= 0 && saved.volume <= 1 ? saved.volume : 1;
+    return {volume, muted: saved?.muted === true};
+  } catch {
+    return {volume:1, muted:false};
+  }
+}
+
+function saveVideoSound(sound:{volume:number; muted:boolean}) {
+  try {
+    localStorage.setItem(VIDEO_SOUND_KEY, JSON.stringify(sound));
+  } catch {
+    // Not persisted; the current video keeps the choice.
+  }
 }
 
 function lockOrientation(item:Media) {
@@ -5161,8 +5187,10 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
   const [reportOpen, setReportOpen] = useState(false);
   const [seekNotice, setSeekNotice] = useState<string|null>(null);
   const seekNoticeTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
-  const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
+  // Volume and mute carry over from video to video (and across visits).
+  const [muted, setMuted] = useState(() => loadVideoSound().muted);
+  const [volume, setVolume] = useState(() => loadVideoSound().volume);
+  useEffect(() => { saveVideoSound({volume, muted}); }, [volume, muted]);
   const [volumeOpen, setVolumeOpen] = useState(false);
   const volumeRef = useRef<HTMLSpanElement|null>(null);
   const targetSlot = active === 0 ? 1 : 0;

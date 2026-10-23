@@ -1858,6 +1858,27 @@ test("returning from the viewer keeps the folder focus behaviour for ancestor cr
   await waitFor(() => expect(document.querySelector('[data-kb-id="f20"]')).toHaveClass("kb-focus"));
 });
 
+test("timeline play mode pages through the known neighbours without waiting for the server", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  const items = [100, 101, 102, 103, 104].map(id => ({id, folderId:20, relativePath:`Photos/p${id}.jpg`, name:`p${id}.jpg`, kind:"image" as const, mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:`2020-08-21T12:${id - 50}:00Z`}));
+  // Only the first walk answers; every later refresh hangs, as on a busy link.
+  mockApi.mediaNeighbors.mockImplementation((_library:number, _folder:number|"all", anchorId:number) => anchorId === 100
+    ? Promise.resolve({anchor:items[0], before:[], after:items.slice(1)})
+    : new Promise(() => {}));
+  mockApi.media.mockImplementation(async (id:number) => items.find(item => item.id === id)!);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100&root=20"]}><App/></MemoryRouter>);
+  await screen.findByRole("img", {name:"p100.jpg"});
+  for (const name of ["p101.jpg", "p102.jpg", "p103.jpg"]) {
+    await waitFor(() => expect(screen.getByRole("button", {name:"Next media"})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+    expect(await screen.findByRole("img", {name})).toBeInTheDocument();
+  }
+  expect(screen.getByRole("button", {name:"Previous media"})).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", {name:"Previous media"}));
+  expect(await screen.findByRole("img", {name:"p102.jpg"})).toBeInTheDocument();
+});
+
 test("timeline play mode title keeps one library crumb while paging", async () => {
   // The library crumb links to the timeline of the root folder, the same URL
   // as that folder's own crumb; keying crumbs by URL duplicated React keys
@@ -3574,6 +3595,34 @@ test("video mode shows fullscreen like image mode plus sound controls after play
   // The drop-up closes on outside clicks.
   fireEvent.pointerDown(document.body);
   expect(document.querySelector(".video-volume-popover")).not.toBeInTheDocument();
+});
+
+test("video volume and mute carry over to the next video and the next visit", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const clip = (id:number) => ({id, name:`v${id}.mp4`, relativePath:`v${id}.mp4`, type:"media", media:{id, folderId:20, relativePath:`v${id}.mp4`, name:`v${id}.mp4`, kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"61.5"}, streams:[{codec_type:"video", codec_name:"h264", width:1920, height:1080}]}}, gps:"", takenAt:""}});
+  mockApi.folderEntries.mockResolvedValue({entries:[clip(103), clip(104)], chain: []});
+  mockApi.videoThumbnails.mockResolvedValue([]);
+  const view = render(<MemoryRouter initialEntries={["/library/1/view/20?item=103"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Seek video");
+  fireEvent.click(screen.getByRole("button", {name:"Volume control"}));
+  const popover = document.querySelector(".video-volume-popover") as HTMLElement;
+  fireEvent.change(within(popover).getByLabelText("Volume"), {target:{value:"0.3"}});
+  fireEvent.click(within(popover).getByRole("button", {name:"Mute"}));
+  fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+  await waitFor(() => expect(document.querySelector(".viewer-stage")).toHaveAttribute("aria-label", "v104.mp4"));
+  await waitFor(() => {
+    const video = document.querySelector(".video-stack video") as HTMLVideoElement;
+    expect(video.volume).toBeCloseTo(0.3);
+    expect(video.muted).toBe(true);
+  });
+  view.unmount();
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=104"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Seek video");
+  await waitFor(() => {
+    const video = document.querySelector(".video-stack video") as HTMLVideoElement;
+    expect(video.volume).toBeCloseTo(0.3);
+    expect(video.muted).toBe(true);
+  });
 });
 
 test("library editor supports adding and browsing root folders", async () => {
