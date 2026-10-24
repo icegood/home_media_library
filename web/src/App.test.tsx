@@ -58,6 +58,12 @@ function pickOption(combobox:HTMLElement, optionName:string) {
   fireEvent.click(within(listbox).getByRole("option", {name:optionName}));
 }
 
+// The map's No GPS / Map only / Walk / POI switches live in the Layers dropdown.
+function mapLayer(name:string) {
+  if (!screen.queryByRole("dialog", {name:"Map layers"})) fireEvent.click(screen.getByRole("button", {name:/^Layers/}));
+  return within(screen.getByRole("dialog", {name:"Map layers"})).getByRole("checkbox", {name});
+}
+
 test("shows login for an unauthenticated visitor", async () => {
   render(<MemoryRouter><App/></MemoryRouter>);
   expect(await screen.findByRole("button", {name:"Sign in"})).toBeInTheDocument();
@@ -1719,7 +1725,14 @@ test("map in a folder can list the media without GPS in a side panel", async () 
   render(<MemoryRouter initialEntries={["/map?library=1&folder=20"]}><App/></MemoryRouter>);
   await waitFor(() => expect(mockApi.map).toHaveBeenCalledWith(1, 20, undefined, undefined));
   expect(screen.queryByRole("complementary", {name:"Media without GPS in this folder"})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText("No GPS"));
+  expect(screen.getByRole("button", {name:"Layers · none"})).toBeInTheDocument();
+  fireEvent.click(mapLayer("No GPS"));
+  fireEvent.click(mapLayer("Map only"));
+  // The dropdown stays open for several switches and the trigger names them.
+  expect(screen.getByRole("button", {name:"Layers · No GPS, Map only"})).toBeInTheDocument();
+  fireEvent.click(mapLayer("Map only"));
+  expect(screen.getByRole("button", {name:"Select area"})).toHaveAttribute("title", expect.stringContaining("drag a rectangle"));
+  expect(screen.getByRole("button", {name:"Set point"})).toHaveAttribute("title", expect.stringContaining("typed coordinates"));
   await waitFor(() => expect(screen.getByRole("complementary", {name:"Media without GPS in this folder"})).toBeInTheDocument());
   expect(await screen.findByText("b.jpg")).toBeInTheDocument();
   expect(screen.queryByText("a.jpg")).not.toBeInTheDocument();
@@ -1747,7 +1760,7 @@ test("walking mode shows own position and lists media within the walk radius nea
     ]);
     render(<MemoryRouter initialEntries={["/map?library=1&folder=20"]}><App/></MemoryRouter>);
     await waitFor(() => expect(mockApi.map).toHaveBeenCalled());
-    fireEvent.click(screen.getByLabelText("Walk"));
+    fireEvent.click(mapLayer("Walk"));
     expect(start).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Locating you…")).toBeInTheDocument();
     act(() => { window.dispatchEvent(new CustomEvent("ml-location", {detail:{lat:50.45, lng:30.5, accuracy:10}})); });
@@ -3019,7 +3032,7 @@ test("POI overlay uses a checkbox dropdown to pick categories and renders POIs n
   render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
   await screen.findByRole("button", {name:"Select area"});
   expect(document.querySelectorAll(".poi-icon").length).toBe(0);
-  fireEvent.click(screen.getByLabelText("POI"));
+  fireEvent.click(mapLayer("POI"));
   const trigger = await screen.findByRole("button", {name: /^Categories/});
   expect(trigger).toHaveAttribute("aria-expanded", "false");
   fireEvent.click(trigger);
@@ -3040,7 +3053,7 @@ test("POI overlay uses a checkbox dropdown to pick categories and renders POIs n
   expect(trigger).toHaveTextContent("none");
   await waitFor(() => expect(document.querySelectorAll(".poi-icon").length).toBe(0), {timeout:3000});
   // Toggling the master POI switch off hides the dropdown control too.
-  fireEvent.click(screen.getByLabelText("POI"));
+  fireEvent.click(mapLayer("POI"));
   await waitFor(() => expect(screen.queryByRole("button", {name: /^Categories/})).not.toBeInTheDocument());
 });
 
@@ -3093,13 +3106,13 @@ test("folder-scoped map isolates a named trajectory and can show only the map", 
   await waitFor(() => expect(document.querySelectorAll(".media-point-marker").length).toBe(2));
   // Travel-order numbers are hidden by default; they must be switched on.
   expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(0);
-  fireEvent.click(await screen.findByRole("checkbox", {name:"Numbers"}));
+  fireEvent.click(await within(filter).findByRole("checkbox", {name:"Numbers"}));
   // Segment 0 spans (100,101) => a single edge => 1 number.
   await waitFor(() => expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(1));
-  fireEvent.click(screen.getByRole("checkbox", {name:"Map only"}));
+  fireEvent.click(mapLayer("Map only"));
   await waitFor(() => expect(document.querySelectorAll(".media-point-marker, .cluster-marker").length).toBe(0));
   expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(1);
-  fireEvent.click(screen.getByRole("checkbox", {name:"Map only"}));
+  fireEvent.click(mapLayer("Map only"));
   await waitFor(() => expect(document.querySelectorAll(".media-point-marker").length).toBe(2));
 });
 

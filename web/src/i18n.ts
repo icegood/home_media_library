@@ -104,6 +104,18 @@ interface Grammar {
 interface LangTable { strings:Record<string,string>; grammar:Grammar }
 
 const UA_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Без GPS",
+  "Geotagged": "З GPS",
+  "Layers": "Шари",
+  "Map layers": "Шари карти",
+  "none": "немає",
+  "Pick what the map shows": "Вибрати, що показує карта",
+  "List the media in this folder that have no GPS coordinates": "Показати медіа цієї папки без GPS-координат",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Показати цікаві місця (ресторани, заправки, готелі, …) від налаштованого провайдера",
+  "Select area — drag a rectangle on the map to list the media inside it": "Виділити область — протягніть прямокутник на карті, щоб побачити медіа всередині",
+  "Clear selection — remove the selected area and its list": "Очистити виділення — прибрати виділену область і її список",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Встановити точку — поставити позначку за введеними координатами (lat, lng, DMS або посилання Google Maps)",
   "Library": "Бібліотека",
   "Favorites": "Обране",
   "Admin panel": "Адмін-панель",
@@ -525,6 +537,18 @@ const UA_STRINGS: Record<string, string> = {
 };
 
 const DE_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Ohne GPS",
+  "Geotagged": "Mit GPS",
+  "Layers": "Ebenen",
+  "Map layers": "Kartenebenen",
+  "none": "keine",
+  "Pick what the map shows": "Auswählen, was die Karte zeigt",
+  "List the media in this folder that have no GPS coordinates": "Medien dieses Ordners ohne GPS-Koordinaten auflisten",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Interessante Orte (Restaurants, Tankstellen, Hotels, …) vom eingestellten Anbieter anzeigen",
+  "Select area — drag a rectangle on the map to list the media inside it": "Bereich auswählen — ein Rechteck auf der Karte ziehen, um die Medien darin aufzulisten",
+  "Clear selection — remove the selected area and its list": "Auswahl löschen — den ausgewählten Bereich und seine Liste entfernen",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Punkt setzen — eine Markierung an den eingegebenen Koordinaten setzen (lat, lng, DMS oder Google-Maps-Link)",
   "Library": "Bibliothek",
   "Favorites": "Favoriten",
   "Admin panel": "Adminbereich",
@@ -946,6 +970,18 @@ const DE_STRINGS: Record<string, string> = {
 };
 
 const NL_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Zonder GPS",
+  "Geotagged": "Met GPS",
+  "Layers": "Lagen",
+  "Map layers": "Kaartlagen",
+  "none": "geen",
+  "Pick what the map shows": "Kiezen wat de kaart toont",
+  "List the media in this folder that have no GPS coordinates": "Media in deze map zonder GPS-coördinaten tonen",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Bezienswaardigheden (restaurants, tankstations, hotels, …) van de ingestelde provider tonen",
+  "Select area — drag a rectangle on the map to list the media inside it": "Gebied selecteren — sleep een rechthoek op de kaart om de media erin te tonen",
+  "Clear selection — remove the selected area and its list": "Selectie wissen — het geselecteerde gebied en de lijst verwijderen",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Punt instellen — een markering op de ingevoerde coördinaten plaatsen (lat, lng, DMS of een Google Maps-link)",
   "Library": "Bibliotheek",
   "Favorites": "Favorieten",
   "Admin panel": "Beheerpaneel",
@@ -1367,6 +1403,18 @@ const NL_STRINGS: Record<string, string> = {
 };
 
 const FI_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Ilman GPS:ää",
+  "Geotagged": "GPS:llä",
+  "Layers": "Tasot",
+  "Map layers": "Karttatasot",
+  "none": "ei mitään",
+  "Pick what the map shows": "Valitse, mitä kartta näyttää",
+  "List the media in this folder that have no GPS coordinates": "Näytä tämän kansion mediat, joilla ei ole GPS-koordinaatteja",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Näytä kiinnostavat kohteet (ravintolat, polttoaine, hotellit, …) määritetyltä palveluntarjoajalta",
+  "Select area — drag a rectangle on the map to list the media inside it": "Valitse alue — vedä kartalle suorakulmio nähdäksesi sen sisällä olevat mediat",
+  "Clear selection — remove the selected area and its list": "Tyhjennä valinta — poista valittu alue ja sen luettelo",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Aseta piste — lisää merkki syötettyihin koordinaatteihin (lat, lng, DMS tai Google Maps -linkki)",
   "Library": "Kirjasto",
   "Favorites": "Suosikit",
   "Admin panel": "Ylläpito",
@@ -1788,6 +1836,18 @@ const FI_STRINGS: Record<string, string> = {
 };
 
 const SV_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Utan GPS",
+  "Geotagged": "Med GPS",
+  "Layers": "Lager",
+  "Map layers": "Kartlager",
+  "none": "inga",
+  "Pick what the map shows": "Välj vad kartan visar",
+  "List the media in this folder that have no GPS coordinates": "Lista media i den här mappen som saknar GPS-koordinater",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Visa intressepunkter (restauranger, bränsle, hotell, …) från den inställda leverantören",
+  "Select area — drag a rectangle on the map to list the media inside it": "Välj område — dra en rektangel på kartan för att lista media i den",
+  "Clear selection — remove the selected area and its list": "Rensa markering — ta bort det valda området och dess lista",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Ange punkt — sätt en markör vid de inskrivna koordinaterna (lat, lng, DMS eller en Google Maps-länk)",
   "Library": "Bibliotek",
   "Favorites": "Favoriter",
   "Admin panel": "Adminpanel",
@@ -2209,6 +2269,18 @@ const SV_STRINGS: Record<string, string> = {
 };
 
 const PL_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Bez GPS",
+  "Geotagged": "Z GPS",
+  "Layers": "Warstwy",
+  "Map layers": "Warstwy mapy",
+  "none": "brak",
+  "Pick what the map shows": "Wybierz, co pokazuje mapa",
+  "List the media in this folder that have no GPS coordinates": "Pokaż multimedia z tego folderu bez współrzędnych GPS",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Pokaż ciekawe miejsca (restauracje, stacje paliw, hotele, …) od skonfigurowanego dostawcy",
+  "Select area — drag a rectangle on the map to list the media inside it": "Zaznacz obszar — przeciągnij prostokąt na mapie, aby wyświetlić multimedia w jego obrębie",
+  "Clear selection — remove the selected area and its list": "Wyczyść zaznaczenie — usuń zaznaczony obszar i jego listę",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Ustaw punkt — postaw znacznik we wpisanych współrzędnych (lat, lng, DMS lub link Google Maps)",
   "Library": "Biblioteka",
   "Favorites": "Ulubione",
   "Admin panel": "Panel administratora",
@@ -2630,6 +2702,18 @@ const PL_STRINGS: Record<string, string> = {
 };
 
 const CHE_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Bez GPS",
+  "Geotagged": "S GPS",
+  "Layers": "Vrstvy",
+  "Map layers": "Vrstvy mapy",
+  "none": "žádné",
+  "Pick what the map shows": "Vyberte, co mapa zobrazuje",
+  "List the media in this folder that have no GPS coordinates": "Vypsat média v této složce bez souřadnic GPS",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Zobrazit body zájmu (restaurace, čerpací stanice, hotely, …) od nastaveného poskytovatele",
+  "Select area — drag a rectangle on the map to list the media inside it": "Vybrat oblast — přetáhněte na mapě obdélník a zobrazte média uvnitř",
+  "Clear selection — remove the selected area and its list": "Zrušit výběr — odstranit vybranou oblast a její seznam",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Nastavit bod — umístit značku na zadané souřadnice (lat, lng, DMS nebo odkaz Google Maps)",
   "Library": "Knihovna",
   "Favorites": "Oblíbené",
   "Admin panel": "Administrace",
@@ -3051,6 +3135,18 @@ const CHE_STRINGS: Record<string, string> = {
 };
 
 const SLO_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Bez GPS",
+  "Geotagged": "S GPS",
+  "Layers": "Vrstvy",
+  "Map layers": "Vrstvy mapy",
+  "none": "žiadne",
+  "Pick what the map shows": "Vyberte, čo mapa zobrazuje",
+  "List the media in this folder that have no GPS coordinates": "Zobraziť médiá v tomto priečinku bez súradníc GPS",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Zobraziť body záujmu (reštaurácie, čerpacie stanice, hotely, …) od nastaveného poskytovateľa",
+  "Select area — drag a rectangle on the map to list the media inside it": "Vybrať oblasť — potiahnite na mape obdĺžnik a zobrazte médiá vo vnútri",
+  "Clear selection — remove the selected area and its list": "Zrušiť výber — odstrániť vybranú oblasť a jej zoznam",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Nastaviť bod — umiestniť značku na zadané súradnice (lat, lng, DMS alebo odkaz Google Maps)",
   "Library": "Knižnica",
   "Favorites": "Obľúbené",
   "Admin panel": "Administrácia",
@@ -3472,6 +3568,18 @@ const SLO_STRINGS: Record<string, string> = {
 };
 
 const HU_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "GPS nélkül",
+  "Geotagged": "GPS-szel",
+  "Layers": "Rétegek",
+  "Map layers": "Térképrétegek",
+  "none": "nincs",
+  "Pick what the map shows": "Válassza ki, mit mutasson a térkép",
+  "List the media in this folder that have no GPS coordinates": "A mappa GPS-koordináták nélküli médiáinak listázása",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Érdekes helyek (éttermek, benzinkutak, szállodák, …) megjelenítése a beállított szolgáltatótól",
+  "Select area — drag a rectangle on the map to list the media inside it": "Terület kijelölése — húzzon egy téglalapot a térképen a benne lévő médiák listázásához",
+  "Clear selection — remove the selected area and its list": "Kijelölés törlése — a kijelölt terület és listája eltávolítása",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Pont beállítása — jelölő elhelyezése a beírt koordinátákon (lat, lng, DMS vagy Google Maps-link)",
   "Library": "Könyvtár",
   "Favorites": "Kedvencek",
   "Admin panel": "Admin panel",
@@ -3893,6 +4001,18 @@ const HU_STRINGS: Record<string, string> = {
 };
 
 const ES_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Sin GPS",
+  "Geotagged": "Con GPS",
+  "Layers": "Capas",
+  "Map layers": "Capas del mapa",
+  "none": "ninguna",
+  "Pick what the map shows": "Elegir qué muestra el mapa",
+  "List the media in this folder that have no GPS coordinates": "Listar los archivos de esta carpeta sin coordenadas GPS",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Mostrar puntos de interés (restaurantes, gasolineras, hoteles, …) del proveedor configurado",
+  "Select area — drag a rectangle on the map to list the media inside it": "Seleccionar área — arrastra un rectángulo en el mapa para listar los archivos de su interior",
+  "Clear selection — remove the selected area and its list": "Borrar selección — quitar el área seleccionada y su lista",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Fijar punto — colocar un marcador en las coordenadas escritas (lat, lng, DMS o un enlace de Google Maps)",
   "Library": "Biblioteca",
   "Favorites": "Favoritos",
   "Admin panel": "Panel de administración",
@@ -4314,6 +4434,18 @@ const ES_STRINGS: Record<string, string> = {
 };
 
 const IT_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Senza GPS",
+  "Geotagged": "Con GPS",
+  "Layers": "Livelli",
+  "Map layers": "Livelli della mappa",
+  "none": "nessuno",
+  "Pick what the map shows": "Scegli cosa mostra la mappa",
+  "List the media in this folder that have no GPS coordinates": "Elenca i media di questa cartella senza coordinate GPS",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Mostra i punti di interesse (ristoranti, carburante, hotel, …) dal provider configurato",
+  "Select area — drag a rectangle on the map to list the media inside it": "Seleziona area — trascina un rettangolo sulla mappa per elencare i media al suo interno",
+  "Clear selection — remove the selected area and its list": "Cancella selezione — rimuovi l'area selezionata e il suo elenco",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Imposta punto — inserisci un indicatore alle coordinate digitate (lat, lng, DMS o un link di Google Maps)",
   "Library": "Libreria",
   "Favorites": "Preferiti",
   "Admin panel": "Pannello di amministrazione",
@@ -4735,6 +4867,18 @@ const IT_STRINGS: Record<string, string> = {
 };
 
 const SL_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Brez GPS",
+  "Geotagged": "Z GPS",
+  "Layers": "Sloji",
+  "Map layers": "Sloji zemljevida",
+  "none": "nič",
+  "Pick what the map shows": "Izberite, kaj prikazuje zemljevid",
+  "List the media in this folder that have no GPS coordinates": "Prikaži medije v tej mapi brez koordinat GPS",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Prikaži zanimive točke (restavracije, bencinske črpalke, hoteli, …) ponudnika iz nastavitev",
+  "Select area — drag a rectangle on the map to list the media inside it": "Izberi območje — povlecite pravokotnik na zemljevidu za seznam medijev v njem",
+  "Clear selection — remove the selected area and its list": "Počisti izbor — odstrani izbrano območje in njegov seznam",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Nastavi točko — postavi oznako na vnesene koordinate (lat, lng, DMS ali povezava Google Maps)",
   "Library": "Knjižnica",
   "Favorites": "Priljubljene",
   "Admin panel": "Skrbniška plošča",
@@ -5156,6 +5300,18 @@ const SL_STRINGS: Record<string, string> = {
 };
 
 const NO_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Uten GPS",
+  "Geotagged": "Med GPS",
+  "Layers": "Lag",
+  "Map layers": "Kartlag",
+  "none": "ingen",
+  "Pick what the map shows": "Velg hva kartet viser",
+  "List the media in this folder that have no GPS coordinates": "Vis medier i denne mappen uten GPS-koordinater",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Vis interessepunkter (restauranter, drivstoff, hoteller, …) fra den konfigurerte leverandøren",
+  "Select area — drag a rectangle on the map to list the media inside it": "Velg område — dra et rektangel på kartet for å liste mediene i det",
+  "Clear selection — remove the selected area and its list": "Fjern utvalg — fjern det valgte området og listen",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Angi punkt — sett en markør ved de innskrevne koordinatene (lat, lng, DMS eller en Google Maps-lenke)",
   "Library": "Bibliotek",
   "Favorites": "Favoritter",
   "Admin panel": "Adminpanel",
@@ -5577,6 +5733,18 @@ const NO_STRINGS: Record<string, string> = {
 };
 
 const PT_STRINGS: Record<string, string> = {
+  // Map toolbar: Layers dropdown, tool tooltips, GPS filter
+  "No GPS": "Sem GPS",
+  "Geotagged": "Com GPS",
+  "Layers": "Camadas",
+  "Map layers": "Camadas do mapa",
+  "none": "nenhuma",
+  "Pick what the map shows": "Escolher o que o mapa mostra",
+  "List the media in this folder that have no GPS coordinates": "Listar as mídias desta pasta sem coordenadas GPS",
+  "Show points of interest (restaurants, fuel, hotels, …) from the configured provider": "Mostrar pontos de interesse (restaurantes, combustível, hotéis, …) do provedor configurado",
+  "Select area — drag a rectangle on the map to list the media inside it": "Selecionar área — arraste um retângulo no mapa para listar as mídias dentro dele",
+  "Clear selection — remove the selected area and its list": "Limpar seleção — remover a área selecionada e a sua lista",
+  "Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)": "Definir ponto — colocar um marcador nas coordenadas digitadas (lat, lng, DMS ou um link do Google Maps)",
   "Library": "Biblioteca",
   "Favorites": "Favoritos",
   "Admin panel": "Painel de administração",

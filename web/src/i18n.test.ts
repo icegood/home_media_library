@@ -212,3 +212,19 @@ test("translation helpers pass through unmatched composites safely", () => {
   applyLanguageSetting("en");
   installDomTranslation();
 });
+
+test("map Layers dropdown and GPS filter translate every switch", () => {
+  applyLanguageSetting("ua");
+  const button = document.createElement("button");
+  button.title = "Pick what the map shows";
+  for (const part of ["Layers", " · ", "No GPS", ", ", "Map only", ", ", "Walk", ", ", "POI"]) button.append(document.createTextNode(part));
+  document.body.innerHTML = `<label title="List the media in this folder that have no GPS coordinates">No GPS</label><span>Geotagged</span><button aria-label="Set point" title="Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)"></button>`;
+  document.body.append(button);
+  installDomTranslation();
+  expect(button.textContent).toBe("Шари · Без GPS, Лише карта, Прогулянка, POI");
+  expect(button.title).toBe("Вибрати, що показує карта");
+  expect(document.querySelector("label")?.textContent).toBe("Без GPS");
+  expect(document.querySelector("label")?.getAttribute("title")).toBe("Показати медіа цієї папки без GPS-координат");
+  expect(document.querySelector("span")?.textContent).toBe("З GPS");
+  expect(document.querySelector("button")?.getAttribute("title")).toContain("Встановити точку — ");
+});

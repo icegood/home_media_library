@@ -5594,6 +5594,8 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const [poiCategories, setPoiCategories] = useState<POICategory[]>([]);
   const [poiDropdownOpen, setPoiDropdownOpen] = useState(false);
   const poiDropdownRef = useRef<HTMLButtonElement|null>(null);
+  const layersDropdownRef = useRef<HTMLButtonElement|null>(null);
+  const [layersDropdownOpen, setLayersDropdownOpen] = useState(false);
   const [pois, setPois] = useState<POI[]>([]);
   const [poiLoading, setPoiLoading] = useState(false);
   const [poiError, setPoiError] = useState("");
@@ -5748,41 +5750,42 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
               segments={segments}
               selected={selectedTrajectories}
               onChange={setSelectedTrajectories}
+              showNumbers={showTrajectoryNumbers}
+              onShowNumbers={setShowTrajectoryNumbers}
               onClose={() => setTrajDropdownOpen(false)}
             />,
             document.body
           )}
         </>}
-        {selectedTrajectories.length > 0 && <label className="map-trajectory-toggle" title="Show travel-order numbers along each trajectory">
-          <input type="checkbox" checked={showTrajectoryNumbers} onChange={event => setShowTrajectoryNumbers(event.target.checked)}/> Numbers
-        </label>}
       </span>}
       <span className="bar-group">
-        <div className="button-group">
-          <button className={`select-area-button ${selectMode ? "active" : ""}`} onClick={() => setSelectMode(value => !value)}>{selectMode ? "Cancel area selection" : "Select area"}</button>
-          {area && <button className="secondary" onClick={() => setArea(null)}>Clear selection</button>}
+        <div className="button-group map-icon-group">
+          <button type="button" className={`map-icon-button select-area-button ${selectMode ? "active" : ""}`} aria-pressed={selectMode} aria-label={selectMode ? "Cancel area selection" : "Select area"} title={selectMode ? "Cancel area selection" : "Select area — drag a rectangle on the map to list the media inside it"} onClick={() => setSelectMode(value => !value)}>
+            <MapToolIcon name={selectMode ? "cancel" : "area"}/>
+          </button>
+          {area && <button type="button" className="map-icon-button secondary" aria-label="Clear selection" title="Clear selection — remove the selected area and its list" onClick={() => setArea(null)}><MapToolIcon name="clear"/></button>}
         </div>
         <form className="map-coordinate-input" onSubmit={event => { event.preventDefault(); setByCoordinates(); }}>
           <input aria-label="Set point by coordinates" value={coordinateInput} onChange={event => { setCoordinateInput(event.target.value); setCoordinateError(""); }} placeholder="lat, lng or Google Maps link"/>
-          <button type="submit" className="secondary">Set point</button>
+          <button type="submit" className="map-icon-button secondary" aria-label="Set point" title="Set point — put a marker at the typed coordinates (lat, lng, DMS or a Google Maps link)"><MapToolIcon name="pin"/></button>
         </form>
       </span>
       <span className="bar-group">
-        <label className="map-trajectory-toggle" title="List the media in this folder that have no GPS coordinates">
-          <input type="checkbox" checked={showNoGPS} onChange={event => setShowNoGPS(event.target.checked)}/> No GPS
-        </label>
-        <label className="map-trajectory-toggle" title="Hide all item and cluster markers, leaving only the basemap">
-          <input type="checkbox" checked={hideMarkers} onChange={event => setHideMarkers(event.target.checked)}/> Map only
-        </label>
-        <label className="map-trajectory-toggle" title="Show your own position and how far away each photo was taken">
-          <input type="checkbox" checked={walkMode} onChange={event => setWalkMode(event.target.checked)}/> Walk
-        </label>
-        {walkMode && <WalkRadiusInput radius={walkRadius} onChange={meters => { setWalkRadius(meters); saveWalkRadius(meters); }}/>}
+        <button ref={layersDropdownRef} type="button" className="trajectory-filter-trigger" aria-haspopup="dialog" aria-expanded={layersDropdownOpen} title="Pick what the map shows" onClick={() => setLayersDropdownOpen(value => !value)}>
+          {"Layers"}{" · "}{mapLayersLabel([showNoGPS && "No GPS", hideMarkers && "Map only", walkMode && "Walk", showPOIs && "POI"])} <span className="caret" aria-hidden="true">▾</span>
+        </button>
+        {layersDropdownOpen && layersDropdownRef.current && createPortal(
+          <MapLayersPanel anchor={layersDropdownRef.current} onClose={() => setLayersDropdownOpen(false)} layers={[
+            {label:"No GPS", hint:"List the media in this folder that have no GPS coordinates", checked:showNoGPS, onChange:setShowNoGPS},
+            {label:"Map only", hint:"Hide all item and cluster markers, leaving only the basemap", checked:hideMarkers, onChange:setHideMarkers},
+            {label:"Walk", hint:"Show your own position and how far away each photo was taken", checked:walkMode, onChange:setWalkMode},
+            {label:"POI", hint:"Show points of interest (restaurants, fuel, hotels, …) from the configured provider", checked:showPOIs, onChange:checked => { setShowPOIs(checked); if (!checked) setPois([]); }},
+          ]}/>,
+          document.body
+        )}
       </span>
-      <span className="bar-group">
-        <label className="map-trajectory-toggle" title="Show points of interest (restaurants, fuel, hotels, …) from the configured provider">
-          <input type="checkbox" checked={showPOIs} onChange={event => { setShowPOIs(event.target.checked); if (!event.target.checked) setPois([]); }}/> POI
-        </label>
+      {(walkMode || showPOIs) && <span className="bar-group">
+        {walkMode && <WalkRadiusInput radius={walkRadius} onChange={meters => { setWalkRadius(meters); saveWalkRadius(meters); }}/>}
         {showPOIs && <button ref={poiDropdownRef} type="button" className="secondary poi-cat-trigger" aria-haspopup="dialog" aria-expanded={poiDropdownOpen} title="Pick which places to show" onClick={() => setPoiDropdownOpen(value => !value)}>
           Categories · {poiCategoriesLabel(poiCategories)} <span className="caret" aria-hidden="true">▾</span>
         </button>}
@@ -5790,7 +5793,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
           <POICategoryPanel anchor={poiDropdownRef.current} selected={poiCategories} onChange={setPoiCategories} onClose={() => setPoiDropdownOpen(false)}/>,
           document.body
         )}
-      </span>
+      </span>}
       {poiLoading && <span className="map-render-status" role="status">Loading POI…</span>}
       {poiError && <span className="map-render-status poi-error" role="alert">POI error: {poiError}</span>}
       {coordinateError && <span className="map-notice" role="alert">{coordinateError}</span>}
@@ -6484,7 +6487,7 @@ function POICategoryPanel({anchor, selected, onChange, onClose}:{anchor:HTMLElem
 
 // Checkbox dropdown that picks which trajectories are drawn on the map. Nothing
 // is shown until at least one trajectory is checked (none selected by default).
-function TrajectoryFilterPanel({anchor, segments, selected, onChange, onClose}:{anchor:HTMLElement; segments:TrajectorySegment[]; selected:number[]; onChange:(next:number[])=>void; onClose:()=>void}) {
+function TrajectoryFilterPanel({anchor, segments, selected, onChange, showNumbers, onShowNumbers, onClose}:{anchor:HTMLElement; segments:TrajectorySegment[]; selected:number[]; onChange:(next:number[])=>void; showNumbers:boolean; onShowNumbers:(show:boolean)=>void; onClose:()=>void}) {
   const ref = useRef<HTMLDivElement|null>(null);
   const [position, setPosition] = useState<{top:number; left:number}>(() => dropdownBelow(anchor, 0));
   useEffect(() => {
@@ -6513,11 +6516,61 @@ function TrajectoryFilterPanel({anchor, segments, selected, onChange, onClose}:{
         <span className="poi-cat-text">{segment.name}</span>
       </label>
     ))}
+    {selected.length > 0 && <label className="poi-cat-row trajectory-numbers-row" title="Show travel-order numbers along each trajectory">
+      <input type="checkbox" checked={showNumbers} onChange={event => onShowNumbers(event.target.checked)}/>
+      <span className="trajectory-numbers-swatch" aria-hidden="true">1</span>
+      <span className="poi-cat-text">Numbers</span>
+    </label>}
     <div className="poi-cat-actions">
       <button type="button" className="secondary" onClick={() => onChange(segments.map((_, index) => index))} disabled={selected.length === segments.length}>Select all</button>
       <button type="button" className="secondary" onClick={() => onChange([])} disabled={selected.length === 0}>Clear</button>
     </div>
   </div>;
+}
+
+// Each name is its own text node so the DOM translation pass can translate it.
+function mapLayersLabel(active:(string|false)[]) {
+  const on = active.filter((name):name is string => name !== false);
+  return on.length === 0 ? "none" : on.map((name, index) => <Fragment key={name}>{index > 0 && ", "}{name}</Fragment>);
+}
+
+// Multi-select dropdown of the map's overlay switches (No GPS list, Map only,
+// Walk, POI); stays open while toggling so several can be changed at once.
+function MapLayersPanel({anchor, layers, onClose}:{anchor:HTMLElement; layers:{label:string; hint:string; checked:boolean; onChange:(checked:boolean)=>void}[]; onClose:()=>void}) {
+  const ref = useRef<HTMLDivElement|null>(null);
+  const [position, setPosition] = useState<{top:number; left:number}>(() => dropdownBelow(anchor, 0));
+  useEffect(() => {
+    const handler = (event:PointerEvent) => { if (ref.current && !ref.current.contains(event.target as Node) && !anchor.contains(event.target as Node)) onClose(); };
+    const keyHandler = (event:KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    const reposition = () => setPosition(dropdownBelow(anchor, ref.current?.offsetWidth ?? 0));
+    window.addEventListener("resize", reposition);
+    document.addEventListener("pointerdown", handler);
+    document.addEventListener("keydown", keyHandler);
+    reposition();
+    return () => {
+      window.removeEventListener("resize", reposition);
+      document.removeEventListener("pointerdown", handler);
+      document.removeEventListener("keydown", keyHandler);
+    };
+  }, [anchor, onClose]);
+  return <div className="poi-cat-panel map-layers-panel" ref={ref} role="dialog" aria-label="Map layers" style={{top:position.top, left:position.left}}
+    onKeyDown={event => event.stopPropagation()}>
+    {layers.map(layer => (
+      <label key={layer.label} className="poi-cat-row" title={layer.hint}>
+        <input type="checkbox" aria-label={layer.label} checked={layer.checked} onChange={event => layer.onChange(event.target.checked)}/>
+        <span className="poi-cat-text">{layer.label}<small>{layer.hint}</small></span>
+      </label>
+    ))}
+  </div>;
+}
+
+function MapToolIcon({name}:{name:"area"|"cancel"|"clear"|"pin"}) {
+  return <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    {name === "area" && <><rect x="4" y="4" width="16" height="16" rx="1" strokeDasharray="3 3"/><path d="M12 9v6M9 12h6"/></>}
+    {name === "cancel" && <path d="M6 6l12 12M18 6L6 18"/>}
+    {name === "clear" && <><rect x="4" y="4" width="16" height="16" rx="1" strokeDasharray="3 3"/><path d="M9 9l6 6M15 9l-6 6"/></>}
+    {name === "pin" && <><path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></>}
+  </svg>;
 }
 
 function PickedPointPopup({gps,onSetGPS,onWalkFrom}:{gps:string; onSetGPS:(gps:string)=>void; onWalkFrom?:(gps:string)=>void}) {
