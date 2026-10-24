@@ -57,9 +57,9 @@ type ServerSettings struct {
 	SMTPFrom                         string `json:"smtpFrom"`
 	// MapTileProviders carries per-provider configuration options for the
 	// media map's tile sources. The provider list is fixed for now (osm, esri,
-	// carto), but each provider holds free-form options; today only carto uses
-	// one: {"apiKey": "..."} — the CARTO Basemaps API key used to build tile
-	// URLs. The key is a public client-side key by nature (the browser sends
+	// carto, mapy), but each provider holds free-form options; carto and mapy
+	// use one: {"apiKey": "..."} — the CARTO Basemaps / Mapy.com REST API key
+	// used to build tile URLs. The key is a public client-side key by nature (the browser sends
 	// it to the tile server), so it ships in the settings payloads.
 	MapTileProviders map[string]map[string]string `json:"mapTileProviders,omitempty"`
 
@@ -129,7 +129,8 @@ type UserSettings struct {
 	// independently for light and dark themes. A source is either a bare
 	// provider ("osm", "esri") or a provider with a sub-provider style
 	// ("carto:voyager", "carto:light", "carto:dark") or the satellite imagery
-	// style ("esri:satellite"). "carto" is accepted and normalized to
+	// style ("esri:satellite") or a Mapy.com map set ("mapy:basic",
+	// "mapy:outdoor", "mapy:winter", "mapy:aerial"). "carto" is accepted and normalized to
 	// "carto:voyager". The provider list is fixed; per-provider options (like
 	// the carto API key) live in ServerSettings.MapTileProviders.
 	MapTileProviderLight string `json:"mapTileProviderLight"`

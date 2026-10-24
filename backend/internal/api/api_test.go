@@ -469,6 +469,10 @@ func TestUserSettingsMapTileSourceValidation(t *testing.T) {
 		{light: "carto:dark", dark: "carto:dark", wantCode: http.StatusBadRequest},     // dark sub-provider in the light theme
 		{light: "carto:light", dark: "carto:light", wantCode: http.StatusBadRequest},   // light sub-provider in the dark theme
 		{light: "esri:satellite", dark: "carto:light", wantCode: http.StatusBadRequest}, // carto:light is dark-theme-invalid
+		{light: "mapy:basic", dark: "mapy:outdoor", wantCode: http.StatusOK},
+		{light: "mapy:winter", dark: "mapy:aerial", wantCode: http.StatusOK},
+		{light: "mapy", dark: "mapy:basic", wantCode: http.StatusBadRequest},
+		{light: "mapy:basic", dark: "mapy:names-overlay", wantCode: http.StatusBadRequest},
 		{light: "google", dark: "google", wantCode: http.StatusBadRequest},
 		{light: "esri:sat", dark: "esri:satellite", wantCode: http.StatusBadRequest},
 		{light: "", dark: "foo:bar", wantCode: http.StatusBadRequest},
@@ -2300,7 +2304,7 @@ func TestUserSettingsExposeMapTileProviders(t *testing.T) {
 	}
 
 	// Unknown providers and blank options are stripped on save.
-	body := `{"httpEnabled":true,"httpsEnabled":false,"mapTileProviders":{"google":{"token":"x"},"carto":{"apiKey":"new-key","  ":"y"},"osm":{"custom":"  "}}}`
+	body := `{"httpEnabled":true,"httpsEnabled":false,"mapTileProviders":{"google":{"token":"x"},"carto":{"apiKey":"new-key","  ":"y"},"mapy":{"apiKey":" mapy-key "},"osm":{"custom":"  "}}}`
 	if got := request(f.handler, http.MethodPut, "/api/v1/admin/settings", admin, []byte(body)).Code; got != http.StatusOK {
 		t.Fatalf("put provider options status = %d", got)
 	}
@@ -2319,6 +2323,9 @@ func TestUserSettingsExposeMapTileProviders(t *testing.T) {
 	}
 	if _, hasBlank := carto[""]; hasBlank {
 		t.Fatalf("blank option key must be dropped, got %#v", carto)
+	}
+	if mapy := providers["mapy"].(map[string]any); mapy["apiKey"] != "mapy-key" {
+		t.Fatalf("mapy apiKey = %#v, want mapy-key", mapy["apiKey"])
 	}
 }
 

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { App, clearAdjustCacheForTests, fitTurned, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { App, clearAdjustCacheForTests, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -495,16 +495,37 @@ test("changing the map tile source in user settings updates the open map immedia
   await waitFor(() => expect(tileSource().some(src => src.includes("basemaps.cartocdn.com/rastertiles/voyager"))).toBe(true));
 });
 
+test("map shows Mapy.com aerial imagery with its labels overlay, logo and copyright", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  mockApi.map.mockResolvedValue([]);
+  mockApi.userSettings.mockResolvedValue({theme:"light", language:"auto", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"mapy:aerial", mapTileProviderDark:"osm", mapMaxZoom:22, mapTileProviders:{mapy:{apiKey:"k y"}}});
+  render(<MemoryRouter initialEntries={["/map"]}><App/></MemoryRouter>);
+  const tileSource = () => Array.from(document.querySelectorAll<HTMLImageElement>("img.leaflet-tile")).map(tile => tile.src);
+  await waitFor(() => expect(tileSource().some(src => src.includes("api.mapy.com/v1/maptiles/aerial/256/") && src.endsWith("apikey=k%20y"))).toBe(true));
+  expect(tileSource().some(src => src.includes("api.mapy.com/v1/maptiles/names-overlay/256/"))).toBe(true);
+  expect(screen.getByRole("img", {name:"Mapy.com"}).closest("a")).toHaveAttribute("href", "https://mapy.com/");
+  expect(document.querySelector(".leaflet-control-attribution")?.textContent).toContain("Seznam.cz");
+});
+
+test("Mapy.com retina tiles only for the basic and outdoor map sets", () => {
+  expect(mapyTileUrl("basic", "key", true)).toBe("https://api.mapy.com/v1/maptiles/basic/256@2x/{z}/{x}/{y}?apikey=key");
+  expect(mapyTileUrl("outdoor", "key", true)).toContain("/outdoor/256@2x/");
+  expect(mapyTileUrl("winter", "key", true)).toContain("/winter/256/");
+  expect(mapyTileUrl("aerial", "key", true)).toContain("/aerial/256/");
+  expect(mapyTileUrl("basic", "key", false)).toContain("/basic/256/");
+});
+
 test("admin map settings section saves tile and POI provider keys", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin?section=map"]}><App/></MemoryRouter>);
   expect(await screen.findByRole("heading", {name:"Map settings"})).toBeInTheDocument();
   await waitFor(() => expect(screen.getByLabelText("CARTO Basemaps API key")).toBeEnabled());
   fireEvent.change(screen.getByLabelText("CARTO Basemaps API key"), {target:{value:"carto-test-key"}});
+  fireEvent.change(screen.getByLabelText("Mapy.com API key"), {target:{value:"mapy-test-key"}});
   fireEvent.change(screen.getByLabelText("Overpass endpoint"), {target:{value:"https://overpass.example.com/api/interpreter"}});
   fireEvent.change(screen.getByLabelText("Geoapify API key"), {target:{value:"geoapify-test-key"}});
   fireEvent.change(screen.getByLabelText("Mapbox token"), {target:{value:"mapbox-test-token"}});
-  await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({mapTileProviders:{carto:{apiKey:"carto-test-key"}},poiProviders:{overpass:{endpoint:"https://overpass.example.com/api/interpreter"},geoapify:{apiKey:"geoapify-test-key"},mapbox:{token:"mapbox-test-token"}}})));
+  await waitFor(() => expect(mockApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({mapTileProviders:{carto:{apiKey:"carto-test-key"},mapy:{apiKey:"mapy-test-key"}},poiProviders:{overpass:{endpoint:"https://overpass.example.com/api/interpreter"},geoapify:{apiKey:"geoapify-test-key"},mapbox:{token:"mapbox-test-token"}}})));
 });
 
 test("user settings lists the full direct-play formats the browser supports", async () => {

@@ -310,5 +310,5 @@ export interface MediaAdjust {
   rotation:number;
 }
 
-export type MapTileSource = "osm" | "esri" | "esri:satellite" | "carto" | "carto:voyager" | "carto:light" | "carto:dark";
+export type MapTileSource = "osm" | "esri" | "esri:satellite" | "carto" | "carto:voyager" | "carto:light" | "carto:dark" | "mapy:basic" | "mapy:outdoor" | "mapy:winter" | "mapy:aerial";
 export type POISource = "overpass" | "geoapify" | "mapbox";

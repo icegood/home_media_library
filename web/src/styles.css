@@ -965,6 +965,8 @@ form.map-trajectory-toggle { margin: 0; }
 :root[data-theme="dark"] .leaflet-control-attribution a, :root[data-theme="forest"] .leaflet-control-attribution a { color: var(--primary-light); }
 :root[data-theme="dark"] .map, :root[data-theme="dark"] .leaflet-container,
 :root[data-theme="forest"] .map, :root[data-theme="forest"] .leaflet-container { background: var(--surface-raised); }
+.map .mapy-logo { display: block; line-height: 0; }
+.map .mapy-logo img { width: 80px; height: auto; }
 .map.dark-tile-filter .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(95%) contrast(90%); }
 
 /* ===== Map scale line ===== */

@@ -638,12 +638,12 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	lightSource, ok := normalizeMapTileSource(input.MapTileProviderLight, false)
 	if !ok {
-		problem(w, http.StatusBadRequest, "light map tile source must be osm, esri, esri:satellite, carto, carto:voyager, or carto:light")
+		problem(w, http.StatusBadRequest, "light map tile source must be osm, esri, esri:satellite, carto, carto:voyager, carto:light, mapy:basic, mapy:outdoor, mapy:winter, or mapy:aerial")
 		return
 	}
 	darkSource, ok := normalizeMapTileSource(input.MapTileProviderDark, true)
 	if !ok {
-		problem(w, http.StatusBadRequest, "dark map tile source must be osm, esri, esri:satellite, carto, carto:voyager, or carto:dark")
+		problem(w, http.StatusBadRequest, "dark map tile source must be osm, esri, esri:satellite, carto, carto:voyager, carto:dark, mapy:basic, mapy:outdoor, mapy:winter, or mapy:aerial")
 		return
 	}
 	maxZoom := input.MapMaxZoom
@@ -732,10 +732,11 @@ func playCacheCount(value *int, fallback int, name string) (int, error) {
 // normalizeMapTileSource validates and normalizes a user-chosen map tile
 // source (provider or provider:sub-provider) for a mode. Empty values fall
 // back to the keyless OSM provider; a bare "carto" becomes "carto:voyager".
+// Mapy.com map sets (basic, outdoor, winter, aerial) are valid in both modes.
 func normalizeMapTileSource(value string, dark bool) (string, bool) {
 	value = strings.TrimSpace(value)
 	switch value {
-	case "", "osm", "esri", "carto", "carto:voyager", "esri:satellite":
+	case "", "osm", "esri", "carto", "carto:voyager", "esri:satellite", "mapy:basic", "mapy:outdoor", "mapy:winter", "mapy:aerial":
 		if value == "carto" {
 			value = "carto:voyager"
 		}
@@ -4291,7 +4292,7 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 	providers := map[string]map[string]string{}
 	optionCount := 0
 	for id, options := range input.MapTileProviders {
-		if id != "osm" && id != "esri" && id != "carto" {
+		if id != "osm" && id != "esri" && id != "carto" && id != "mapy" {
 			continue
 		}
 		clean := map[string]string{}

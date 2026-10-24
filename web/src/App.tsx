@@ -1600,7 +1600,8 @@ function AdminSettings({section}:{section:"network"|"map"|"mail"|"thumbnails"|"j
     </fieldset>}
     {section === "map" && <><fieldset><legend>Map tiles</legend>
       <label>CARTO Basemaps API key<input value={mapTileProviders["carto"]?.apiKey ?? ""} onChange={event => { setMapTileProviders({...mapTileProviders, carto:{...(mapTileProviders["carto"] ?? {}), apiKey:event.target.value}}); setSaved(false); }} autoComplete="off" spellCheck={false} placeholder="abc123-example-key"/></label>
-      <small>Each user picks a tile source per theme in their own user settings: <strong>OpenStreetMap</strong>, <strong>Esri</strong> (Streets and Satellite), or <strong>CARTO</strong> (Voyager in both themes, Light in the light theme, Native dark in the dark theme). Per-provider options are configured here — today only CARTO has one, its free API key, which the browser uses to build tile URLs (so it is public by nature). Users who pick CARTO without a key see the tiles with an "API key required" watermark. Get a key at <a href="https://carto.com/basemaps/apikey" target="_blank" rel="noopener noreferrer">carto.com/basemaps/apikey</a>.</small>
+      <label>Mapy.com API key<input value={mapTileProviders["mapy"]?.apiKey ?? ""} onChange={event => { setMapTileProviders({...mapTileProviders, mapy:{...(mapTileProviders["mapy"] ?? {}), apiKey:event.target.value}}); setSaved(false); }} autoComplete="off" spellCheck={false} placeholder="mapy-example-key"/></label>
+      <small>Each user picks a tile source per theme in their own user settings: <strong>OpenStreetMap</strong>, <strong>Esri</strong> (Streets and Satellite), <strong>CARTO</strong> (Voyager in both themes, Light in the light theme, Native dark in the dark theme), or <strong>Mapy.com</strong> (Basic, Outdoor, Winter, Aerial with labels). Per-provider options are configured here — CARTO and Mapy.com each need an API key, which the browser uses to build tile URLs (so it is public by nature). Users who pick CARTO without a key see the tiles with an "API key required" watermark; Mapy.com tiles do not load without one. Get a CARTO key at <a href="https://carto.com/basemaps/apikey" target="_blank" rel="noopener noreferrer">carto.com/basemaps/apikey</a> and a Mapy.com key at <a href="https://developer.mapy.com/" target="_blank" rel="noopener noreferrer">developer.mapy.com</a> (free tier: 250,000 tiles a month).</small>
     </fieldset>
     <fieldset><legend>POI providers</legend>
       <label>Overpass endpoint<input value={poiProviders["overpass"]?.endpoint ?? ""} onChange={event => { setPOIProviders({...poiProviders, overpass:{...(poiProviders["overpass"] ?? {}), endpoint:event.target.value}}); setSaved(false); }} autoComplete="off" spellCheck={false} placeholder="https://overpass-api.de/api/interpreter"/></label>
@@ -1919,10 +1920,10 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       <fieldset><legend>Map tiles</legend>
         <label>Tile source in light mode<Combobox value={mapTileProviderLight} ariaLabel="Tile source in light mode" options={LIGHT_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderLight(value as MapTileSource); setSaved(false); }}/></label>
         <label>Tile source in dark/forest mode<Combobox value={mapTileProviderDark} ariaLabel="Tile source in dark/forest mode" options={DARK_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderDark(value as MapTileSource); setSaved(false); }}/></label>
-        <small>Dark or forest themes use a native dark source when available (CARTO Voyager dark, CARTO Native dark); other sources get a dark filter. OSM and Esri need no key; every CARTO source needs one, configured by the admin in the Admin panel → Map tiles. Without a configured key, CARTO tiles show an "API key required" watermark.</small>
+        <small>Dark or forest themes use a native dark source when available (CARTO Voyager dark, CARTO Native dark); other sources get a dark filter, except satellite and aerial imagery. OSM and Esri need no key; every CARTO and Mapy.com source needs one, configured by the admin in the Admin panel → Map tiles. Without a configured key, CARTO tiles show an "API key required" watermark and Mapy.com tiles do not load.</small>
         <label>Maximum zoom<input type="number" min={1} max={24} value={mapMaxZoom}
           onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setMapMaxZoom(next); setSaved(false); } }}/></label>
-        <small>Deepest zoom level the map may reach (1–24). Recommended: 19 for OpenStreetMap, 20 for CARTO and Esri. Higher values are allowed and just upscale the provider's best tiles, so expect blurry imagery past the recommended level.</small>
+        <small>Deepest zoom level the map may reach (1–24). Recommended: 19 for OpenStreetMap, 20 for CARTO, Esri and Mapy.com (Mapy.com stops at 20; its aerial imagery reaches 19–20 only in parts of Central Europe and 13 elsewhere). Higher values are allowed and just upscale the provider's best tiles, so expect blurry imagery past the recommended level.</small>
       </fieldset>
       <fieldset><legend>Map points of interest</legend>
         <label>POI provider in light mode<Combobox value={poiProviderLight} ariaLabel="POI provider in light mode" options={POI_SOURCE_OPTIONS} onSelect={value => { setPoiProviderLight(value as POISource); setSaved(false); }}/></label>
@@ -3309,6 +3310,10 @@ const LIGHT_MAP_TILE_OPTIONS: {value:MapTileSource; label:string}[] = [
   {value:"esri:satellite", label:"Esri — Satellite"},
   {value:"carto:voyager", label:"CARTO — Voyager"},
   {value:"carto:light", label:"CARTO — Light"},
+  {value:"mapy:basic", label:"Mapy.com — Basic"},
+  {value:"mapy:outdoor", label:"Mapy.com — Outdoor"},
+  {value:"mapy:winter", label:"Mapy.com — Winter"},
+  {value:"mapy:aerial", label:"Mapy.com — Aerial"},
 ];
 
 const POI_SOURCE_OPTIONS: {value:POISource; label:string}[] = [
@@ -3323,6 +3328,10 @@ const DARK_MAP_TILE_OPTIONS: {value:MapTileSource; label:string}[] = [
   {value:"esri:satellite", label:"Esri — Satellite"},
   {value:"carto:voyager", label:"CARTO — Voyager (native dark)"},
   {value:"carto:dark", label:"CARTO — Native dark tiles"},
+  {value:"mapy:basic", label:"Mapy.com — Basic"},
+  {value:"mapy:outdoor", label:"Mapy.com — Outdoor"},
+  {value:"mapy:winter", label:"Mapy.com — Winter"},
+  {value:"mapy:aerial", label:"Mapy.com — Aerial"},
 ];
 
 
@@ -5527,6 +5536,34 @@ function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] 
   return items.slice(0, count);
 }
 
+// Mapy.com REST API tiles (api.mapy.com/v1/maptiles). Basic and Outdoor have
+// 512px retina tiles; the terms require the Mapy.com logo and copyright link.
+const MAPY_ATTRIBUTION = '<a href="https://api.mapy.com/copyright" target="_blank" rel="noopener noreferrer">&copy; Seznam.cz a.s. a další</a>';
+
+export function mapyTileUrl(mapset:string, encodedKey:string, retina = L.Browser.retina) {
+  const size = retina && (mapset === "basic" || mapset === "outdoor") ? "256@2x" : "256";
+  return `https://api.mapy.com/v1/maptiles/${mapset}/${size}/{z}/{x}/{y}?apikey=${encodedKey}`;
+}
+
+function MapyLogo() {
+  const map = useMap();
+  useEffect(() => {
+    const logo = new L.Control({position:"bottomleft"});
+    logo.onAdd = () => {
+      const link = L.DomUtil.create("a", "mapy-logo") as HTMLAnchorElement;
+      link.href = "https://mapy.com/";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.innerHTML = '<img src="https://api.mapy.com/img/api/logo.svg" alt="Mapy.com"/>';
+      L.DomEvent.disableClickPropagation(link);
+      return link;
+    };
+    logo.addTo(map);
+    return () => { logo.remove(); };
+  }, [map]);
+  return null;
+}
+
 function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number}}) {
   const navigate = useNavigate();
   useSyncBrowserBarMetrics();
@@ -5657,25 +5694,31 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const source = darkMode ? tileSettings.providerDark : tileSettings.providerLight;
   const provider = source.split(":")[0];
   const subStyle = source.split(":")[1] ?? "";
-  const isSatellite = source === "esri:satellite";
+  const isSatellite = source === "esri:satellite" || source === "mapy:aerial";
   // In dark mode treat a non-dark CARTO basemap as native dark so it does not
   // render as a light map with only a filter overlaid.
   const effectiveSubStyle = darkMode && provider === "carto" && subStyle !== "dark" && subStyle !== "light" ? "dark" : subStyle;
   const cartoKey = tileSettings.mapProviders["carto"]?.apiKey ?? "";
   const cartoTiles = provider === "carto";
   const esriTiles = provider === "esri";
+  const mapyTiles = provider === "mapy";
+  const mapyKey = encodeURIComponent(tileSettings.mapProviders["mapy"]?.apiKey ?? "");
   const cartoPath = effectiveSubStyle === "dark" ? "dark_all" : effectiveSubStyle === "light" ? "light_all" : "rastertiles/voyager";
   const tileUrl = cartoTiles
     ? `https://basemaps.cartocdn.com/${cartoPath}/{z}/{x}/{y}.png${cartoKey !== "" ? `?key=${encodeURIComponent(cartoKey)}` : ""}`
+    : mapyTiles
+      ? mapyTileUrl(subStyle, mapyKey)
     : esriTiles
       ? isSatellite
         ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
         : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
       : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
   const tileAttribution = cartoTiles ? "&copy; OpenStreetMap contributors &copy; CARTO"
+    : mapyTiles ? MAPY_ATTRIBUTION
     : esriTiles ? "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics"
     : "&copy; OpenStreetMap contributors";
-  const mapMaxZoom = Math.min(24, Math.max(1, Math.round(tileSettings.maxZoom || 19)));
+  // Mapy.com serves tiles up to zoom 20; deeper levels upscale them.
+  const mapMaxZoom = Math.min(mapyTiles ? 20 : 24, Math.max(1, Math.round(tileSettings.maxZoom || 19)));
   const filterDark = darkMode && !(isSatellite || (cartoTiles && effectiveSubStyle === "dark"));
   useEffect(() => {
     const container = mapRef.current?.getContainer();
@@ -5759,8 +5802,10 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
     <div className="map-stage">
       {(mapError) && <div className="map-notice" role="alert">{mapError}</div>}
       <MapContainer ref={mapRef} center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className={`map${filterDark ? " dark-tile-filter" : ""}`}>
-        <TileLayer key={`${theme}-${isSatellite ? "satellite" : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}
+        <TileLayer key={`${theme}-${mapyTiles ? source : isSatellite ? "satellite" : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}
           maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>
+        {source === "mapy:aerial" && <TileLayer key={`${theme}-mapy-names`} url={mapyTileUrl("names-overlay", mapyKey)} maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>}
+        {mapyTiles && <MapyLogo/>}
         <ScaleControl position="bottomleft" imperial={false}/>
         <PlaceSearch onWalkFrom={walkFrom}/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
