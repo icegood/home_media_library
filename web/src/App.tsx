@@ -4092,6 +4092,17 @@ function mediaDimensions(metadata:Record<string, unknown>): {width:number; heigh
   return null;
 }
 
+// Element size (before its rotate transform) that makes a width×height picture,
+// turned by `rotation` degrees, the largest that fits a boxWidth×boxHeight
+// area: a quarter turn swaps which side has to fit the box's width.
+export function fitTurned(width:number, height:number, rotation:number, boxWidth:number, boxHeight:number) {
+  const quarter = ((rotation % 180) + 180) % 180 === 90;
+  const seenWidth = quarter ? height : width;
+  const seenHeight = quarter ? width : height;
+  const scale = Math.min(boxWidth / seenWidth, boxHeight / seenHeight);
+  return {width: Math.floor(width * scale), height: Math.floor(height * scale)};
+}
+
 // Video volume/mute is a per-device convenience; storage may be unavailable.
 const VIDEO_SOUND_KEY = "ml.videoSound";
 
@@ -4323,6 +4334,27 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const nativeFullscreenRef = useRef(false);
   nativeFullscreenRef.current = nativeFullscreen;
+  // In fullscreen the picture is sized from the screen's width and height and
+  // its own proportions (swapped when turned 90°/270°), so the picture as seen
+  // is the largest that fits entirely, centred on the screen. CSS alone
+  // cannot do this: rotation is a visual transform that layout ignores, so a
+  // turned picture was sized, and centred, as if it were not turned.
+  const [naturalSize, setNaturalSize] = useState<{id:ID; width:number; height:number}|null>(null);
+  const [screenBox, setScreenBox] = useState<{width:number; height:number}|null>(null);
+  const fullscreenActive = isFullscreen || nativeFullscreen;
+  useEffect(() => {
+    const element = mediaRef.current;
+    if (!fullscreenActive || !element) { setScreenBox(null); return; }
+    const measure = () => setScreenBox({width:element.clientWidth, height:element.clientHeight});
+    measure();
+    window.addEventListener("resize", measure);
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
+    return () => { window.removeEventListener("resize", measure); observer?.disconnect(); };
+  }, [fullscreenActive]);
+  const fittedImage = fullscreenActive && screenBox && naturalSize && naturalSize.id === item.id
+    ? fitTurned(naturalSize.width, naturalSize.height, imageRotation, screenBox.width, screenBox.height)
+    : null;
   // Long press acts as the system back button. In the Android native app the
   // in-app fullscreen hides the system bars (setImmersive), so there is no
   // on-screen back/gesture target once the media is pinned edge-to-edge; a
@@ -4599,7 +4631,9 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
       {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} adjust={adjust} ready={adjustReady} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         item.kind === "image" ?
-        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}${fullSrc?.id === item.id ? "" : " placeholder-image"}`} style={{opacity:adjustReady ? 1 : 0, transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={imageSrc} alt={item.name}
+        <img key={`image-${item.id}`} className={`${imageZoom > 1 ? "zoomed-image" : ""} ${drag ? "panning-image" : ""}${fullSrc?.id === item.id ? "" : " placeholder-image"}`}
+          onLoad={event => { const image = event.currentTarget; if (image.naturalWidth > 0 && image.naturalHeight > 0) setNaturalSize({id:item.id, width:image.naturalWidth, height:image.naturalHeight}); }}
+          style={{...(fittedImage && screenBox ? {position:"absolute", left:(screenBox.width - fittedImage.width) / 2, top:(screenBox.height - fittedImage.height) / 2, margin:0, width:fittedImage.width, height:fittedImage.height, maxWidth:"none", maxHeight:"none", aspectRatio:"auto"} : {}), opacity:adjustReady ? 1 : 0, transform:`translate(${imagePan.x}px, ${imagePan.y}px) rotate(${imageRotation}deg) scale(${imageZoom})`, filter:applyAdjust(adjust)}} src={imageSrc} alt={item.name}
           onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
         <>
           {docNative
@@ -5168,6 +5202,23 @@ function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"
 
 function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,imageRotation,imagePan,drag,adjust,ready,onPointerDown,onPointerMove,onPointerUp,onPointerCancel}:{item:Media; supported:string[]; isFullscreen?:boolean; onToggleFullscreen?:()=>void; imageZoom?:number; imageRotation?:number; imagePan?:{x:number;y:number}; drag?:{pointerId:number}|null; adjust:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; ready?:boolean; onPointerDown?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerMove?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerUp?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerCancel?:(e:React.PointerEvent<HTMLElement>)=>void}) {
   const metadataDuration = videoMetadataDuration(item.metadata);
+  // Fullscreen sizes the (rotatable) video stack from the screen box and the
+  // clip's own resolution, like the image viewer, so the picture as seen is
+  // the largest that fits; the controls overlay its bottom edge when shown.
+  const boxRef = useRef<HTMLDivElement|null>(null);
+  const [clipSize, setClipSize] = useState<{width:number; height:number}|null>(() => mediaDimensions(item.metadata));
+  const [screenBox, setScreenBox] = useState<{width:number; height:number}|null>(null);
+  useEffect(() => {
+    const element = boxRef.current?.closest<HTMLElement>(".viewer-media");
+    if (!isFullscreen || !element) { setScreenBox(null); return; }
+    const measure = () => setScreenBox({width:element.clientWidth, height:element.clientHeight});
+    measure();
+    window.addEventListener("resize", measure);
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
+    return () => { window.removeEventListener("resize", measure); observer?.disconnect(); };
+  }, [isFullscreen]);
+  const fittedClip = isFullscreen && screenBox && clipSize ? fitTurned(clipSize.width, clipSize.height, imageRotation ?? 0, screenBox.width, screenBox.height) : null;
   const [thumbs, setThumbs] = useState<VideoThumbnail[]>([]);
   const [hover, setHover] = useState<VideoThumbnail|null>(null);
   const [hoverLeft, setHoverLeft] = useState(0);
@@ -5375,16 +5426,16 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
           try { void el.play(); } catch { /* ignore */ }
         } else el.pause();
       }}
-      onLoadedMetadata={event => { const reported = event.currentTarget.duration; if (!(metadataDuration > 0) && Number.isFinite(reported) && reported > 0) setDuration(reported); }}
+      onLoadedMetadata={event => { const clip = event.currentTarget; if (isActive && clip.videoWidth > 0 && clip.videoHeight > 0) setClipSize({width:clip.videoWidth, height:clip.videoHeight}); const reported = clip.duration; if (!(metadataDuration > 0) && Number.isFinite(reported) && reported > 0) setDuration(reported); }}
       onTimeUpdate={event => { if (!isActive || seekPending.current) return; const position = offset + event.currentTarget.currentTime; setCurrent(duration > 0 ? Math.min(position, duration) : position); }}
       onPlay={isActive ? () => setPlaying(true) : undefined}
       onPause={isActive ? () => setPlaying(false) : undefined}>
       Your browser cannot play this video.
     </video>;
   }
-  return <div className="video-box">
+  return <div className={`video-box${fittedClip ? " video-fitted" : ""}`} ref={boxRef}>
     {stopped ? <div className="video-stack video-stopped" aria-label="Video stopped" onDoubleClick={onVideoDoubleClick}/> :
-    <div className={`video-stack${imageZoom != null && imageZoom > 1 ? " zoomed-image" : ""}${drag ? " panning-image" : ""}`} style={{opacity:ready === false ? 0 : 1, transform:`translate(${imagePan?.x ?? 0}px, ${imagePan?.y ?? 0}px) rotate(${imageRotation}deg) scale(${imageZoom ?? 1})`}} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onDoubleClick={onVideoDoubleClick}>
+    <div className={`video-stack${imageZoom != null && imageZoom > 1 ? " zoomed-image" : ""}${drag ? " panning-image" : ""}`} style={{...(fittedClip && screenBox ? {position:"absolute", left:(screenBox.width - fittedClip.width) / 2, top:(screenBox.height - fittedClip.height) / 2, width:fittedClip.width, height:fittedClip.height, flex:"none"} : {}), opacity:ready === false ? 0 : 1, transform:`translate(${imagePan?.x ?? 0}px, ${imagePan?.y ?? 0}px) rotate(${imageRotation}deg) scale(${imageZoom ?? 1})`}} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onDoubleClick={onVideoDoubleClick}>
       {renderVideo(active)}
       {transcoded && pending !== null && renderVideo(targetSlot)}
     </div>}

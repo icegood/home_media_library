@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { App, clearAdjustCacheForTests, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { App, clearAdjustCacheForTests, fitTurned, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -4280,4 +4280,22 @@ test("native server gate remembers the list of connected servers", async () => {
     setNativePlatformForTests(null);
     Object.defineProperty(window, "location", {value:originalLocation, configurable:true});
   }
+});
+
+test.each([
+  // width, height, rotation, box → element size before its rotate transform
+  ["landscape photo on a portrait screen", 4000, 3000, 0, 412, 860, {width:412, height:309}],
+  ["portrait photo on a landscape screen", 3000, 4000, 0, 860, 412, {width:309, height:412}],
+  ["landscape photo turned 90° on a portrait screen", 4000, 3000, 90, 412, 860, {width:549, height:412}],
+  ["portrait photo turned 270° on a landscape screen", 3000, 4000, 270, 860, 412, {width:412, height:549}],
+  ["half turn keeps the proportions", 4000, 3000, 180, 412, 860, {width:412, height:309}],
+  ["negative quarter turn", 4000, 3000, -90, 412, 860, {width:549, height:412}],
+  ["small clip is scaled up to the screen", 640, 480, 0, 1600, 900, {width:1200, height:900}],
+])("fitTurned sizes a %s", (_name, width, height, rotation, boxWidth, boxHeight, expected) => {
+  const fitted = fitTurned(width, height, rotation, boxWidth, boxHeight);
+  expect(fitted).toEqual(expected);
+  // The picture as seen (after the turn) never exceeds the box.
+  const quarter = Math.abs(rotation) % 180 === 90;
+  expect(quarter ? fitted.height : fitted.width).toBeLessThanOrEqual(boxWidth);
+  expect(quarter ? fitted.width : fitted.height).toBeLessThanOrEqual(boxHeight);
 });
