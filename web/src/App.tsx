@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
 import { applyLanguageSetting, installDomTranslation, LANGUAGES, useLanguage } from "./i18n";
 import type { LanguageSetting } from "./api";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type MediaAdjust, type MapTileSource, type POISource, type UserSettings as UserSettingsPayload } from "./api";
@@ -312,11 +312,30 @@ const VIEWER_ITEM_EVENT = "ml-viewer-item";
 const VIEWER_ITEM_NAMES_LIMIT = 200;
 const viewerItemNames = new Map<ID, string>();
 
+// The item the viewer showed last. Going Back (a history pop) from the viewer
+// to a grid carries no navigation state, so the grid focuses this one instead.
+let lastViewerItemId:ID|null = null;
+
 function publishViewerItem(id:ID, name:string) {
+  lastViewerItemId = id;
   viewerItemNames.delete(id);
   viewerItemNames.set(id, name);
   while (viewerItemNames.size > VIEWER_ITEM_NAMES_LIMIT) viewerItemNames.delete(viewerItemNames.keys().next().value!);
   window.dispatchEvent(new CustomEvent(VIEWER_ITEM_EVENT, {detail:{id, name}}));
+}
+
+// The media a grid should focus on arrival: the one handed over by a breadcrumb
+// link, else on Back the item the viewer showed last.
+function useReturnMediaId():ID|null {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const handed = (location.state as {returnToMediaId?:ID} | null)?.returnToMediaId;
+  if (handed != null) return handed;
+  return navigationType === "POP" ? lastViewerItemId : null;
+}
+
+function consumeReturnMediaId(id:ID) {
+  if (lastViewerItemId === id) lastViewerItemId = null;
 }
 
 const FOLDER_ENTRIES_TTL_MS = 5000;
@@ -2335,7 +2354,8 @@ function Browser() {
   // so the user sees where they came back from without scrolling themselves.
   // Leaving the viewer does the same for the media item that was open, so the
   // grid comes back positioned on it rather than at the top.
-  const {returnToFolderId, returnToMediaId} = (location.state as {returnToFolderId?:ID; returnToMediaId?:ID} | null) ?? {};
+  const returnToFolderId = (location.state as {returnToFolderId?:ID} | null)?.returnToFolderId;
+  const returnToMediaId = useReturnMediaId();
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
     if (consumedReturnKey.current === location.key) return;
@@ -2346,6 +2366,7 @@ function Browser() {
     }
     if (returnToMediaId != null && entries.some(entry => entry.type === "media" && entry.media?.id === returnToMediaId)) {
       consumedReturnKey.current = location.key;
+      consumeReturnMediaId(returnToMediaId);
       kb.focus(`m${returnToMediaId}`);
     }
   }, [entries, returnToFolderId, returnToMediaId, location.key, kb.focus]);
@@ -2427,12 +2448,13 @@ function LibraryTimeline() {
   // Leaving the viewer via the breadcrumb hands back the item that was open, so
   // the timeline reopens focused on it. Progressive group rendering can delay
   // the card, so this retries as more date groups are revealed.
-  const returnToMediaId = (location.state as {returnToMediaId?:ID} | null)?.returnToMediaId ?? null;
+  const returnToMediaId = useReturnMediaId();
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
     if (returnToMediaId == null || consumedReturnKey.current === location.key) return;
     if (!items.some(item => item.id === returnToMediaId)) return;
     consumedReturnKey.current = location.key;
+    consumeReturnMediaId(returnToMediaId);
     kb.focus(`m${returnToMediaId}`);
   }, [items, visibleGroups, returnToMediaId, location.key, kb.focus]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
@@ -2749,13 +2771,14 @@ function FavoriteViewPage() {
   });
   // Returning from the viewer focuses the item that was open in this view. It
   // lives in `items` in folders mode and in `mediaItems` in timeline mode.
-  const returnToMediaId = (location.state as {returnToMediaId?:ID} | null)?.returnToMediaId ?? null;
+  const returnToMediaId = useReturnMediaId();
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
     if (returnToMediaId == null || consumedReturnKey.current === location.key) return;
     const present = mediaItems.some(item => item.id === returnToMediaId) || items.some(item => !item.isFolder && item.id === returnToMediaId);
     if (!present) return;
     consumedReturnKey.current = location.key;
+    consumeReturnMediaId(returnToMediaId);
     kb.focus(`m${returnToMediaId}`);
   }, [items, mediaItems, returnToMediaId, location.key, kb.focus]);
   async function keyboardFavorite(raw:string) {
@@ -2889,7 +2912,7 @@ function FavoriteMediaViewerPage() {
   }, [favoriteViewId]);
   useEffect(() => { if (Number.isFinite(currentMediaId)) api.media(currentMediaId).then(setFallbackItem).catch(() => setFallbackItem(null)); }, [currentMediaId]);
   function go(media:Media|null) {
-    if (media) navigate(`/favorites/view/${media.id}?viewId=${encodeURIComponent(viewId)}&sort=${encodeURIComponent(sortParam)}`);
+    if (media) navigate(`/favorites/view/${media.id}?viewId=${encodeURIComponent(viewId)}&sort=${encodeURIComponent(sortParam)}`, {replace:true});
   }
   useEffect(() => {
     function onKeyDown(event:KeyboardEvent) {
@@ -3979,7 +4002,9 @@ function MediaViewerPage() {
       // navigated-to media to the viewer immediately instead of unmounting it
       // while the new anchor loads (which would drop the image zoom state).
       if (rootMode) setTransitionItem(media);
-      navigate(libraryItemURL(libraryId, media, sortParam, nav));
+      // Paging replaces the history entry, so one Back leaves the viewer and
+      // lands on the grid focused on the item shown last.
+      navigate(libraryItemURL(libraryId, media, sortParam, nav), {replace:true});
     }
   }
   useEffect(() => {

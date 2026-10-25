@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { App, clearAdjustCacheForTests, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
@@ -1871,6 +1871,26 @@ test("returning from the viewer to its folder focuses the item that was open", a
   expect(breadcrumb).toHaveTextContent("Libraries / Family / Photos");
   fireEvent.click(screen.getByRole("link", {name:"Photos"}));
   await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Libraries / Family / Photos"));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m103"]')).toHaveClass("kb-focus"));
+  expect(document.querySelector('[data-kb-id="m101"]')).not.toHaveClass("kb-focus");
+});
+
+test("going Back from the viewer focuses the item the viewer showed last", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:101, name:"one.jpg", relativePath:"Photos/one.jpg", type:"media", media:{id:101, folderId:20, relativePath:"Photos/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    {id:103, name:"two.mp4", relativePath:"Photos/two.mp4", type:"media", media:{id:103, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:""}}
+  ], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  mockApi.media.mockResolvedValue({id:103, folderId:20, relativePath:"Photos/two.mp4", name:"two.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{}, gps:"", takenAt:""});
+  function BackButton() {
+    const navigate = useNavigate();
+    return <button type="button" onClick={() => navigate(-1)}>History back</button>;
+  }
+  render(<MemoryRouter initialEntries={["/library/1/folder/20", "/library/1/view/20?item=103"]} initialIndex={1}><App/><BackButton/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.media).toHaveBeenCalled());
+  await waitFor(() => expect(document.querySelector(".viewer-media")).toBeInTheDocument());
+  fireEvent.click(screen.getByRole("button", {name:"History back"}));
   await waitFor(() => expect(document.querySelector('[data-kb-id="m103"]')).toHaveClass("kb-focus"));
   expect(document.querySelector('[data-kb-id="m101"]')).not.toHaveClass("kb-focus");
 });
