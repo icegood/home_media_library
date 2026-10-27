@@ -84,7 +84,11 @@ func NewSQLite(dsn string) (*SQLite, error) {
 	} else if !strings.HasSuffix(dsn, "?") && !strings.HasSuffix(dsn, "&") {
 		dsn += "&"
 	}
-	dsn += "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)"
+	// WAL lets readers run alongside the single writer, so the interactive and
+	// job handles no longer block each other's reads while one of them writes;
+	// synchronous=NORMAL is the usual pairing (durable at checkpoints, no fsync
+	// per commit). The mode is stored in the file, so it converts on first open.
+	dsn += "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 	db, err := openLogged("sqlite", dsn)
 	if err != nil {
 		return nil, err

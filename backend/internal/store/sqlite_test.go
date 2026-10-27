@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -20,6 +21,22 @@ func openSQLite(t *testing.T) (*store.SQLite, string) {
 	}
 	t.Cleanup(func() { repository.Close() })
 	return repository, dbFile
+}
+
+func TestSQLiteUsesWriteAheadLog(t *testing.T) {
+	_, dbFile := openSQLite(t)
+	db, err := sql.Open("sqlite", dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
 }
 
 func TestSQLiteInitialAdminPersistsAcrossRestart(t *testing.T) {

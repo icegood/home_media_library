@@ -25,7 +25,8 @@ the Caddy gateway runs only when the `https` compose profile is active.
   background work (scans, metadata renew, thumbnail creation, watcher,
   scheduler, job-state persistence) so a long-running job can never starve or
   wedge the connection a user is waiting on. SQLite handles use
-  `SetMaxOpenConns(1)` each. Migrations live at
+  `SetMaxOpenConns(1)` each and run in WAL journal mode (`synchronous=NORMAL`), so
+  reads on one handle are not blocked by a write on the other. Migrations live at
   `backend/internal/store/migrations/{sqlite,postgres}/` and run automatically on
   startup via the embedded `schema_migrations` table. Relative paths are never
   stored; both DB stores compute them on the fly from the library-root prefix.
@@ -65,7 +66,8 @@ Key facts:
 
 ## Runtime layout (single bind mount; back it up)
 
-- `/runtime/app-data` — DB (`media-library.db`)
+- `/runtime/app-data` — DB (`media-library.db`, WAL mode: back up `-wal`/`-shm`
+  together with it, or stop the stack first)
 - `/runtime/app-config` — generated Caddyfile, `logs/app.log`
 - `/runtime/caddy-data`, `/runtime/caddy-config` — Caddy/ACME state
 - `/runtime/thumbnails` — generated thumbnails
