@@ -2673,7 +2673,7 @@ test("media with a saved rotation is not painted unrotated before adjustments lo
   expect(img).toHaveStyle({transform:"translate(0px, 0px) rotate(270deg) scale(1)"});
 });
 
-test("rotate applies immediately but persists only when Save adjustments is pressed", async () => {
+test("rotate applies immediately but persists only when the panel's Save is pressed", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[
     {id:100, name:"DSC06360.JPG", relativePath:"DSC06360.JPG", type:"media", media:{id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
@@ -2685,8 +2685,30 @@ test("rotate applies immediately but persists only when Save adjustments is pres
   expect(img).toHaveStyle({transform:"translate(0px, 0px) rotate(90deg) scale(1)"});
   expect(mockApi.saveAdjust).not.toHaveBeenCalled();
   fireEvent.click(await screen.findByLabelText("Show info panel"));
-  fireEvent.click(screen.getByRole("button", {name:"Save adjustments"}));
+  expect(screen.queryByRole("button", {name:"Save adjustments"})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Save"}));
   await waitFor(() => expect(mockApi.saveAdjust).toHaveBeenCalledWith(100, {brightness:1, hue:0, saturation:1, gamma:1, contrast:1, rotation:90}));
+  expect(mockApi.updateMediaDetails).not.toHaveBeenCalled();
+});
+
+test("the panel's main Save also saves moved colour sliders", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"DSC06360.JPG", relativePath:"DSC06360.JPG", type:"media", media:{id:100, folderId:20, relativePath:"DSC06360.JPG", name:"DSC06360.JPG", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const img = await screen.findByRole("img", {name:"DSC06360.JPG"});
+  await waitFor(() => expect(img).toHaveStyle({opacity:"1"}));
+  fireEvent.click(await screen.findByLabelText("Show info panel"));
+  const save = screen.getByRole("button", {name:"Save"});
+  await waitFor(() => expect(save).toBeDisabled());
+  fireEvent.change(screen.getByLabelText("Media brightness"), {target:{value:"150"}});
+  expect(save).toBeEnabled();
+  fireEvent.click(save);
+  await waitFor(() => expect(mockApi.saveAdjust).toHaveBeenCalledWith(100, {brightness:1.5, hue:0, saturation:1, gamma:1, contrast:1, rotation:0}));
+  // Only the sliders changed, so the details are not re-sent.
+  expect(mockApi.updateMediaDetails).not.toHaveBeenCalled();
+  await waitFor(() => expect(save).toBeDisabled());
 });
 
 test("ctrl+click and the L/R keys rotate counter-clockwise or clockwise", async () => {

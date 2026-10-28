@@ -4301,7 +4301,7 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
     // Ctrl/Cmd+click or "rotate left" rotates counter-clockwise instead.
     const direction = event?.ctrlKey || event?.metaKey || !clockwise ? -90 : 90;
     const rotation = (imageRotation + direction + 360) % 360;
-    // Rotation is only persisted via "Save adjustments", never auto-saved.
+    // Rotation is only persisted by the info panel's Save, never auto-saved.
     setImageRotation(rotation);
   }
   function persistAdjust(rotation:number) {
@@ -4317,6 +4317,14 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
   function saveAdjust() {
     persistAdjust(imageRotation);
   }
+  // Slider or rotation changes not saved yet: the panel's Save saves them
+  // together with the details.
+  const savedAdjust = adjustCache.get(item.id);
+  const adjustDirty = savedAdjust
+    ? Math.round(savedAdjust.brightness * 100) !== adjust.brightness || Math.round(savedAdjust.contrast * 100) !== adjust.contrast
+      || Math.round(savedAdjust.saturation * 100) !== adjust.saturation || Math.round(savedAdjust.gamma * 100) !== adjust.gamma || Math.round(savedAdjust.hue) !== adjust.hue
+      || (savedAdjust.rotation ?? 0) !== imageRotation
+    : imageRotation !== 0 || (Object.keys(defaultAdjust) as (keyof typeof defaultAdjust)[]).some(key => adjust[key] !== defaultAdjust[key]);
   function resetAdjust() {
     setAdjust({...defaultAdjust});
     setImageRotation(0);
@@ -4703,7 +4711,7 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
     </div>
     <button type="button" className="info-handle" aria-label={infoOpen ? "Hide info panel" : "Show info panel"} onClick={onToggleInfo}>{infoOpen ? ">>" : "<<"}</button>
     <aside className={`info-drawer ${infoOpen ? "open" : ""}`} aria-hidden={!infoOpen}>
-      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} mapContext={mapContext} onUpdated={onUpdated} activeTab={infoTab} onTabChange={setInfoTab} adjust={adjust} onAdjustChange={patch => setAdjust(prev => ({...prev, ...patch}))} adjustSaved={savedNotice} onSaveAdjust={saveAdjust} onResetAdjust={resetAdjust}/>}
+      {infoOpen && <MediaInfo key={`info-${item.id}`} item={item} mapContext={mapContext} onUpdated={onUpdated} activeTab={infoTab} onTabChange={setInfoTab} adjust={adjust} onAdjustChange={patch => setAdjust(prev => ({...prev, ...patch}))} adjustSaved={savedNotice} adjustDirty={adjustDirty} onSaveAdjust={saveAdjust} onResetAdjust={resetAdjust}/>}
     </aside>
   </div>;
 }
@@ -5024,7 +5032,7 @@ function dropdownBelow(anchor:HTMLElement, popupWidth:number):{top:number; left:
   };
 }
 
-function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust, onAdjustChange, adjustSaved, onSaveAdjust, onResetAdjust}:{item:Media; mapContext?:string; onUpdated?:(updated:Media)=>void; activeTab:"details"|"metadata"|"notes"; onTabChange:(tab:"details"|"metadata"|"notes")=>void; adjust?:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; onAdjustChange?:(patch:Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)=>void; adjustSaved?:boolean; onSaveAdjust?:()=>void; onResetAdjust?:()=>void}) {
+function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust, onAdjustChange, adjustSaved, adjustDirty = false, onSaveAdjust, onResetAdjust}:{item:Media; mapContext?:string; onUpdated?:(updated:Media)=>void; activeTab:"details"|"metadata"|"notes"; onTabChange:(tab:"details"|"metadata"|"notes")=>void; adjust?:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; onAdjustChange?:(patch:Partial<{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}>)=>void; adjustSaved?:boolean; adjustDirty?:boolean; onSaveAdjust?:()=>void; onResetAdjust?:()=>void}) {
   const dateFormat = useUserDateFormat();
   const [name, setName] = useState(item.name);
   const [gpsValue, setGPSValue] = useState(item.gps ?? "");
@@ -5044,6 +5052,8 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
   const trimmedGPS = gpsValue.trim();
   const dirty = trimmedName !== current.name || trimmedGPS !== (current.gps ?? "") || takenAt.trim() !== formatDateTime(current.takenAt, dateFormat) || notes.trim() !== (current.notes ?? "").trim();
   async function save() {
+    if (adjustDirty) onSaveAdjust?.();
+    if (!dirty) return;
     const trimmedName = name.trim();
     const trimmedGPS = gpsValue.trim();
     if (!trimmedName) {
@@ -5128,7 +5138,6 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
           </label>
         ))}
         <div className="media-adjust-actions">
-          <button type="button" onClick={onSaveAdjust}>Save adjustments</button>
           <button type="button" onClick={onResetAdjust}>Reset adjustments</button>
         </div>
         {adjustSaved && <span className="media-adjust-saved" role="status">Adjustments saved</span>}
@@ -5140,7 +5149,7 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
       <label className="media-edit-row media-notes-row"><span>Notes</span><textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Add notes about this media"/></label>
     </div>}
     <div className="action-row media-action-row">
-      <button type="button" disabled={saving || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+      <button type="button" disabled={saving || !(dirty || adjustDirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
     </div>
   </div>;
 }
