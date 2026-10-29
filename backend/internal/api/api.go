@@ -155,6 +155,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/media/bulk", a.auth(http.HandlerFunc(a.bulkMediaUpdate)))
 	mux.Handle("GET /api/v1/map", a.auth(http.HandlerFunc(a.mapItems)))
 	mux.Handle("GET /api/v1/map/poi", a.auth(http.HandlerFunc(a.mapPOI)))
+	mux.Handle("GET /api/v1/map/view", a.auth(http.HandlerFunc(a.mapView)))
 	mux.Handle("POST /api/v1/admin/libraries", a.auth(a.admin(http.HandlerFunc(a.createLibrary))))
 	mux.Handle("PUT /api/v1/admin/libraries/{id}", a.auth(a.admin(http.HandlerFunc(a.updateLibrary))))
 	mux.Handle("POST /api/v1/admin/libraries/{id}/move-path", a.auth(a.admin(http.HandlerFunc(a.moveLibraryPath))))
@@ -2439,17 +2440,17 @@ func (a *API) openMedia(w http.ResponseWriter, r *http.Request) (domain.Media, *
 	return item, file, true
 }
 
-func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
-	p := current(r)
-	libraryID, folderID, favoriteID := 0, 0, 0
+// mapScope parses the library / folder / favorite scope of a map request and
+// checks the caller may read it; ok is false once a problem has been written.
+func (a *API) mapScope(w http.ResponseWriter, r *http.Request, p principal) (libraryID, folderID, favoriteID int, ok bool) {
 	if raw := r.URL.Query().Get("library"); raw != "" {
 		id, err := strconv.Atoi(raw)
 		if err != nil || id <= 0 {
 			problem(w, http.StatusBadRequest, "invalid library")
-			return
+			return 0, 0, 0, false
 		}
 		if !a.requireRead(w, r, p, id) {
-			return
+			return 0, 0, 0, false
 		}
 		libraryID = id
 	}
@@ -2457,19 +2458,19 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 		fid, err := strconv.Atoi(raw)
 		if err != nil || fid <= 0 {
 			problem(w, http.StatusBadRequest, "invalid folder")
-			return
+			return 0, 0, 0, false
 		}
 		if libraryID <= 0 {
 			problem(w, http.StatusBadRequest, "folder requires library")
-			return
+			return 0, 0, 0, false
 		}
 		if _, err := a.Store.EntriesForFolder(r.Context(), p.ID, libraryID, fid); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				problem(w, http.StatusNotFound, "folder not found in library")
-				return
+				return 0, 0, 0, false
 			}
 			problem(w, http.StatusInternalServerError, err.Error())
-			return
+			return 0, 0, 0, false
 		}
 		folderID = fid
 	}
@@ -2477,45 +2478,39 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 		fid, err := strconv.Atoi(raw)
 		if err != nil || fid <= 0 {
 			problem(w, http.StatusBadRequest, "invalid favorite")
-			return
+			return 0, 0, 0, false
 		}
 		views, err := a.Store.FavoriteViews(r.Context(), p.ID)
 		if err != nil {
 			problem(w, 500, err.Error())
-			return
+			return 0, 0, 0, false
 		}
 		if !slices.ContainsFunc(views, func(view domain.FavoriteView) bool { return view.ID == fid }) {
 			problem(w, http.StatusNotFound, "favorite view not found")
-			return
+			return 0, 0, 0, false
 		}
 		favoriteID = fid
+	}
+	return libraryID, folderID, favoriteID, true
+}
+
+func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	libraryID, folderID, favoriteID, ok := a.mapScope(w, r, p)
+	if !ok {
+		return
 	}
 	items, err := func() ([]domain.MapMedia, error) {
 		raw := r.URL.Query().Get("bbox")
 		if raw == "" {
 			return a.Store.GeotaggedMedia(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, favoriteID)
 		}
-		parts := strings.Split(raw, ",")
-		if len(parts) != 4 {
-			problem(w, http.StatusBadRequest, "invalid bbox, want west,south,east,north")
+		bounds, message := parseMapBBox(raw)
+		if message != "" {
+			problem(w, http.StatusBadRequest, message)
 			return nil, errSkip
 		}
-		values := make([]float64, 4)
-		for i, part := range parts {
-			value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
-			if err != nil {
-				problem(w, http.StatusBadRequest, "invalid bbox")
-				return nil, errSkip
-			}
-			values[i] = value
-		}
-		if values[0] < -180 || values[2] > 180 || values[1] < -90 || values[3] > 90 || values[0] >= values[2] || values[1] >= values[3] {
-			problem(w, http.StatusBadRequest, "invalid bbox")
-			return nil, errSkip
-		}
-		return a.Store.MediaInArea(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, favoriteID, domain.Bounds{
-			West: values[0], South: values[1], East: values[2], North: values[3],
-		})
+		return a.Store.MediaInArea(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, favoriteID, bounds)
 	}()
 	if errors.Is(err, errSkip) {
 		return
@@ -2525,6 +2520,58 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, items)
+}
+
+// parseMapBBox parses a "west,south,east,north" box in degrees; message is the
+// problem text when it is malformed.
+func parseMapBBox(raw string) (domain.Bounds, string) {
+	parts := strings.Split(raw, ",")
+	if len(parts) != 4 {
+		return domain.Bounds{}, "invalid bbox, want west,south,east,north"
+	}
+	values := make([]float64, 4)
+	for i, part := range parts {
+		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil {
+			return domain.Bounds{}, "invalid bbox"
+		}
+		values[i] = value
+	}
+	if values[0] < -180 || values[2] > 180 || values[1] < -90 || values[3] > 90 || values[0] >= values[2] || values[1] >= values[3] {
+		return domain.Bounds{}, "invalid bbox"
+	}
+	return domain.Bounds{West: values[0], South: values[1], East: values[2], North: values[3]}, ""
+}
+
+// mapView serves the clustered markers of one map viewport: the scope's
+// geotagged media inside bbox grouped in SQL into grid cells of cell degrees,
+// plus the extent of the whole scope. bbox defaults to the whole world.
+func (a *API) mapView(w http.ResponseWriter, r *http.Request) {
+	p := current(r)
+	libraryID, folderID, favoriteID, ok := a.mapScope(w, r, p)
+	if !ok {
+		return
+	}
+	bounds := domain.Bounds{West: -180, South: -90, East: 180, North: 90}
+	if raw := r.URL.Query().Get("bbox"); raw != "" {
+		parsed, message := parseMapBBox(raw)
+		if message != "" {
+			problem(w, http.StatusBadRequest, message)
+			return
+		}
+		bounds = parsed
+	}
+	cell, err := strconv.ParseFloat(r.URL.Query().Get("cell"), 64)
+	if err != nil || cell < 0.00001 || cell > 90 || math.IsNaN(cell) {
+		problem(w, http.StatusBadRequest, "invalid cell, want degrees between 0.00001 and 90")
+		return
+	}
+	view, err := a.Store.MapView(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, favoriteID, bounds, cell)
+	if err != nil {
+		problem(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, view)
 }
 
 // mapPOI serves points of interest from the selected provider for a bounding

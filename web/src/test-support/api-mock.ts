@@ -335,6 +335,35 @@ function createMockApi() {
       const filtered = bounds ? points.filter(point => point.lat >= bounds.south && point.lat <= bounds.north && point.lng >= bounds.west && point.lng <= bounds.east) : points;
       return JSON.parse(JSON.stringify(filtered));
     }),
+    // Groups the fixture's map points like the server does: the scope's points
+    // (whatever `map` resolves to) inside bounds, per cell of `cell` degrees.
+    mapView: vi.fn(async (scope:{libraryId?:number; folderId?:number; favoriteViewId?:number}, bounds:{west:number; south:number; east:number; north:number}, cell:number) => {
+      const rows = await (api.map as (...args:unknown[]) => Promise<{id:number; name:string; gps:string}[]>)(scope.libraryId, scope.folderId, undefined, scope.favoriteViewId);
+      const points = rows.map(row => {
+        const [lat, lng] = String(row.gps ?? "").split(",").map(Number);
+        return {row, lat, lng};
+      }).filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+      const extent = points.length === 0 ? null : {
+        west:Math.min(...points.map(p => p.lng)), south:Math.min(...points.map(p => p.lat)),
+        east:Math.max(...points.map(p => p.lng)), north:Math.max(...points.map(p => p.lat))
+      };
+      const cells = new Map<string, typeof points>();
+      for (const point of points) {
+        if (point.lat < bounds.south || point.lat > bounds.north || point.lng < bounds.west || point.lng > bounds.east) continue;
+        const key = `${Math.round(point.lat / cell)},${Math.round(point.lng / cell)}`;
+        cells.set(key, [...(cells.get(key) ?? []), point]);
+      }
+      const clusters = [...cells.values()].map(group => ({
+        count:group.length,
+        lat:group.reduce((sum, p) => sum + p.lat, 0) / group.length,
+        lng:group.reduce((sum, p) => sum + p.lng, 0) / group.length,
+        west:Math.min(...group.map(p => p.lng)), south:Math.min(...group.map(p => p.lat)),
+        east:Math.max(...group.map(p => p.lng)), north:Math.max(...group.map(p => p.lat)),
+        id:Math.min(...group.map(p => p.row.id)),
+        name:group.length === 1 ? group[0].row.name : "", gps:group.length === 1 ? group[0].row.gps : ""
+      }));
+      return {clusters, extent};
+    }),
     poi: vi.fn(async (bounds:{west:number; south:number; east:number; north:number}, _categories:string[], _theme:string) => {
       const points:POIPoint[] = state.poiPoints;
       const filtered = bounds ? points.filter(point => point.lat >= bounds.south && point.lat <= bounds.north && point.lon >= bounds.west && point.lon <= bounds.east) : points;

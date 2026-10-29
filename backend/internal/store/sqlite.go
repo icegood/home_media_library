@@ -2107,6 +2107,89 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 	return out, nil
 }
 
+// mapScopeCovers returns the recursive covers(folder_id, library_id) CTE of a
+// map scope — one folder subtree, one library, or every library — with its
+// arguments. Folder and library scopes are deep: every subfolder is covered.
+func mapScopeCovers(libraryID, folderID int) (string, []any) {
+	switch {
+	case folderID > 0:
+		return `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT ?, ?
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`, []any{folderID, libraryID}
+	case libraryID > 0:
+		return `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ?
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`, []any{libraryID}
+	default:
+		return `WITH RECURSIVE covers(folder_id, library_id) AS (
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			UNION ALL
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`, nil
+	}
+}
+
+// MapView groups the readable geotagged media of a scope inside bounds into
+// grid cells of cell degrees. Scope, access, favorite view, rectangle (through
+// the media_geo R*Tree) and grouping all run in SQL, so a whole-library view
+// returns a few hundred cells instead of every point.
+func (s *SQLite) MapView(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int, bounds domain.Bounds, cell float64) (domain.MapView, error) {
+	covers, coverArgs := mapScopeCovers(libraryID, folderID)
+	adminFlag := 0
+	if admin {
+		adminFlag = 1
+	}
+	points := func(rect bool) (string, []any) {
+		query := `points AS (SELECT DISTINCT m.id, m.gps_lat AS lat, m.gps_lng AS lng
+			FROM media m JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
+			WHERE (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))`
+		args := append(append([]any{}, coverArgs...), adminFlag, userID)
+		if rect {
+			query += ` AND g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?`
+			args = append(args, bounds.North, bounds.South, bounds.East, bounds.West)
+		}
+		if favoriteID > 0 {
+			query += favoriteMapCondition
+			args = append(args, favoriteID, favoriteID)
+		}
+		return query + `)`, args
+	}
+	view := domain.MapView{Clusters: []domain.MapCluster{}}
+	cte, args := points(true)
+	rows, err := s.db.QueryContext(ctx, covers+`, `+cte+`
+		SELECT c.n, c.lat, c.lng, c.west, c.south, c.east, c.north, c.id, CASE WHEN c.n = 1 THEN r.name ELSE '' END, CASE WHEN c.n = 1 THEN r.gps ELSE '' END
+		FROM (SELECT COUNT(*) AS n, AVG(lat) AS lat, AVG(lng) AS lng, MIN(lng) AS west, MIN(lat) AS south, MAX(lng) AS east, MAX(lat) AS north, MIN(id) AS id
+			FROM points GROUP BY ROUND(lat / ?), ROUND(lng / ?)) c
+		JOIN media r ON r.id = c.id`, append(args, cell, cell)...)
+	if err != nil {
+		return view, err
+	}
+	for rows.Next() {
+		var cluster domain.MapCluster
+		if err := rows.Scan(&cluster.Count, &cluster.Lat, &cluster.Lng, &cluster.West, &cluster.South, &cluster.East, &cluster.North, &cluster.ID, &cluster.Name, &cluster.GPS); err != nil {
+			rows.Close()
+			return view, err
+		}
+		view.Clusters = append(view.Clusters, cluster)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return view, err
+	}
+	cte, args = points(false)
+	var west, south, east, north sql.NullFloat64
+	if err := s.db.QueryRowContext(ctx, covers+`, `+cte+`
+		SELECT MIN(lng), MIN(lat), MAX(lng), MAX(lat) FROM points`, args...).Scan(&west, &south, &east, &north); err != nil {
+		return view, err
+	}
+	if west.Valid {
+		view.Extent = &domain.Bounds{West: west.Float64, South: south.Float64, East: east.Float64, North: north.Float64}
+	}
+	return view, nil
+}
+
 // favoriteMapCondition narrows a map query (alias m) to one favorite view,
 // deep: the media mentioned directly plus every media of each favorite folder
 // and of all its subfolders. Each "?" takes the view id.

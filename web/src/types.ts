@@ -23,6 +23,18 @@ export interface Media {
 export interface MapMedia extends Media {
   libraryId:ID;
 }
+export interface MapBounds {
+  west:number; south:number; east:number; north:number;
+}
+// One grid cell of a map viewport, grouped server-side: a one-point cell also
+// names its media (name, gps).
+export interface MapCluster extends MapBounds {
+  count:number; lat:number; lng:number; id:ID; name?:string; gps?:string;
+}
+export interface MapView {
+  clusters:MapCluster[];
+  extent:MapBounds|null;
+}
 export type POICategory = "food" | "fuel_parking" | "lodging" | "attraction" | "health" | "shops";
 export interface POI {
   id:string;

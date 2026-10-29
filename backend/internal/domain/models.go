@@ -441,7 +441,34 @@ type GPSPatch struct {
 // Bounds is a geographic rectangle in WGS84 degrees: west/east longitudes and
 // south/north latitudes, in the same order as the GeoJSON bbox array.
 type Bounds struct {
-	West, South, East, North float64
+	West  float64 `json:"west"`
+	South float64 `json:"south"`
+	East  float64 `json:"east"`
+	North float64 `json:"north"`
+}
+
+// MapCluster is one grid cell of geotagged media on a map view: the point
+// count, the centroid and the box of its points (to list the cell's media on
+// demand). A one-point cell also names its media.
+type MapCluster struct {
+	Count int     `json:"count"`
+	Lat   float64 `json:"lat"`
+	Lng   float64 `json:"lng"`
+	West  float64 `json:"west"`
+	South float64 `json:"south"`
+	East  float64 `json:"east"`
+	North float64 `json:"north"`
+	ID    int     `json:"id"`
+	Name  string  `json:"name,omitempty"`
+	GPS   string  `json:"gps,omitempty"`
+}
+
+// MapView is what a map draws for a viewport: the cells of its media and the
+// extent of the whole scope (nil when it has no geotagged media), so the map
+// can fit the scope without loading every point.
+type MapView struct {
+	Clusters []MapCluster `json:"clusters"`
+	Extent   *Bounds      `json:"extent"`
 }
 
 type MediaDetailsPatch struct {

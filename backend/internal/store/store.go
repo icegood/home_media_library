@@ -75,6 +75,9 @@ type Store interface {
 	BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folderIDs []int, shiftMinutes float64) ([]domain.BulkMediaResult, error)
 	GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int) ([]domain.MapMedia, error)
 	MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int, bounds domain.Bounds) ([]domain.MapMedia, error)
+	// MapView groups the scope's geotagged media inside bounds into grid cells
+	// of cell degrees in SQL, and reports the extent of the whole scope.
+	MapView(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int, bounds domain.Bounds, cell float64) (domain.MapView, error)
 	MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error)
 	MediaInFolders(ctx context.Context, folderIDs []int) ([]domain.Media, error)
 	WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, error)

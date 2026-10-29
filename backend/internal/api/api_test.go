@@ -1101,6 +1101,50 @@ func TestMapBBoxFiltersGeotaggedMedia(t *testing.T) {
 	}
 }
 
+func TestMapViewClustersTheViewport(t *testing.T) {
+	f := setup(t)
+	item, _ := f.store.Media(context.Background(), f.photoID)
+	item.GPS = "50.45,30.52"
+	if _, err := f.store.UpsertMedia(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	alice := login(t, f.handler, "alice")
+	bob := login(t, f.handler, "bob")
+	read := func(token, query string) domain.MapView {
+		t.Helper()
+		response := request(f.handler, http.MethodGet, query, token, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d: %s", query, response.Code, response.Body)
+		}
+		var view domain.MapView
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	view := read(alice, "/api/v1/map/view?cell=0.5")
+	if len(view.Clusters) != 1 || view.Clusters[0].Count != 1 || view.Clusters[0].ID != f.photoID || view.Clusters[0].GPS != "50.45,30.52" || view.Extent == nil || view.Extent.North != 50.45 {
+		t.Fatalf("world view = %#v", view)
+	}
+	// The viewport and the extent are independent: an empty box still reports
+	// where the scope's media are.
+	view = read(alice, "/api/v1/map/view?cell=0.5&bbox=-50,-50,-40,-40")
+	if len(view.Clusters) != 0 || view.Extent == nil {
+		t.Fatalf("empty viewport = %#v", view)
+	}
+	if view = read(bob, "/api/v1/map/view?cell=0.5"); len(view.Clusters) != 0 || view.Extent != nil {
+		t.Fatalf("bob must not see alice's media: %#v", view)
+	}
+	for _, query := range []string{"/api/v1/map/view", "/api/v1/map/view?cell=0", "/api/v1/map/view?cell=1&bbox=31,50,30,51"} {
+		if got := request(f.handler, http.MethodGet, query, alice, nil).Code; got != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want 400", query, got)
+		}
+	}
+	if got := request(f.handler, http.MethodGet, "/api/v1/map/view?cell=1&favorite=999", alice, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("foreign favorite view status = %d, want 404", got)
+	}
+}
+
 func TestLibraryStatsEndpoint(t *testing.T) {
 	f := setup(t)
 	alice := login(t, f.handler, "alice")

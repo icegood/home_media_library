@@ -10,7 +10,7 @@ import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, ScaleContr
 import { api, MAX_VIDEO_THUMBNAILS, type MediaAdjust, type MapTileSource, type POISource, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
 import { bearingDegrees, compassPoint, distanceMeters, formatDistance, loadWalkRadius, type MyPosition, parseWalkRadius, saveWalkRadius, useMyPosition } from "./walking";
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapCluster, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
 export const StreamChunkSizeCtx = createContext(10000);
@@ -5667,7 +5667,19 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   }, [segments.length]);
   const itemParam = query.get("item");
   const inLibraryParam = query.get("inLibrary");
+  // Library, favorite and all-libraries maps load only the viewport, grouped
+  // server-side into clusters; a folder map (trajectories) and a single
+  // item's map load their points in full.
+  const clustered = !folderScoped && itemParam == null;
+  const mapScope = useMemo(() => ({
+    libraryId: libraryParam ? Number(libraryParam) : undefined,
+    favoriteViewId: favoriteParam ? Number(favoriteParam) : undefined
+  }), [libraryParam, favoriteParam]);
   useEffect(() => {
+    if (clustered) {
+      setItems([]);
+      return;
+    }
     // "Open on map" for one item played in a library shows only that marker:
     // fetch just the item rather than every geotagged item of all libraries.
     if (!libraryParam && !folderParam && !favoriteParam && itemParam && inLibraryParam) {
@@ -5675,7 +5687,23 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       return;
     }
     api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
-  }, [libraryParam, folderParam, favoriteParam, itemParam, inLibraryParam]);
+  }, [libraryParam, folderParam, favoriteParam, itemParam, inLibraryParam, clustered]);
+  // Walking mode lists the media around the position: on a clustered map they
+  // are fetched for the radius box instead of picked from loaded points.
+  const [nearbyItems, setNearbyItems] = useState<MapMedia[]>([]);
+  const nearbyKey = clustered && walkMode && myPosition ? `${myPosition.lat.toFixed(4)},${myPosition.lng.toFixed(4)},${walkRadius}` : "";
+  useEffect(() => {
+    if (!nearbyKey || !myPosition) { setNearbyItems([]); return; }
+    let cancelled = false;
+    const dLat = walkRadius / 111320;
+    const dLng = walkRadius / (111320 * Math.max(0.01, Math.cos(myPosition.lat * Math.PI / 180)));
+    api.map(mapScope.libraryId, undefined, {
+      west:Math.max(-180, myPosition.lng - dLng), south:Math.max(-90, myPosition.lat - dLat),
+      east:Math.min(180, myPosition.lng + dLng), north:Math.min(90, myPosition.lat + dLat)
+    }, mapScope.favoriteViewId).then(found => { if (!cancelled) setNearbyItems(found); }).catch(cause => { if (!cancelled) setMapError((cause as Error).message); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nearbyKey, mapScope]);
   useEffect(() => {
     if (!showNoGPS || !folderScoped || !libraryParam || !folderParam) {
       setNoGPSLoading(false);
@@ -5868,13 +5896,14 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <ScaleControl position="bottomleft" imperial={false}/>
         <PlaceSearch onWalkFrom={walkFrom}/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
+        {clustered && <ServerClusters scope={mapScope} selectMode={selectMode} hideMarkers={hideMarkers} onSelectCluster={selectCluster} onLoading={setRendering} onError={setMapError} myPosition={myPosition}/>}
         <MapItems items={displayItems} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
         {myPosition && <MyPositionLayer key={walkAnchor ? walkAnchor.join(",") : "device"} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} recenterTick={recenterTick}/>}
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
       </MapContainer>
       {area && <MapAreaPanel items={area.items} onClear={() => setArea(null)}/>}
-      {walkMode && myPosition && !area && !(showNoGPS && folderScoped) && <NearbyPanel items={displayItems} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} onRecenter={() => setRecenterTick(value => value + 1)} onUseDevice={() => setWalkAnchor(null)} onClose={() => setWalkMode(false)}/>}
+      {walkMode && myPosition && !area && !(showNoGPS && folderScoped) && <NearbyPanel items={clustered ? nearbyItems : displayItems} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} onRecenter={() => setRecenterTick(value => value + 1)} onUseDevice={() => setWalkAnchor(null)} onClose={() => setWalkMode(false)}/>}
       {showNoGPS && folderScoped && <NoGPSPanel items={noGPSItems} loading={noGPSLoading} libraryId={Number(libraryParam)} folderId={Number(folderParam)} onClose={() => setShowNoGPS(false)}/>}
     </div>
   </main>;
@@ -6389,6 +6418,69 @@ function POILayer({active, categories, pois, onFetch, onError}:{active:boolean; 
   }, [focused]);
   if (!active || pois.length === 0) return null;
   return <>{focused.slice(0, rendered).map(point => <POIMarker key={point.id} poi={point}/>)}</>;
+}
+
+// Markers of a clustered map: on every pan or zoom the viewport (padded a
+// quarter each way) is requested grouped server-side into cells of the zoom's
+// cluster size, so only what is on screen is loaded. The first answer's scope
+// extent fits the map; a click lists the cell's media through its box.
+function ServerClusters({scope, selectMode, hideMarkers, onSelectCluster, onLoading, onError, myPosition}:{scope:{libraryId?:ID; favoriteViewId?:ID}; selectMode:boolean; hideMarkers:boolean; onSelectCluster:(items:MapMedia[])=>void; onLoading:(loading:boolean)=>void; onError:(message:string)=>void; myPosition?:MyPosition|null}) {
+  const map = useMap();
+  const [clusters, setClusters] = useState<MapCluster[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [moves, setMoves] = useState(0);
+  const visibleClusters = useProgressiveReveal(clusters, 200);
+  useEffect(() => {
+    onLoading(loading || visibleClusters.length < clusters.length);
+  }, [loading, visibleClusters.length, clusters.length, onLoading]);
+  const fitted = useRef(false);
+  useMapEvents({moveend: () => setMoves(count => count + 1)});
+  useEffect(() => { fitted.current = false; }, [scope]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = () => {
+      const padded = map.getBounds().pad(0.25);
+      let bounds = {west:Math.max(-180, padded.getWest()), south:Math.max(-90, padded.getSouth()), east:Math.min(180, padded.getEast()), north:Math.min(90, padded.getNorth())};
+      // A map not laid out yet (or panned off the world) has no usable box.
+      if (!(bounds.west < bounds.east && bounds.south < bounds.north)) bounds = {west:-180, south:-90, east:180, north:90};
+      setLoading(true);
+      api.mapView(scope, bounds, clusterCellSize(map.getZoom()), controller.signal).then(view => {
+        setClusters(view.clusters);
+        setLoading(false);
+        if (!fitted.current) {
+          fitted.current = true;
+          if (view.extent) map.fitBounds([[view.extent.south, view.extent.west], [view.extent.north, view.extent.east]], {padding:[36,36], maxZoom:13});
+        }
+      }).catch(cause => {
+        if (controller.signal.aborted) return;
+        setLoading(false);
+        onError((cause as Error).message);
+      });
+    };
+    // The first view loads at once; later pans and zooms settle briefly so a
+    // drag or a wheel spin asks only for where it stops.
+    const timer = fitted.current ? window.setTimeout(load, 120) : undefined;
+    if (!fitted.current) load();
+    return () => { controller.abort(); window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, moves, scope]);
+  function open(cluster:MapCluster) {
+    if (selectMode) return;
+    const pad = 0.000001;
+    api.map(scope.libraryId, undefined, {west:cluster.west - pad, south:cluster.south - pad, east:cluster.east + pad, north:cluster.north + pad}, scope.favoriteViewId)
+      .then(found => onSelectCluster(found.filter(item => parseGPS(item.gps) !== null)))
+      .catch(cause => onError((cause as Error).message));
+  }
+  if (hideMarkers) return null;
+  return <>{visibleClusters.map(cluster => {
+    const gps = cluster.gps || formatGPS(cluster.lat, cluster.lng);
+    return <Marker key={`${cluster.id}-${cluster.count}`} position={[cluster.lat, cluster.lng]} icon={cluster.count === 1 ? mediaPointIcon("none") : clusterIcon(cluster.count)} eventHandlers={{click: () => open(cluster)}}>
+      {!selectMode && <Popup>
+        <MediaGPSCopyPopup title={cluster.count === 1 ? cluster.name ?? "" : `${cluster.count} media`} gps={gps}
+          fromYou={myPosition ? distanceFromYou(myPosition, [cluster.lat, cluster.lng]) : ""}/>
+      </Popup>}
+    </Marker>;
+  })}</>;
 }
 
 function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {

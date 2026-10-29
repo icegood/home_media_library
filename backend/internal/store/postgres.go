@@ -1886,24 +1886,111 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 	return out, nil
 }
 
-// pgFavoriteMapFilter narrows a map query (alias m, ending in "GROUP BY m.id")
-// to one favorite view, deep: the media mentioned directly plus every media of
-// each favorite folder and of all its subfolders. The view id binds as the
-// next numbered parameter.
-func pgFavoriteMapFilter(query string, args []any, favoriteID int) (string, []any) {
-	if favoriteID <= 0 {
-		return query, args
-	}
-	n := "$" + strconv.Itoa(len(args)+1)
-	const tail = "\n\t\tGROUP BY m.id"
-	condition := `
+// pgFavoriteMapCondition narrows a map query (alias m) to one favorite view,
+// deep: the media mentioned directly plus every media of each favorite folder
+// and of all its subfolders. n is the placeholder bound to the view id.
+func pgFavoriteMapCondition(n string) string {
+	return `
 			AND (m.id IN (SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ` + n + `)
 				OR m.folder_id IN (WITH RECURSIVE fav_sub(id) AS (
 					SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ` + n + `
 					UNION ALL
 					SELECT f.id FROM media_folders f JOIN fav_sub ON f.parent_id = fav_sub.id)
 				SELECT id FROM fav_sub))`
-	return strings.TrimSuffix(query, tail) + condition + tail, append(args, favoriteID)
+}
+
+// pgFavoriteMapFilter appends the favorite view condition to a map query
+// ending in "GROUP BY m.id" when a view is given; the view id binds as the
+// next numbered parameter.
+func pgFavoriteMapFilter(query string, args []any, favoriteID int) (string, []any) {
+	if favoriteID <= 0 {
+		return query, args
+	}
+	const tail = "\n\t\tGROUP BY m.id"
+	return strings.TrimSuffix(query, tail) + pgFavoriteMapCondition("$"+strconv.Itoa(len(args)+1)) + tail, append(args, favoriteID)
+}
+
+// MapView groups the readable geotagged media of a scope inside bounds into
+// grid cells of cell degrees. Scope, access, favorite view, rectangle (through
+// the geom GiST index) and grouping all run in SQL, so a whole-library view
+// returns a few hundred cells instead of every point.
+func (s *Postgres) MapView(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int, bounds domain.Bounds, cell float64) (domain.MapView, error) {
+	adminFlag := 0
+	if admin {
+		adminFlag = 1
+	}
+	query := func(rect bool, tail func(bind func(any) string) string) (string, []any) {
+		args := []any{}
+		bind := func(value any) string {
+			args = append(args, value)
+			return "$" + strconv.Itoa(len(args))
+		}
+		var covers string
+		switch {
+		case folderID > 0:
+			covers = `WITH RECURSIVE covers(folder_id, library_id) AS (
+				SELECT ` + bind(folderID) + `::int, ` + bind(libraryID) + `::int
+				UNION ALL
+				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+		case libraryID > 0:
+			covers = `WITH RECURSIVE covers(folder_id, library_id) AS (
+				SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ` + bind(libraryID) + `::int
+				UNION ALL
+				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+		default:
+			covers = `WITH RECURSIVE covers(folder_id, library_id) AS (
+				SELECT lr.folder_id, lr.library_id FROM library_roots lr
+				UNION ALL
+				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+		}
+		points := `points AS (SELECT DISTINCT m.id, ST_Y(m.geom) AS lat, ST_X(m.geom) AS lng
+			FROM media m JOIN covers ON covers.folder_id = m.folder_id
+			WHERE m.geom IS NOT NULL
+				AND (` + bind(adminFlag) + ` = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ` + bind(userID) + `))`
+		if rect {
+			points += ` AND m.geom && ST_MakeEnvelope(` + bind(bounds.West) + `, ` + bind(bounds.South) + `, ` + bind(bounds.East) + `, ` + bind(bounds.North) + `, 4326)`
+		}
+		if favoriteID > 0 {
+			points += pgFavoriteMapCondition(bind(favoriteID))
+		}
+		text := covers + `, ` + points + `)
+		` + tail(bind)
+		return text, args
+	}
+	view := domain.MapView{Clusters: []domain.MapCluster{}}
+	clusterQuery, args := query(true, func(bind func(any) string) string {
+		size := bind(cell)
+		return `SELECT c.n, c.lat, c.lng, c.west, c.south, c.east, c.north, c.id, CASE WHEN c.n = 1 THEN r.name ELSE '' END, CASE WHEN c.n = 1 THEN r.gps ELSE '' END
+		FROM (SELECT COUNT(*) AS n, AVG(lat) AS lat, AVG(lng) AS lng, MIN(lng) AS west, MIN(lat) AS south, MAX(lng) AS east, MAX(lat) AS north, MIN(id) AS id
+			FROM points GROUP BY ROUND(lat / ` + size + `::float8), ROUND(lng / ` + size + `::float8)) c
+		JOIN media r ON r.id = c.id`
+	})
+	rows, err := s.db.QueryContext(ctx, clusterQuery, args...)
+	if err != nil {
+		return view, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cluster domain.MapCluster
+		if err := rows.Scan(&cluster.Count, &cluster.Lat, &cluster.Lng, &cluster.West, &cluster.South, &cluster.East, &cluster.North, &cluster.ID, &cluster.Name, &cluster.GPS); err != nil {
+			return view, err
+		}
+		view.Clusters = append(view.Clusters, cluster)
+	}
+	if err := rows.Err(); err != nil {
+		return view, err
+	}
+	extentQuery, args := query(false, func(func(any) string) string {
+		return `SELECT MIN(lng), MIN(lat), MAX(lng), MAX(lat) FROM points`
+	})
+	var west, south, east, north sql.NullFloat64
+	if err := s.db.QueryRowContext(ctx, extentQuery, args...).Scan(&west, &south, &east, &north); err != nil {
+		return view, err
+	}
+	if west.Valid {
+		view.Extent = &domain.Bounds{West: west.Float64, South: south.Float64, East: east.Float64, North: north.Float64}
+	}
+	return view, nil
 }
 
 // MediaInArea returns geotagged media the user may read whose point falls inside

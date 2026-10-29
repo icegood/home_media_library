@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -1322,6 +1323,58 @@ func TestSQLiteMapFavoriteFilterIsDeep(t *testing.T) {
 		if !slices.Equal(ids(items), want) || !slices.Equal(ids(area), want) {
 			t.Fatalf("library %d: favorite map = %v, area = %v, want %v", libraryID, ids(items), ids(area), want)
 		}
+	}
+}
+
+func TestSQLiteMapViewGroupsPointsInSQL(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Trails", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int{}
+	for index, gps := range []string{"50.4501,30.5201", "50.4502,30.5202", "48.85,2.35"} {
+		media, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: library.Roots[0].ID, Path: filepath.Join(root, fmt.Sprintf("%d.jpg", index)), Name: fmt.Sprintf("%d.jpg", index), Kind: domain.KindImage, MIMEType: "image/jpeg", Size: 10, Metadata: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.UpdateMediaDetails(ctx, media.ID, domain.MediaDetailsPatch{GPS: &gps}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, media.ID)
+	}
+	world := domain.Bounds{West: -180, South: -90, East: 180, North: 90}
+	view, err := repository.MapView(ctx, 1, true, library.ID, 0, 0, world, 0.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Kyiv's two points share a cell, Paris has its own: two rows, not three.
+	if len(view.Clusters) != 2 {
+		t.Fatalf("clusters = %#v", view.Clusters)
+	}
+	byCount := map[int]domain.MapCluster{}
+	for _, cluster := range view.Clusters {
+		byCount[cluster.Count] = cluster
+	}
+	kyiv, paris := byCount[2], byCount[1]
+	if kyiv.ID != ids[0] || kyiv.Name != "" || kyiv.South > 50.4501 || kyiv.North < 50.4502 || paris.ID != ids[2] || paris.Name != "2.jpg" || paris.GPS != "48.85,2.35" {
+		t.Fatalf("kyiv = %#v, paris = %#v", kyiv, paris)
+	}
+	if view.Extent == nil || view.Extent.South != 48.85 || view.Extent.North != 50.4502 || view.Extent.West != 2.35 {
+		t.Fatalf("extent = %#v", view.Extent)
+	}
+	// A fine grid splits Kyiv; a viewport around Paris drops Kyiv's rows.
+	if view, err = repository.MapView(ctx, 1, true, library.ID, 0, 0, world, 0.00001); err != nil || len(view.Clusters) != 3 {
+		t.Fatalf("fine grid = %#v, %v", view.Clusters, err)
+	}
+	if view, err = repository.MapView(ctx, 1, true, 0, 0, 0, domain.Bounds{West: 2, South: 48, East: 3, North: 49}, 0.5); err != nil || len(view.Clusters) != 1 || view.Clusters[0].ID != ids[2] {
+		t.Fatalf("paris viewport = %#v, %v", view.Clusters, err)
+	}
+	// A regular user without access sees nothing.
+	if view, err = repository.MapView(ctx, 7, false, 0, 0, 0, world, 0.5); err != nil || len(view.Clusters) != 0 || view.Extent != nil {
+		t.Fatalf("no-access view = %#v, %v", view, err)
 	}
 }
 

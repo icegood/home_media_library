@@ -1,4 +1,4 @@
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, KindStats, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, KindStats, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, MapView, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -147,6 +147,15 @@ export const api = {
     if (favoriteViewId != null) params.push(`favorite=${favoriteViewId}`);
     if (bounds != null) params.push(`bbox=${bounds.west},${bounds.south},${bounds.east},${bounds.north}`);
     return call<MapMedia[]>(`/map${params.length > 0 ? `?${params.join("&")}` : ""}`);
+  },
+  // Clustered markers of one viewport (grouped in SQL into cells of `cell`
+  // degrees) plus the extent of the whole scope.
+  mapView: (scope:{libraryId?:ID; folderId?:ID; favoriteViewId?:ID}, bounds:{west:number; south:number; east:number; north:number}, cell:number, signal?:AbortSignal) => {
+    const params = [`cell=${cell}`, `bbox=${bounds.west},${bounds.south},${bounds.east},${bounds.north}`];
+    if (scope.libraryId != null) params.push(`library=${scope.libraryId}`);
+    if (scope.folderId != null) params.push(`folder=${scope.folderId}`);
+    if (scope.favoriteViewId != null) params.push(`favorite=${scope.favoriteViewId}`);
+    return call<MapView>(`/map/view?${params.join("&")}`, {signal});
   },
   poi: (bounds:{west:number; south:number; east:number; north:number}, categories:string[], theme:string) => {
     const params = `bbox=${bounds.west},${bounds.south},${bounds.east},${bounds.north}&categories=${encodeURIComponent(categories.join(","))}&theme=${encodeURIComponent(theme)}`;

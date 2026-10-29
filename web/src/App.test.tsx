@@ -2981,7 +2981,7 @@ test("map renders many markers progressively instead of all at once", async () =
   (L.Browser as Record<string, unknown>).svg = true;
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   const many = Array.from({length:300}, (_, i) => ({
-    id:1000+i, libraryId:1, folderId:20, relativePath:`m${i}.jpg`, name:`m${i}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:`${-89 + i * 0.5},${-179 + i * 1.1}`, takenAt:"2020-08-21T12:34:00Z"
+    id:1000+i, libraryId:1, folderId:20, relativePath:`m${i}.jpg`, name:`m${i}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:`${-87 + (i % 30) * 6},${-170 + Math.floor(i / 30) * 30}`, takenAt:"2020-08-21T12:34:00Z"
   }));
   mockApi.map.mockResolvedValue(many);
   vi.useFakeTimers();
@@ -3029,6 +3029,25 @@ test("map opened for an item played in a library loads only that item", async ()
   fireEvent.click(document.querySelector(".media-point-marker")!);
   const panel = screen.getByRole("complementary", {name:"Selected area"});
   expect(within(panel).getByRole("link", {name:"Open a.jpg in folder"})).toHaveAttribute("href", expect.stringMatching(/^\/library\/1\/view\/20\?/));
+});
+
+test("library map loads only the viewport clusters and lists a cluster's media on click", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.map.mockResolvedValue([
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T13:00:00Z"}
+  ]);
+  render(<MemoryRouter initialEntries={["/map?library=1"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.mapView).toHaveBeenCalledWith({libraryId:1, favoriteViewId:undefined}, expect.objectContaining({west:expect.any(Number)}), expect.any(Number), expect.anything()));
+  // The full point list is never requested: only the clusters of the view.
+  expect(mockApi.map.mock.calls.filter((call:unknown[]) => call[2] === undefined && call[1] === undefined).length).toBe(mockApi.mapView.mock.calls.length);
+  fireEvent.click(await screen.findByText("2"));
+  await waitFor(() => expect(mockApi.map).toHaveBeenCalledWith(1, undefined, expect.objectContaining({south:expect.any(Number)}), undefined));
+  const panel = await screen.findByRole("complementary", {name:"Selected area"});
+  expect(within(panel).getByText("a.jpg")).toBeInTheDocument();
+  expect(within(panel).getByText("b.jpg")).toBeInTheDocument();
 });
 
 test("clicking a map cluster opens the same timeline panel instead of a popup", async () => {
@@ -3950,7 +3969,7 @@ test("map marker and cluster popups copy GPS with the same form as a picked poin
     expect(within(popup as HTMLElement).getByLabelText("GPS coordinates")).toHaveValue("10,20");
   });
   const clusterPopup = document.querySelector(".picked-point-popup") as HTMLElement;
-  expect(within(clusterPopup).getByText(/first item/)).toBeInTheDocument();
+  expect(within(clusterPopup).getByText("2 media")).toBeInTheDocument();
   fireEvent.click(within(clusterPopup).getByRole("button", {name:"Copy"}));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("10,20"));
 
