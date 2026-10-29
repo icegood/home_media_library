@@ -2565,6 +2565,25 @@ test("scoped timeline viewer breadcrumb walks the subfolder chain to the item", 
   expect(screen.getByText("one.jpg")).toBeInTheDocument();
 });
 
+test("any timeline crumb of the viewer returns focused on the item that was open", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"},
+    {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}
+  ]});
+  const one = {id:100, folderId:21, relativePath:"Nested/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-10-30T13:44:47Z"};
+  const two = {...one, id:101, relativePath:"Nested/two.jpg", name:"two.jpg", takenAt:"2020-10-31T13:44:47Z"};
+  mockApi.folderMedia.mockResolvedValue([one, two]);
+  mockApi.media.mockResolvedValue(two);
+  render(<MemoryRouter initialEntries={["/library/1/view/21?item=101&sort=date-asc&root=20"]}><App/></MemoryRouter>);
+  await screen.findByText("two.jpg");
+  // "Photos" is the timeline root, not the item's own folder.
+  fireEvent.click(screen.getByRole("link", {name:"Photos"}));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m101"]')).toHaveClass("kb-focus"));
+  expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
+});
+
 test("scoped map viewer breadcrumb walks the subfolder chain to the item", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
@@ -2997,6 +3016,19 @@ test("map opened with ?item= shows only that item instead of every marker", asyn
   expect(within(panel).getByText("a.jpg")).toBeInTheDocument();
   expect(screen.queryByText("b.jpg")).not.toBeInTheDocument();
   expect(screen.queryByText("c.jpg")).not.toBeInTheDocument();
+});
+
+test("map opened for an item played in a library loads only that item", async () => {
+  const L = (await import("leaflet")).default;
+  (L.Browser as Record<string, unknown>).svg = true;
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.media.mockResolvedValue({id:100, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:"2020-08-21T12:34:00Z"});
+  render(<MemoryRouter initialEntries={["/map?item=100&inLibrary=1&inFolder=20"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(document.querySelectorAll(".media-point-marker").length).toBe(1));
+  expect(mockApi.map).not.toHaveBeenCalled();
+  fireEvent.click(document.querySelector(".media-point-marker")!);
+  const panel = screen.getByRole("complementary", {name:"Selected area"});
+  expect(within(panel).getByRole("link", {name:"Open a.jpg in folder"})).toHaveAttribute("href", expect.stringMatching(/^\/library\/1\/view\/20\?/));
 });
 
 test("clicking a map cluster opens the same timeline panel instead of a popup", async () => {

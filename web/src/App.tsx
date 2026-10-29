@@ -506,10 +506,15 @@ function useBreadcrumb(): Crumb[] | null {
         if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
           base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: fromTimeline ? `/library/${libraryID}/timeline/${folder.id}${favSuffix}` : `/map?library=${libraryID}&folder=${folder.id}`})));
         }
-        base.push({label:viewerItemName, to:null, current:true});
         // Coming back from the timeline viewer must land on the item that was
-        // open, so the timeline crumb carries it in the navigation state.
-        if (fromTimeline && base.length > 1) base[1] = {...base[1], returnToMediaId: viewerItemId};
+        // open: every timeline crumb (the library and each folder of the chain)
+        // lists it, so each carries it in the navigation state.
+        if (fromTimeline) {
+          for (const [index, crumb] of base.entries()) {
+            if (crumb.to?.startsWith(`/library/${libraryID}/timeline`)) base[index] = {...crumb, returnToMediaId: viewerItemId};
+          }
+        }
+        base.push({label:viewerItemName, to:null, current:true});
         return base;
       }
     }
@@ -5651,9 +5656,17 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   useEffect(() => {
     setSelectedTrajectories(prev => prev.filter(index => index < segments.length));
   }, [segments.length]);
+  const itemParam = query.get("item");
+  const inLibraryParam = query.get("inLibrary");
   useEffect(() => {
+    // "Open on map" for one item played in a library shows only that marker:
+    // fetch just the item rather than every geotagged item of all libraries.
+    if (!libraryParam && !folderParam && !favoriteParam && itemParam && inLibraryParam) {
+      api.media(Number(itemParam)).then(item => setItems([{...item, libraryId:Number(inLibraryParam)}])).catch(cause => setMapError((cause as Error).message));
+      return;
+    }
     api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
-  }, [libraryParam, folderParam, favoriteParam]);
+  }, [libraryParam, folderParam, favoriteParam, itemParam, inLibraryParam]);
   useEffect(() => {
     if (!showNoGPS || !folderScoped || !libraryParam || !folderParam) {
       setNoGPSLoading(false);
