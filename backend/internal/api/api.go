@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2478,12 +2479,21 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusBadRequest, "invalid favorite")
 			return
 		}
+		views, err := a.Store.FavoriteViews(r.Context(), p.ID)
+		if err != nil {
+			problem(w, 500, err.Error())
+			return
+		}
+		if !slices.ContainsFunc(views, func(view domain.FavoriteView) bool { return view.ID == fid }) {
+			problem(w, http.StatusNotFound, "favorite view not found")
+			return
+		}
 		favoriteID = fid
 	}
 	items, err := func() ([]domain.MapMedia, error) {
 		raw := r.URL.Query().Get("bbox")
 		if raw == "" {
-			return a.Store.GeotaggedMedia(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID)
+			return a.Store.GeotaggedMedia(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, favoriteID)
 		}
 		parts := strings.Split(raw, ",")
 		if len(parts) != 4 {
@@ -2503,7 +2513,7 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusBadRequest, "invalid bbox")
 			return nil, errSkip
 		}
-		return a.Store.MediaInArea(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, domain.Bounds{
+		return a.Store.MediaInArea(r.Context(), p.ID, p.Role == domain.RoleAdmin, libraryID, folderID, favoriteID, domain.Bounds{
 			West: values[0], South: values[1], East: values[2], North: values[3],
 		})
 	}()
@@ -2513,24 +2523,6 @@ func (a *API) mapItems(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		problem(w, 500, err.Error())
 		return
-	}
-	if favoriteID > 0 {
-		favMedia, err := a.Store.FavoriteMediaExpanded(r.Context(), p.ID, favoriteID, p.Role == domain.RoleAdmin)
-		if err != nil {
-			problem(w, statusFor(err), "favorite view not found")
-			return
-		}
-		favSet := make(map[int]bool, len(favMedia))
-		for _, m := range favMedia {
-			favSet[m.ID] = true
-		}
-		filtered := items[:0]
-		for _, item := range items {
-			if favSet[item.ID] {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
 	}
 	writeJSON(w, 200, items)
 }

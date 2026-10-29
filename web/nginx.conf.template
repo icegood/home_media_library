@@ -10,6 +10,13 @@ server {
   resolver 127.0.0.11 ipv6=off valid=10s;
   set $media_api http://api:8080;
 
+  # JSON lists (map markers, folder entries) compress ~10x; media streams and
+  # thumbnails are already compressed and keep their own types.
+  gzip on;
+  gzip_proxied any;
+  gzip_min_length 1024;
+  gzip_types application/json text/css application/javascript image/svg+xml;
+
   location /api/ {
     proxy_pass $media_api;
     proxy_http_version 1.1;

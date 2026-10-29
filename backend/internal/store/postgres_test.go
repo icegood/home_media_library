@@ -870,7 +870,7 @@ func TestPostgresFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 	if err := repository.SetTrajectoryName(ctx, sub.ID, media.ID, name); err != nil {
 		t.Fatal(err)
 	}
-	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID)
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +882,7 @@ func TestPostgresFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 	}
 	// The same media still appears on the ancestor map (the trajectory is built
 	// from all media inside the folder) but carries no start/end flag.
-	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +892,7 @@ func TestPostgresFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 	if parentItems[0].TrajectoryStart {
 		t.Fatalf("marker bound to a child folder must not surface on the ancestor map, got %#v", parentItems[0])
 	}
-	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, 0, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +935,7 @@ func TestPostgresMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID)
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +951,7 @@ func TestPostgresMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
 	}
 	// Scoped to the ancestor root the same items appear but the marker's flag is
 	// suppressed, because the marker belongs to the child folder.
-	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -962,7 +962,7 @@ func TestPostgresMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
 	if parentByID[marker.ID].TrajectoryStart {
 		t.Fatalf("child-folder marker must not surface on the ancestor map, got %#v", parentByID[marker.ID])
 	}
-	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, 0, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1801,7 +1801,7 @@ func (s *Postgres) queryMediaByIDs(ctx context.Context, idCond string, idArgs []
 	return out, rows.Err()
 }
 
-func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error) {
+func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int) ([]domain.MapMedia, error) {
 	var query string
 	switch {
 	case folderID > 0:
@@ -1809,7 +1809,7 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT $1::int, $2::int
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
 			AND ($3 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $4))
@@ -1819,7 +1819,7 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = $1::int
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
 			AND ($2 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $3))
@@ -1829,7 +1829,7 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
 			AND ($1 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $2))
@@ -1856,6 +1856,7 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 			args = append(args, 0, userID)
 		}
 	}
+	query, args = pgFavoriteMapFilter(query, args, favoriteID)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1885,10 +1886,30 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 	return out, nil
 }
 
+// pgFavoriteMapFilter narrows a map query (alias m, ending in "GROUP BY m.id")
+// to one favorite view, deep: the media mentioned directly plus every media of
+// each favorite folder and of all its subfolders. The view id binds as the
+// next numbered parameter.
+func pgFavoriteMapFilter(query string, args []any, favoriteID int) (string, []any) {
+	if favoriteID <= 0 {
+		return query, args
+	}
+	n := "$" + strconv.Itoa(len(args)+1)
+	const tail = "\n\t\tGROUP BY m.id"
+	condition := `
+			AND (m.id IN (SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ` + n + `)
+				OR m.folder_id IN (WITH RECURSIVE fav_sub(id) AS (
+					SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ` + n + `
+					UNION ALL
+					SELECT f.id FROM media_folders f JOIN fav_sub ON f.parent_id = fav_sub.id)
+				SELECT id FROM fav_sub))`
+	return strings.TrimSuffix(query, tail) + condition + tail, append(args, favoriteID)
+}
+
 // MediaInArea returns geotagged media the user may read whose point falls inside
 // bounds. The rectangle test uses PostGIS's && operator on the generated geom
 // column; the GiST index media_geom_idx serves the lookup.
-func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID int, bounds domain.Bounds) ([]domain.MapMedia, error) {
+func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int, bounds domain.Bounds) ([]domain.MapMedia, error) {
 	var query string
 	switch {
 	case folderID > 0:
@@ -1896,7 +1917,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT $1::int, $2::int
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
 			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
@@ -1907,7 +1928,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = $1::int
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
 			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
@@ -1918,7 +1939,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
 			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
@@ -1938,6 +1959,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 	} else {
 		args = append(args, 0, userID)
 	}
+	query, args = pgFavoriteMapFilter(query, args, favoriteID)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

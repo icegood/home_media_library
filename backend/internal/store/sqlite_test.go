@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -1185,7 +1186,7 @@ func TestSQLiteFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID)
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1197,7 +1198,7 @@ func TestSQLiteFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 	}
 	// The same media still appears on the ancestor map (the trajectory is built
 	// from all media inside the folder) but carries no start/end flag.
-	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1207,12 +1208,120 @@ func TestSQLiteFolderScopedMapEnrichesTrajectoryFromOwnFolder(t *testing.T) {
 	if parentItems[0].TrajectoryStart {
 		t.Fatalf("marker bound to a child folder must not surface on the ancestor map, got %#v", parentItems[0])
 	}
-	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, 0, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(area) != 1 || !area[0].TrajectoryStart || area[0].TrajectoryName != name {
 		t.Fatalf("expected area item with start flag, got %#v", area)
+	}
+}
+
+func TestSQLiteMapRowsLeaveOutMetadata(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Trails", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: library.Roots[0].ID, Path: filepath.Join(root, "a.jpg"), Name: "a.jpg", Kind: domain.KindImage, MIMEType: "image/jpeg", Size: 10, Metadata: map[string]any{"exif": map[string]any{"Model": "X100"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gps := "50.45,30.52"
+	if _, err := repository.UpdateMediaDetails(ctx, media.ID, domain.MediaDetailsPatch{GPS: &gps}); err != nil {
+		t.Fatal(err)
+	}
+	// Map rows carry no camera metadata (most of a row's size); the full row
+	// still has it.
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, 0, 0, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || len(items[0].Metadata) != 0 || items[0].GPS != gps || len(area) != 1 || len(area[0].Metadata) != 0 {
+		t.Fatalf("expected one map row without metadata, got %#v / %#v", items, area)
+	}
+	full, err := repository.Media(ctx, media.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Metadata["exif"] == nil {
+		t.Fatalf("full row lost its metadata: %#v", full.Metadata)
+	}
+}
+
+func TestSQLiteMapFavoriteFilterIsDeep(t *testing.T) {
+	repository, _ := openSQLite(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	library, err := repository.CreateLibrary(ctx, domain.Library{ID: domain.InvalidID, Name: "Trails", Roots: []domain.LibraryRoot{{ID: domain.InvalidID, Path: root}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trip, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: library.Roots[0].ID, Path: filepath.Join(root, "trip"), RelativePath: "trip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, err := repository.UpsertFolder(ctx, domain.MediaFolder{ID: domain.InvalidID, ParentID: trip.ID, Path: filepath.Join(root, "trip", "day1"), RelativePath: "trip/day1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(folderID int, path string) domain.Media {
+		media, err := repository.UpsertMedia(ctx, domain.Media{ID: domain.InvalidID, FolderID: folderID, Path: path, Name: filepath.Base(path), Kind: domain.KindImage, MIMEType: "image/jpeg", Size: 10, Metadata: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gps := "50.45,30.52"
+		if _, err := repository.UpdateMediaDetails(ctx, media.ID, domain.MediaDetailsPatch{GPS: &gps}); err != nil {
+			t.Fatal(err)
+		}
+		return media
+	}
+	mentioned := add(library.Roots[0].ID, filepath.Join(root, "a.jpg"))
+	add(library.Roots[0].ID, filepath.Join(root, "b.jpg"))
+	nested := add(day.ID, filepath.Join(root, "trip", "day1", "c.jpg"))
+	if _, err := repository.ImportSnapshot(ctx, domain.ImportSnapshot{Users: []domain.User{{ID: 1, Login: "owner", Role: domain.RoleAdmin}}}); err != nil {
+		t.Fatal(err)
+	}
+	view, err := repository.CreateFavoriteView(ctx, 1, "Best")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.SetFavorite(ctx, 1, view.ID, mentioned.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetFavoriteFolder(ctx, 1, view.ID, trip.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	// The view lists a.jpg directly and the trip folder, whose subfolder holds
+	// c.jpg; b.jpg is not in it.
+	ids := func(items []domain.MapMedia) []int {
+		out := []int{}
+		for _, item := range items {
+			out = append(out, item.ID)
+		}
+		slices.Sort(out)
+		return out
+	}
+	want := []int{mentioned.ID, nested.ID}
+	slices.Sort(want)
+	for _, libraryID := range []int{0, library.ID} {
+		items, err := repository.GeotaggedMedia(ctx, 1, true, libraryID, 0, view.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		area, err := repository.MediaInArea(ctx, 1, true, libraryID, 0, view.ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(ids(items), want) || !slices.Equal(ids(area), want) {
+			t.Fatalf("library %d: favorite map = %v, area = %v, want %v", libraryID, ids(items), ids(area), want)
+		}
 	}
 }
 
@@ -1253,7 +1362,7 @@ func TestSQLiteMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID)
+	items, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, sub.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1269,7 +1378,7 @@ func TestSQLiteMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
 	}
 	// Scoped to the ancestor root the same items appear but the marker's flag is
 	// suppressed, because the marker belongs to the child folder.
-	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID)
+	parentItems, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, library.Roots[0].ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1280,7 +1389,7 @@ func TestSQLiteMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
 	if parentByID[marker.ID].TrajectoryStart {
 		t.Fatalf("child-folder marker must not surface on the ancestor map, got %#v", parentByID[marker.ID])
 	}
-	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
+	area, err := repository.MediaInArea(ctx, 1, true, library.ID, sub.ID, 0, domain.Bounds{North: 51, South: 50, East: 31, West: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1588,7 +1697,7 @@ func TestSQLiteFolderTimelineUsesMarkersOfTheListedFolder(t *testing.T) {
 	if start, end := flags(parentTimeline); !start || !end {
 		t.Fatalf("parent timeline must show the parent's markers, got start=%v end=%v", start, end)
 	}
-	parentMap, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, parent)
+	parentMap, err := repository.GeotaggedMedia(ctx, 1, true, library.ID, parent, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

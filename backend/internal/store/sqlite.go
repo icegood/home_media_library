@@ -28,6 +28,12 @@ var sqliteMigrations embed.FS
 
 const mediaColumns = `m.id, m.folder_id, m.path, m.name, m.mime_type, m.size, m.metadata_json, m.gps, m.taken_at, m.metadata_error, m.thumbnail_error, m.notes`
 
+// mapMediaColumns is mediaColumns with an empty metadata object: map rows
+// (markers, area/cluster selections) never show camera metadata, which is
+// ~95% of a row, so a whole-library map stays a small, fast payload. The
+// viewer fetches the full row of the item it opens.
+const mapMediaColumns = `m.id, m.folder_id, m.path, m.name, m.mime_type, m.size, '{}', m.gps, m.taken_at, m.metadata_error, m.thumbnail_error, m.notes`
+
 // favoriteExpr is a correlated EXISTS over the media alias m yielding whether
 // the row belongs to any favorite view owned by a user id bound as a query
 // parameter. It must be selected with a *bool scan destination.
@@ -2003,7 +2009,7 @@ func (s *SQLite) queryMediaByIDs(ctx context.Context, idCond string, idArgs []an
 	return out, nil
 }
 
-func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID int) ([]domain.MapMedia, error) {
+func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int) ([]domain.MapMedia, error) {
 	var query string
 	switch {
 	case folderID > 0:
@@ -2011,7 +2017,7 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 			SELECT ?, ?
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
@@ -2021,7 +2027,7 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ?
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
@@ -2031,7 +2037,7 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
@@ -2058,6 +2064,7 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 			args = append(args, 0, userID)
 		}
 	}
+	query, args = withFavoriteMapFilter(query, args, favoriteID)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -2100,11 +2107,33 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 	return out, nil
 }
 
+// favoriteMapCondition narrows a map query (alias m) to one favorite view,
+// deep: the media mentioned directly plus every media of each favorite folder
+// and of all its subfolders. Each "?" takes the view id.
+const favoriteMapCondition = `
+			AND (m.id IN (SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ?)
+				OR m.folder_id IN (WITH RECURSIVE fav_sub(id) AS (
+					SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ?
+					UNION ALL
+					SELECT f.id FROM media_folders f JOIN fav_sub ON f.parent_id = fav_sub.id)
+				SELECT id FROM fav_sub))`
+
+// withFavoriteMapFilter appends the favorite view condition to a map query
+// ending in "GROUP BY m.id" when a view is given, so the view's rows are
+// selected in SQL rather than filtered from the whole map afterwards.
+func withFavoriteMapFilter(query string, args []any, favoriteID int) (string, []any) {
+	if favoriteID <= 0 {
+		return query, args
+	}
+	const tail = "\n\t\tGROUP BY m.id"
+	return strings.TrimSuffix(query, tail) + favoriteMapCondition + tail, append(args, favoriteID, favoriteID)
+}
+
 // MediaInArea returns geotagged media the user may read whose point falls inside
 // bounds. The rectangle test is pushed into the R*Tree media_geo index (a point
 // lies inside the box iff minLat <= north, maxLat >= south, minLng <= east and
 // maxLng >= west), so only matching ids are materialized.
-func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID int, bounds domain.Bounds) ([]domain.MapMedia, error) {
+func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int, bounds domain.Bounds) ([]domain.MapMedia, error) {
 	var query string
 	switch {
 	case folderID > 0:
@@ -2112,7 +2141,7 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			SELECT ?, ?
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
 			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
@@ -2123,7 +2152,7 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ?
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
 			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
@@ -2134,7 +2163,7 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			SELECT lr.folder_id, lr.library_id FROM library_roots lr
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
-		SELECT ` + mediaColumns + `, MIN(covers.library_id)
+		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
 			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
@@ -2154,6 +2183,7 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 	} else {
 		args = append(args, 0, userID)
 	}
+	query, args = withFavoriteMapFilter(query, args, favoriteID)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

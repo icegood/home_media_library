@@ -3965,6 +3965,15 @@ function MediaViewerPage() {
   // otherwise (root/timeline mode, or an item outside the list) the known
   // neighbors walk is the list.
   usePlayPrefetch(fromWalk ? walk : folderMedia, fromWalk ? walkIndex : index, item ?? null);
+  // A selection opened from the map holds lean map rows without camera
+  // metadata: the shown item's full row is fetched once and kept as an override.
+  const leanItemId = scopedMedia != null && item && !mediaOverrides[item.id] && Object.keys(item.metadata ?? {}).length === 0 ? item.id : null;
+  useEffect(() => {
+    if (leanItemId == null) return;
+    let cancelled = false;
+    api.media(leanItemId).then(media => { if (!cancelled) setMediaOverrides(current => ({...current, [media.id]: media})); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [leanItemId]);
   useEffect(() => {
     if (index >= 0 || !Number.isFinite(currentMediaId)) {
       setFallback({loading:false, failed:false});

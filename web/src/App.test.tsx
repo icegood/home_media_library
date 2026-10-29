@@ -4100,6 +4100,19 @@ test("map area selection then item link carries bounds in the viewer URL", async
   expect(link.getAttribute("href")).toContain("item=100");
 });
 
+test("viewer opened on a map selection fetches the full row of the shown item", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  const lean = [
+    {id:100, libraryId:1, folderId:20, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:""},
+    {id:101, libraryId:1, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,21", takenAt:""}
+  ];
+  sessionStorage.setItem("100,101", JSON.stringify(lean));
+  mockApi.media.mockResolvedValue({...lean[0], metadata:{exif:{Model:"X100"}}});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100&list=100,101"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.media).toHaveBeenCalledWith(100));
+  sessionStorage.removeItem("100,101");
+});
+
 test("admin settings sections accept edits across network mail thumbnails and logs", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin?section=network"]}><App/></MemoryRouter>);
