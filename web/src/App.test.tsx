@@ -425,7 +425,7 @@ test("regular user has no settings menu and picks theme in user settings", async
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"dark", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
@@ -447,7 +447,7 @@ test("system theme resolves via prefers-color-scheme and updates on change", asy
   pickOption(within(dialog).getByRole("combobox", {name:"Theme"}), "System — match device");
   expect(document.documentElement.dataset.theme).toBe("light");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"system", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
   dark = true;
   listeners.forEach(listener => listener({matches:true}));
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
@@ -463,6 +463,7 @@ test("user settings lets each user pick CARTO map tiles per theme", async () => 
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  settingsTab(dialog, "Map");
   const light = within(dialog).getByRole("combobox", {name:"Tile source in light mode"});
   const dark = within(dialog).getByRole("combobox", {name:"Tile source in dark/forest mode"});
   expect(light).toHaveTextContent("OpenStreetMap");
@@ -496,6 +497,7 @@ test("changing the map tile source in user settings updates the open map immedia
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  settingsTab(dialog, "Map");
   pickOption(within(dialog).getByRole("combobox", {name:"Tile source in light mode"}), "CARTO — Voyager");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
   await waitFor(() => expect(tileSource().some(src => src.includes("basemaps.cartocdn.com/rastertiles/voyager"))).toBe(true));
@@ -543,6 +545,7 @@ test("user settings lists the full direct-play formats the browser supports", as
     fireEvent.click(await screen.findByLabelText("User menu"));
     fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
     const dialog = await screen.findByRole("dialog", {name:"User settings"});
+    settingsTab(dialog, "Playback");
     expect(await within(dialog).findByText("Your browser plays directly without transcoding: MP4 — H.264 + AAC, MP4 — H.265 / HEVC + AAC.")).toBeInTheDocument();
   } finally {
     HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
@@ -555,6 +558,7 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await screen.findByLabelText("User menu"));
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
+  settingsTab(dialog, "Playback");
   expect(await within(dialog).findByText(/Your browser plays directly without transcoding/)).toBeInTheDocument();
 
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
@@ -562,8 +566,9 @@ test("user settings modal changes codec email and password", async () => {
   fireEvent.click(await within(dialog).findByRole("option", {name:/VP9 \+ Opus → WebM/}));
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"vp9-opus-webm", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
 
+  settingsTab(dialog, "Account");
   fireEvent.change(within(dialog).getByLabelText("Email address"), {target:{value:"new@example.com"}});
   fireEvent.blur(within(dialog).getByLabelText("Email address"));
   await waitFor(() => expect(mockApi.updateEmail).toHaveBeenCalledWith("new@example.com"));
@@ -592,11 +597,11 @@ test("user settings modal changes zoom grade numerically", async () => {
   expect(document.documentElement.style.fontSize).toBe("120%");
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:120, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
   pickOption(within(dialog).getByRole("combobox", {name:"Zoom"}), "80%");
   expect(document.documentElement.style.fontSize).toBe("80%");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:80, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
 });
 
 test("user settings saves a configured date format", async () => {
@@ -608,7 +613,7 @@ test("user settings saves a configured date format", async () => {
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
   pickOption(within(dialog).getByRole("combobox", {name:"Date format"}), "16.08.2026 14:30");
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
 });
 
 test("user settings saves the date format with seconds", async () => {
@@ -623,7 +628,7 @@ test("user settings saves the date format with seconds", async () => {
   expect(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"})).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"16.08.2026 14:30:15"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"dmy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
 });
 
 test("user settings saves the american date format with seconds", async () => {
@@ -638,7 +643,7 @@ test("user settings saves the american date format with seconds", async () => {
   expect(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"})).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", {name:"08/16/2026 2:30:15 PM"}));
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"mdy-ss", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
 });
 
 test("user settings customizes map sidebar thumbnail size", async () => {
@@ -648,6 +653,7 @@ test("user settings customizes map sidebar thumbnail size", async () => {
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  settingsTab(dialog, "Browsing");
   fireEvent.change(within(dialog).getByLabelText("Minimum size, px", {exact:false}), {target:{value:"120"}});
   fireEvent.change(within(dialog).getByLabelText("Maximum size, px", {exact:false}), {target:{value:"120"}});
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
@@ -750,6 +756,10 @@ test("buffered folder list survives scrolling with a single full request", async
   expect(screen.getByText("img-1.jpg")).toBeInTheDocument();
 });
 
+function settingsTab(dialog:HTMLElement, name:string) {
+  fireEvent.click(within(dialog).getByRole("tab", {name}));
+}
+
 async function openPlayCacheSettings() {
   mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
   render(<MemoryRouter><App/></MemoryRouter>);
@@ -757,6 +767,7 @@ async function openPlayCacheSettings() {
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  settingsTab(dialog, "Playback");
   return dialog;
 }
 
@@ -827,12 +838,13 @@ test("user settings saves the media loading batch size", async () => {
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
   await waitFor(() => expect(within(dialog).getByRole("button", {name:"Save settings"})).toBeEnabled());
+  settingsTab(dialog, "Browsing");
   const batchInput = within(dialog).getByLabelText(/Items per request/);
   expect(batchInput).toHaveValue(10000);
   fireEvent.change(batchInput, {target:{value:"25"}});
   expect(mockApi.updateUserSettings).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
-  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith({theme:"light", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:25, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", language:"auto", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, poiProviderLight:"overpass", poiProviderDark:"overpass", poiProviders:{overpass:{endpoint:""}}, thumbMin:90, thumbMax:0, playCacheForward:3, playCacheBackward:1, playCacheKeep:0, showTranscodeReason:true}));
 });
 
 test("native gate shows the server picker despite a saved default when asked to change server", async () => {
@@ -2872,21 +2884,62 @@ test("transcode badge dropdown explains which parts are incompatible", async () 
   }
 });
 
-test("video player shows no transcode badge when the video can be direct-played", async () => {
+async function renderDirectPlayVideo() {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"clip.mp4", relativePath:"clip.mp4", type:"media", media:{id:100, folderId:20, relativePath:"clip.mp4", name:"clip.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"h264"},{codec_type:"audio", codec_name:"aac"}]}}, gps:"", takenAt:""}}
+  ], chain: []});
+  mockApi.videoThumbnails.mockResolvedValue([]);
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  await screen.findByLabelText("Seek video");
+}
+
+test("video player shows a green direct play badge when the video can be direct-played", async () => {
   const originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
   HTMLVideoElement.prototype.canPlayType = () => "maybe";
   try {
-    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
-    mockApi.folderEntries.mockResolvedValue({entries:[
-      {id:100, name:"clip.mp4", relativePath:"clip.mp4", type:"media", media:{id:100, folderId:20, relativePath:"clip.mp4", name:"clip.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"12.34"}, streams:[{codec_type:"video", codec_name:"h264"},{codec_type:"audio", codec_name:"aac"}]}}, gps:"", takenAt:""}}
-    ], chain: []});
-    mockApi.videoThumbnails.mockResolvedValue([]);
-    render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
-    await screen.findByLabelText("Seek video");
+    await renderDirectPlayVideo();
+    expect(screen.queryByRole("button", {name:/Transcoded/})).not.toBeInTheDocument();
+    const badge = await screen.findByRole("button", {name:/Direct play/});
+    expect(badge).toHaveClass("video-badge-direct");
+    fireEvent.click(badge);
+    expect(screen.getByText("Why direct play?")).toBeInTheDocument();
+    expect(screen.getByText("The original file plays in your browser without transcoding.")).toBeInTheDocument();
+  } finally {
+    HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
+  }
+});
+
+test("video player hides the playback badge when the user turned off the transcoded reason", async () => {
+  const originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
+  HTMLVideoElement.prototype.canPlayType = () => "maybe";
+  mockApi.userSettings.mockResolvedValue({...(await mockApi.userSettings()), showTranscodeReason:false});
+  try {
+    await renderDirectPlayVideo();
+    await waitFor(() => expect(screen.queryByRole("button", {name:/Direct play/})).not.toBeInTheDocument());
     expect(screen.queryByRole("button", {name:/Transcoded/})).not.toBeInTheDocument();
   } finally {
     HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
   }
+});
+
+test("user settings saves the show transcoded reason choice from the playback tab", async () => {
+  const dialog = await openPlayCacheSettings();
+  const toggle = within(dialog).getByRole("checkbox", {name:"Show transcoded reason"});
+  expect(toggle).toBeChecked();
+  fireEvent.click(toggle);
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save settings"}));
+  await waitFor(() => expect(mockApi.updateUserSettings).toHaveBeenCalledWith(expect.objectContaining({showTranscodeReason:false})));
+});
+
+test("user settings groups the options into tabs", async () => {
+  const dialog = await openPlayCacheSettings();
+  expect(within(dialog).getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Browsing", "Playback", "Map", "Account"]);
+  expect(within(dialog).getByRole("tab", {name:"Playback"})).toHaveAttribute("aria-selected", "true");
+  expect(within(dialog).queryByRole("combobox", {name:"Theme"})).not.toBeInTheDocument();
+  settingsTab(dialog, "Appearance");
+  expect(within(dialog).getByRole("combobox", {name:"Theme"})).toBeInTheDocument();
+  expect(within(dialog).queryByRole("spinbutton", {name:"Items ahead"})).not.toBeInTheDocument();
 });
 
 test("map area selection fetches media inside the rectangle from the server and shows a right-side timeline panel", async () => {
@@ -4256,6 +4309,7 @@ test("user settings modal covers codec listbox thumbnail pickers and password ch
   fireEvent.click(await screen.findByRole("menuitem", {name:"User settings"}));
   const dialog = await screen.findByRole("dialog", {name:"User settings"});
 
+  settingsTab(dialog, "Playback");
   // Codec dropdown listbox selection.
   fireEvent.click(within(dialog).getByLabelText("Transcode schema"));
   const codecList = await within(dialog).findByRole("listbox", {name:"Transcode schema"});
@@ -4263,6 +4317,7 @@ test("user settings modal covers codec listbox thumbnail pickers and password ch
   expect(vp9Option).toBeDefined();
   fireEvent.click(vp9Option!);
 
+  settingsTab(dialog, "Browsing");
   // Default thumbnail picture pickers (images, videos, folders): each is a
   // custom select whose trigger sits next to its visible group label.
   for (const groupLabel of ["Images", "Videos", "Folders"]) {
@@ -4274,10 +4329,12 @@ test("user settings modal covers codec listbox thumbnail pickers and password ch
     fireEvent.click(pickerButton); // close
   }
 
+  settingsTab(dialog, "Appearance");
   // Theme and zoom selects.
   pickOption(within(dialog).getByRole("combobox", {name:"Theme"}), "System — match device");
   pickOption(within(dialog).getByRole("combobox", {name:"Zoom"}), "120%");
 
+  settingsTab(dialog, "Account");
   // Change-password sub-dialog: failure then success.
   fireEvent.click(within(dialog).getByRole("button", {name:"Change password…"}));
   const pw = await screen.findByRole("dialog", {name:"Change password"});

@@ -2805,6 +2805,15 @@ func TestUserSettingsPlayCache(t *testing.T) {
 	if got := fetch(); got.PlayCacheForward != 3 || got.PlayCacheBackward != 1 || got.PlayCacheKeep != 0 {
 		t.Fatalf("absent play cache = %d/%d keep %d, want defaults 3/1 keep 0", got.PlayCacheForward, got.PlayCacheBackward, got.PlayCacheKeep)
 	}
+	if got := fetch(); !got.ShowTranscodeReason {
+		t.Fatal("direct play badge should default to shown")
+	}
+	if code := put(map[string]any{"showTranscodeReason": false}); code != http.StatusOK {
+		t.Fatalf("put direct play badge status = %d", code)
+	}
+	if got := fetch(); got.ShowTranscodeReason {
+		t.Fatal("direct play badge stayed shown after turning it off")
+	}
 	for _, bad := range []map[string]any{{"playCacheForward": -2}, {"playCacheBackward": -5}, {"playCacheKeep": -3}} {
 		if code := put(bad); code != http.StatusBadRequest {
 			t.Fatalf("put %v status = %d, want 400", bad, code)

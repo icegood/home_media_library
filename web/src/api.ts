@@ -308,6 +308,8 @@ export interface UserSettings {
   playCacheBackward?:number;
   // Already loaded items kept within this distance of the current one; -1 = unlimited.
   playCacheKeep?:number;
+  // Show the play-mode badge: orange "Transcoded" with reasons, or green "Direct play".
+  showTranscodeReason?:boolean;
 }
 
 export interface MediaAdjust {

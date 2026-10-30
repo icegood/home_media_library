@@ -507,6 +507,7 @@ func (a *API) userSettings(w http.ResponseWriter, r *http.Request) {
 		"playCacheForward":   settings.PlayCacheForward,
 		"playCacheBackward":  settings.PlayCacheBackward,
 		"playCacheKeep":      settings.PlayCacheKeep,
+		"showTranscodeReason":    settings.ShowTranscodeReason,
 	})
 }
 
@@ -591,6 +592,7 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		PlayCacheForward  *int `json:"playCacheForward"`
 		PlayCacheBackward *int `json:"playCacheBackward"`
 		PlayCacheKeep     *int `json:"playCacheKeep"`
+		ShowTranscodeReason   *bool `json:"showTranscodeReason"`
 	}
 	if json.NewDecoder(r.Body).Decode(&input) != nil {
 		problem(w, http.StatusBadRequest, "invalid JSON")
@@ -704,12 +706,17 @@ func (a *API) updateUserSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	showTranscodeReason := domain.DefaultUserSettings().ShowTranscodeReason
+	if input.ShowTranscodeReason != nil {
+		showTranscodeReason = *input.ShowTranscodeReason
+	}
 	settings := domain.UserSettings{Theme: input.Theme, Codec: schema.ID, Zoom: zoom, DateFormat: input.DateFormat, StreamChunkSize: chunk,
 		DefaultThumbImage: thumbs.DefaultThumbImage, DefaultThumbVideo: thumbs.DefaultThumbVideo, DefaultThumbFolder: thumbs.DefaultThumbFolder, Language: input.Language,
 		MapTileProviderLight: lightSource, MapTileProviderDark: darkSource, MapMaxZoom: maxZoom,
 		POIProviderLight: lightPOI, POIProviderDark: darkPOI,
 		ThumbMin: thumbMin, ThumbMax: thumbMax,
-		PlayCacheForward: playForward, PlayCacheBackward: playBackward, PlayCacheKeep: playKeep}
+		PlayCacheForward: playForward, PlayCacheBackward: playBackward, PlayCacheKeep: playKeep,
+		ShowTranscodeReason: showTranscodeReason}
 	settings.DateFormat = normalizeDateFormat(settings.DateFormat)
 	settings.Language = normalizeLanguage(settings.Language)
 	if err := a.Store.SaveUserSettings(r.Context(), p.ID, settings); err != nil {

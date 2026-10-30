@@ -168,6 +168,9 @@ type UserSettings struct {
 	// soon as they leave the window; PlayCacheUnlimited keeps everything
 	// loaded during the play session.
 	PlayCacheKeep int `json:"playCacheKeep"`
+	// ShowTranscodeReason shows the play-mode badge that explains how a video
+	// is played: orange "Transcoded" with the reasons, or green "Direct play".
+	ShowTranscodeReason bool `json:"showTranscodeReason"`
 }
 
 // PlayCacheUnlimited is the play-mode cache count meaning "every item".
@@ -181,6 +184,7 @@ func DefaultUserSettings() UserSettings {
 		MapMaxZoom: 19,
 		ThumbMin: 90, ThumbMax: 0,
 		PlayCacheForward: 3, PlayCacheBackward: 1,
+		ShowTranscodeReason: true,
 	}
 }
 

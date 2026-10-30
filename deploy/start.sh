@@ -67,6 +67,20 @@ case "$mode" in
     docker compose -f compose.yaml pull $pull_targets
     docker compose -f compose.yaml rm -sf
     docker compose -f compose.yaml up -d --no-build --remove-orphans
+    # Every release leaves its images behind, and re-publishing the same
+    # version leaves the replaced one untagged. Once the new stack is up, drop
+    # the api/web images of other versions, then the untagged ones of this
+    # project (by its OCI source label). docker refuses to remove an image a
+    # container still uses, so a failed removal is skipped, never fatal.
+    for repo in ghcr.io/icegood/home-media-library-api ghcr.io/icegood/home-media-library-web; do
+      docker images --filter "reference=${repo}" --format '{{.Repository}}:{{.Tag}}' |
+        while read -r ref; do
+          if [ "$ref" != "${repo}:${resolved_version}" ]; then
+            docker rmi "$ref" >/dev/null 2>&1 && echo "Removed old image $ref" || true
+          fi
+        done
+    done
+    docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/icegood/home_media_library" >/dev/null 2>&1 || true
     ;;
 
   local-build | local | build)

@@ -89,7 +89,8 @@ via `sh deploy/start.sh e2e`.
 - Themes: light / dark / forest (+ system-follow). All component colors come from CSS custom properties defined per theme; hardcoded theme-specific colors are forbidden.
 - Active/selected controls use `--primary-text` background with `--primary-contrast` text; primary buttons glow uses `--btn-shadow-color`.
 - Global unified focus ring (`:focus-visible` outline in `--primary`).
-- User settings: UI zoom, stream chunk size, date format, video fallback codec, default thumbnails, map tile sources per light/dark theme, map maximum zoom.
+- User settings, grouped into tabs (Appearance, Browsing, Playback, Map, Account): UI zoom, stream chunk size, date format, video fallback codec, show transcoded reason, default thumbnails, map tile sources per light/dark theme, map maximum zoom.
+- Play-mode video badge (bottom left, above the controls, opens upward): orange "Transcoded" listing why the original cannot play, or green "Direct play"; hidden when "Show transcoded reason" is off.
 - Languages: UI is authored in English; a per-user setting (`auto` or a fixed language: `en`, `ua`, `de`, `nl`, `fi`, `sv`, `pl`, `che` (Czech), `slo` (Slovak), `hu`, `es`, `it`, `sl` (Slovenian), `no`, `pt`; `auto` follows the browser) applies live translations to all rendered text and common attributes without page reload. New UI strings must keep English as the canonical source and add an entry to every table in `web/src/i18n.ts`.
 - Network settings toggle HTTP/HTTPS; gateway Caddyfile regenerates and hot-reloads.
 

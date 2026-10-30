@@ -1813,6 +1813,11 @@ function ResetPassword() {
   </form></main>;
 }
 
+type UserSettingsTab = "appearance"|"browsing"|"playback"|"map"|"account";
+const USER_SETTINGS_TABS:{id:UserSettingsTab; label:string}[] = [
+  {id:"appearance", label:"Appearance"}, {id:"browsing", label:"Browsing"}, {id:"playback", label:"Playback"}, {id:"map", label:"Map"}, {id:"account", label:"Account"},
+];
+
 function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, onThemeChange, onZoomChange, onStreamChunkSizeChange, mapTileSettings, onMapTileChange, thumb, onThumbChange, onPlayCacheChange, onUserChanged, onClose}:{
   user:User; theme:"light"|"dark"|"forest"|"system"; zoom:number; streamChunkSize:number; resolvedTheme:"light"|"dark"|"forest";
   onThemeChange:(theme:"light"|"dark"|"forest"|"system")=>void;
@@ -1844,6 +1849,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
   const [playCacheForward, setPlayCacheForward] = useState(DEFAULT_PLAY_CACHE.forward);
   const [playCacheBackward, setPlayCacheBackward] = useState(DEFAULT_PLAY_CACHE.backward);
   const [playCacheKeep, setPlayCacheKeep] = useState(DEFAULT_PLAY_CACHE.keep);
+  const [showTranscodeReason, setShowTranscodeReason] = useState(true);
+  const [tab, setTab] = useState<UserSettingsTab>("appearance");
   const [poiProviderLight, setPoiProviderLight] = useState<POISource>("overpass");
   const [poiProviderDark, setPoiProviderDark] = useState<POISource>("overpass");
   const [poiProviders, setPoiProviders] = useState<Record<string, Record<string, string>>>({overpass:{}});
@@ -1877,6 +1884,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       setPlayCacheForward(normalizePlayCache(settings.playCacheForward, DEFAULT_PLAY_CACHE.forward));
       setPlayCacheBackward(normalizePlayCache(settings.playCacheBackward, DEFAULT_PLAY_CACHE.backward));
       setPlayCacheKeep(normalizePlayCache(settings.playCacheKeep, DEFAULT_PLAY_CACHE.keep));
+      setShowTranscodeReason(settings.showTranscodeReason !== false);
       setLoaded(true);
     }).catch((cause: unknown) => setLoadError((cause as Error).message));
   }, [user.id]);
@@ -1903,7 +1911,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
     setSaving(true); setError(""); setSaved(false);
     try {
       const thumbPrefs = normalizeThumb(draftThumbMin, draftThumbMax);
-      const payload = {theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders, thumbMin: thumbPrefs.min, thumbMax: thumbPrefs.max, playCacheForward, playCacheBackward, playCacheKeep};
+      const payload = {theme: draftTheme, codec, zoom: draftZoom, dateFormat, streamChunkSize: normalizeStreamChunkSize(draftStreamChunkSize), defaultThumbImage, defaultThumbVideo, defaultThumbFolder, language: draftLanguage, mapTileProviderLight, mapTileProviderDark, mapMaxZoom, poiProviderLight, poiProviderDark, poiProviders, thumbMin: thumbPrefs.min, thumbMax: thumbPrefs.max, playCacheForward, playCacheBackward, playCacheKeep, showTranscodeReason};
       await api.updateUserSettings(payload);
       applyUserLanguage(draftLanguage);
       syncUserDefaultThumbs(payload);
@@ -1933,113 +1941,128 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       </div>
       <p className="muted">Preferences for {user.login}. These apply only to your account.</p>
       {loadError && <p className="error" role="alert">Couldn't load your settings: {loadError}. Saving is disabled until they load.</p>}
-      <fieldset><legend>Appearance</legend>
-        <label>Language<Combobox value={draftLanguage} ariaLabel="Language" options={[{value:"auto", label:"Auto"}, ...LANGUAGES.map(entry => ({value:entry.id, label:entry.label}))]} onSelect={value => setDraftLanguage(value as LanguageSetting)}/></label>
-        <label>Theme<Combobox value={draftTheme} ariaLabel="Theme" options={[{value:"light", label:"Light"}, {value:"dark", label:"Dark"}, {value:"forest", label:"Forest"}, {value:"system", label:"System — match device"}]} onSelect={value => { setDraftTheme(value as "light"|"dark"|"forest"|"system"); setSaved(false); }}/></label>
-        <small>System follows your browser or operating system setting.</small>
-        <label>Date format<Combobox value={dateFormat} ariaLabel="Date format" options={[{value:"auto", label:"Browser locale (recommended)"}, {value:"iso", label:"2026-08-16 14:30"}, {value:"dmy", label:"16.08.2026 14:30"}, {value:"dmy-ss", label:"16.08.2026 14:30:15"}, {value:"mdy", label:"08/16/2026 2:30 PM"}, {value:"mdy-ss", label:"08/16/2026 2:30:15 PM"}]} onSelect={value => { setDateFormat(value as DateFormat); setSaved(false); }}/></label>
-        <small>Controls how dates look and are pasted back in the viewer.</small>
-        {dateFormat === "auto" && !systemLocaleAvailable() && <small className="muted">Your browser did not report a system locale — choose one of the fixed formats above instead.</small>}
-      </fieldset>
-      <fieldset><legend>Map tiles</legend>
-        <label>Tile source in light mode<Combobox value={mapTileProviderLight} ariaLabel="Tile source in light mode" options={LIGHT_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderLight(value as MapTileSource); setSaved(false); }}/></label>
-        <label>Tile source in dark/forest mode<Combobox value={mapTileProviderDark} ariaLabel="Tile source in dark/forest mode" options={DARK_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderDark(value as MapTileSource); setSaved(false); }}/></label>
-        <small>Dark or forest themes use a native dark source when available (CARTO Voyager dark, CARTO Native dark); other sources get a dark filter, except satellite and aerial imagery. OSM and Esri need no key; every CARTO and Mapy.com source needs one, configured by the admin in the Admin panel → Map tiles. Without a configured key, CARTO tiles show an "API key required" watermark and Mapy.com tiles do not load.</small>
-        <label>Maximum zoom<input type="number" min={1} max={24} value={mapMaxZoom}
-          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setMapMaxZoom(next); setSaved(false); } }}/></label>
-        <small>Deepest zoom level the map may reach (1–24). Recommended: 19 for OpenStreetMap, 20 for CARTO, Esri and Mapy.com (Mapy.com stops at 20; its aerial imagery reaches 19–20 only in parts of Central Europe and 13 elsewhere). Higher values are allowed and just upscale the provider's best tiles, so expect blurry imagery past the recommended level.</small>
-      </fieldset>
-      <fieldset><legend>Map points of interest</legend>
-        <label>POI provider in light mode<Combobox value={poiProviderLight} ariaLabel="POI provider in light mode" options={POI_SOURCE_OPTIONS} onSelect={value => { setPoiProviderLight(value as POISource); setSaved(false); }}/></label>
-        <label>POI provider in dark/forest mode<Combobox value={poiProviderDark} ariaLabel="POI provider in dark/forest mode" options={POI_SOURCE_OPTIONS} onSelect={value => { setPoiProviderDark(value as POISource); setSaved(false); }}/></label>
-        <small>Show restaurants, fuel stations, hotels and similar places inside the map. Geoapify and Mapbox need an API key configured by the admin in the Admin panel → Maps. Overpass is free and requires no key.</small>
-      </fieldset>
-      <fieldset><legend>Zoom</legend>
-        <label>Zoom<Combobox value={String(draftZoom)} ariaLabel="Zoom" options={[80, 90, 100, 110, 120, 130, 140].map(step => ({value:String(step), label:`${step}%`}))} onSelect={value => { setDraftZoom(Number(value)); setSaved(false); }}/></label>
-        <small>Scales the whole interface, including folder and file names.</small>
-      </fieldset>
-      <fieldset><legend>Media loading</legend>
-        <label>Items per request<input type="number" min={1} max={10000} value={draftStreamChunkSize}
-          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftStreamChunkSize(next); setSaved(false); } }}/></label>
-        <small>Folder items are fetched in chunks of this size. A value above your largest folder (for example 10000) loads every folder with a single request. Lower values (about 10) show the first pictures sooner on slow connections; thumbnails always appear independently as they load.</small>
-      </fieldset>
-      <fieldset><legend>Play mode cache</legend>
-        <PlayCacheField label="Items ahead" value={playCacheForward} onChange={value => { setPlayCacheForward(value); setSaved(false); }}/>
-        <PlayCacheField label="Items behind" value={playCacheBackward} onChange={value => { setPlayCacheBackward(value); setSaved(false); }}/>
-        <small>How many items after and before the one on screen play mode keeps downloaded, so paging that way shows them at once. Any whole number from 0 (no caching that way); Unlimited keeps the whole folder or favorite view. Larger windows use more data and memory — every cached photo is its full original.</small>
-        <PlayCacheField label="Keep loaded within" value={playCacheKeep} onChange={value => { setPlayCacheKeep(value); setSaved(false); }}/>
-        <small>Items already downloaded stay in memory while they are within this many items of the one on screen, even after paging moves them out of the range above, so going back to them needs no new download. Beyond it their memory is released. 0 releases them as soon as they leave the range; Unlimited keeps everything loaded until you leave play mode.</small>
-      </fieldset>
-      <fieldset><legend>Thumbnails</legend>
-        <label>Minimum size, px<input type="number" min={40} max={640} value={draftThumbMin}
-          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftThumbMin(next); setSaved(false); } }}/></label>
-        <label>Maximum size, px<input type="number" min={0} max={640} value={draftThumbMax}
-          onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftThumbMax(next); setSaved(false); } }}/></label>
-        <small>These bounds drive the size bar shown on the timeline and folder views, and the growable tiles of the map's Selected area and No GPS panels. Equal values keep the tiles fixed; max 0 lets map tiles fill the panel and caps the size bar at 640.</small>
-      </fieldset>
-      <fieldset><legend>Video fallback profile</legend>
-        <span className="settings-label">Transcode schema</span>
-        <div className="select-wrap">
-          <button type="button" className="select-button" disabled={!loaded} aria-label="Transcode schema" aria-haspopup="listbox" aria-expanded={codecOpen} onClick={() => { setCodecOpen(value => !value); setThumbPickerOpen(null); }}>
-            <span>{transcodeShortLabel(codec)}</span><span className="select-caret" aria-hidden="true">▾</span>
-          </button>
-          {codecOpen && <ul className="select-listbox" role="listbox" aria-label="Transcode schema">
-            {(Object.keys(TRANSCODE_SCHEMAS) as UserSettingsPayload["codec"][]).map(id => {
-              const schema = TRANSCODE_SCHEMAS[id];
-              return <li key={id} role="option" aria-selected={codec === id} onClick={() => { setCodec(id); setCodecOpen(false); setSaved(false); }}>
-                <strong>{schema.videoLabel} + {schema.audioLabel} → {schema.containerLabel}</strong>
-                <small>{schema.compressionLabel} compression — browser: {schema.supportLabel}</small>
-              </li>;
-            })}
-          </ul>}
-        </div>
-        <small>Used when your browser cannot play the original video. Choose the profile your devices support best.</small>
-        <small>Your browser plays directly without transcoding: {supportedVideoFormats().join(", ") || "none"}.</small>
-      </fieldset>
-      <fieldset><legend>Default pictures</legend>
-        <small>Shown while a thumbnail has not been generated yet, so you can see which items are not covered. You can pick a different picture for images, videos, and folders.</small>
-        {(["image","video","folder"] as const).map(kind => {
-          const value = kind === "image" ? defaultThumbImage : kind === "video" ? defaultThumbVideo : defaultThumbFolder;
-          const onChange = kind === "image" ? setDefaultThumbImage : kind === "video" ? setDefaultThumbVideo : setDefaultThumbFolder;
-          const open = thumbPickerOpen === kind;
-          const current = defaultThumbPicture(kind);
-          return <div className="thumb-picker" key={kind}>
-            <span className="thumb-picker-label">{kind === "image" ? "Images" : kind === "video" ? "Videos" : "Folders"}</span>
-            <div className="select-wrap">
-              <button type="button" className="select-button thumb-picker-button" aria-haspopup="listbox" aria-expanded={open} onClick={() => { setThumbPickerOpen(open ? null : kind); setCodecOpen(false); }}>
-                <span className="thumb-picker-current">
-                  <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(current.svg)}")`}}/>
-                  {kind !== "image" && <span className={`thumb-kind-badge thumb-kind-badge-sm ${kind === "folder" ? "thumb-kind-folder" : "thumb-kind-video"}`}>{kind === "video" ? "▶" : "▰"}</span>}
-                  <span>{current.name}</span>
-                </span>
-                <span className="select-caret" aria-hidden="true">▾</span>
-              </button>
-              {open && <ul className="select-listbox" role="listbox" aria-label={`Default picture for ${kind === "image" ? "images" : kind === "video" ? "videos" : "folders"}`}>
-                {DEFAULT_THUMB_PICTURES.map(picture => (
-                  <li key={picture.id} role="option" aria-selected={value === picture.id} className={`thumb-picker-option-row${value === picture.id ? " selected" : ""}`}
-                    onClick={() => { onChange(picture.id); setThumbPickerOpen(null); setSaved(false); }}>
-                    <span className="thumb-picker-option-picture">
-                      <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(picture.svg)}")`}}/>
+      <div className="dialog-tabs" role="tablist" aria-label="Settings sections">
+        {USER_SETTINGS_TABS.map(entry => <button type="button" role="tab" key={entry.id} id={`user-settings-tab-${entry.id}`} aria-selected={tab === entry.id} aria-controls="user-settings-panel" className={tab === entry.id ? "active" : ""} onClick={() => setTab(entry.id)}>{entry.label}</button>)}
+      </div>
+      <div className="settings-tab-panel" role="tabpanel" id="user-settings-panel" aria-labelledby={`user-settings-tab-${tab}`}>
+        {tab === "appearance" && <>
+          <fieldset><legend>Appearance</legend>
+            <label>Language<Combobox value={draftLanguage} ariaLabel="Language" options={[{value:"auto", label:"Auto"}, ...LANGUAGES.map(entry => ({value:entry.id, label:entry.label}))]} onSelect={value => setDraftLanguage(value as LanguageSetting)}/></label>
+            <label>Theme<Combobox value={draftTheme} ariaLabel="Theme" options={[{value:"light", label:"Light"}, {value:"dark", label:"Dark"}, {value:"forest", label:"Forest"}, {value:"system", label:"System — match device"}]} onSelect={value => { setDraftTheme(value as "light"|"dark"|"forest"|"system"); setSaved(false); }}/></label>
+            <small>System follows your browser or operating system setting.</small>
+            <label>Date format<Combobox value={dateFormat} ariaLabel="Date format" options={[{value:"auto", label:"Browser locale (recommended)"}, {value:"iso", label:"2026-08-16 14:30"}, {value:"dmy", label:"16.08.2026 14:30"}, {value:"dmy-ss", label:"16.08.2026 14:30:15"}, {value:"mdy", label:"08/16/2026 2:30 PM"}, {value:"mdy-ss", label:"08/16/2026 2:30:15 PM"}]} onSelect={value => { setDateFormat(value as DateFormat); setSaved(false); }}/></label>
+            <small>Controls how dates look and are pasted back in the viewer.</small>
+            {dateFormat === "auto" && !systemLocaleAvailable() && <small className="muted">Your browser did not report a system locale — choose one of the fixed formats above instead.</small>}
+            <label>Zoom<Combobox value={String(draftZoom)} ariaLabel="Zoom" options={[80, 90, 100, 110, 120, 130, 140].map(step => ({value:String(step), label:`${step}%`}))} onSelect={value => { setDraftZoom(Number(value)); setSaved(false); }}/></label>
+            <small>Scales the whole interface, including folder and file names.</small>
+          </fieldset>
+        </>}
+        {tab === "browsing" && <>
+          <fieldset><legend>Media loading</legend>
+            <label>Items per request<input type="number" min={1} max={10000} value={draftStreamChunkSize}
+              onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftStreamChunkSize(next); setSaved(false); } }}/></label>
+            <small>Folder items are fetched in chunks of this size. A value above your largest folder (for example 10000) loads every folder with a single request. Lower values (about 10) show the first pictures sooner on slow connections; thumbnails always appear independently as they load.</small>
+          </fieldset>
+          <fieldset><legend>Thumbnails</legend>
+            <label>Minimum size, px<input type="number" min={40} max={640} value={draftThumbMin}
+              onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftThumbMin(next); setSaved(false); } }}/></label>
+            <label>Maximum size, px<input type="number" min={0} max={640} value={draftThumbMax}
+              onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setDraftThumbMax(next); setSaved(false); } }}/></label>
+            <small>These bounds drive the size bar shown on the timeline and folder views, and the growable tiles of the map's Selected area and No GPS panels. Equal values keep the tiles fixed; max 0 lets map tiles fill the panel and caps the size bar at 640.</small>
+          </fieldset>
+          <fieldset><legend>Default pictures</legend>
+            <small>Shown while a thumbnail has not been generated yet, so you can see which items are not covered. You can pick a different picture for images, videos, and folders.</small>
+            {(["image","video","folder"] as const).map(kind => {
+              const value = kind === "image" ? defaultThumbImage : kind === "video" ? defaultThumbVideo : defaultThumbFolder;
+              const onChange = kind === "image" ? setDefaultThumbImage : kind === "video" ? setDefaultThumbVideo : setDefaultThumbFolder;
+              const open = thumbPickerOpen === kind;
+              const current = defaultThumbPicture(kind);
+              return <div className="thumb-picker" key={kind}>
+                <span className="thumb-picker-label">{kind === "image" ? "Images" : kind === "video" ? "Videos" : "Folders"}</span>
+                <div className="select-wrap">
+                  <button type="button" className="select-button thumb-picker-button" aria-haspopup="listbox" aria-expanded={open} onClick={() => { setThumbPickerOpen(open ? null : kind); setCodecOpen(false); }}>
+                    <span className="thumb-picker-current">
+                      <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(current.svg)}")`}}/>
                       {kind !== "image" && <span className={`thumb-kind-badge thumb-kind-badge-sm ${kind === "folder" ? "thumb-kind-folder" : "thumb-kind-video"}`}>{kind === "video" ? "▶" : "▰"}</span>}
+                      <span>{current.name}</span>
                     </span>
-                    <span>{picture.name}</span>
-                  </li>
-                ))}
+                    <span className="select-caret" aria-hidden="true">▾</span>
+                  </button>
+                  {open && <ul className="select-listbox" role="listbox" aria-label={`Default picture for ${kind === "image" ? "images" : kind === "video" ? "videos" : "folders"}`}>
+                    {DEFAULT_THUMB_PICTURES.map(picture => (
+                      <li key={picture.id} role="option" aria-selected={value === picture.id} className={`thumb-picker-option-row${value === picture.id ? " selected" : ""}`}
+                        onClick={() => { onChange(picture.id); setThumbPickerOpen(null); setSaved(false); }}>
+                        <span className="thumb-picker-option-picture">
+                          <span className="thumb-default-picture" style={{backgroundImage:`url("${svgDataUri(picture.svg)}")`}}/>
+                          {kind !== "image" && <span className={`thumb-kind-badge thumb-kind-badge-sm ${kind === "folder" ? "thumb-kind-folder" : "thumb-kind-video"}`}>{kind === "video" ? "▶" : "▰"}</span>}
+                        </span>
+                        <span>{picture.name}</span>
+                      </li>
+                    ))}
+                  </ul>}
+                </div>
+              </div>;
+            })}
+          </fieldset>
+        </>}
+        {tab === "playback" && <>
+          <fieldset><legend>Video fallback profile</legend>
+            <span className="settings-label">Transcode schema</span>
+            <div className="select-wrap">
+              <button type="button" className="select-button" disabled={!loaded} aria-label="Transcode schema" aria-haspopup="listbox" aria-expanded={codecOpen} onClick={() => { setCodecOpen(value => !value); setThumbPickerOpen(null); }}>
+                <span>{transcodeShortLabel(codec)}</span><span className="select-caret" aria-hidden="true">▾</span>
+              </button>
+              {codecOpen && <ul className="select-listbox" role="listbox" aria-label="Transcode schema">
+                {(Object.keys(TRANSCODE_SCHEMAS) as UserSettingsPayload["codec"][]).map(id => {
+                  const schema = TRANSCODE_SCHEMAS[id];
+                  return <li key={id} role="option" aria-selected={codec === id} onClick={() => { setCodec(id); setCodecOpen(false); setSaved(false); }}>
+                    <strong>{schema.videoLabel} + {schema.audioLabel} → {schema.containerLabel}</strong>
+                    <small>{schema.compressionLabel} compression — browser: {schema.supportLabel}</small>
+                  </li>;
+                })}
               </ul>}
             </div>
-          </div>;
-        })}
-      </fieldset>
-      <fieldset><legend>Email</legend>
-        <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} onBlur={() => void saveEmail()} autoComplete="email" placeholder="you@example.com"/></label>
-        <small>Required to receive password reset links when you forget your password. Saved automatically when you leave the field.</small>
-        {emailError && <p className="error">{emailError}</p>}
-        {emailSaved && <p className="success">Email saved.</p>}
-      </fieldset>
-      <fieldset><legend>Security</legend>
-        <button type="button" className="secondary" onClick={() => setPasswordModalOpen(true)}>Change password…</button>
-        <small>Requires your current password. Use a separate strong password.</small>
-      </fieldset>
+            <small>Used when your browser cannot play the original video. Choose the profile your devices support best.</small>
+            <small>Your browser plays directly without transcoding: {supportedVideoFormats().join(", ") || "none"}.</small>
+            <label className="check"><input type="checkbox" checked={showTranscodeReason} onChange={event => { setShowTranscodeReason(event.target.checked); setSaved(false); }}/> Show transcoded reason</label>
+            <small>Shows a badge on videos in play mode: orange "Transcoded" with the reasons the original cannot play in your browser, or green "Direct play" when the original file plays as is.</small>
+          </fieldset>
+          <fieldset><legend>Play mode cache</legend>
+            <PlayCacheField label="Items ahead" value={playCacheForward} onChange={value => { setPlayCacheForward(value); setSaved(false); }}/>
+            <PlayCacheField label="Items behind" value={playCacheBackward} onChange={value => { setPlayCacheBackward(value); setSaved(false); }}/>
+            <small>How many items after and before the one on screen play mode keeps downloaded, so paging that way shows them at once. Any whole number from 0 (no caching that way); Unlimited keeps the whole folder or favorite view. Larger windows use more data and memory — every cached photo is its full original.</small>
+            <PlayCacheField label="Keep loaded within" value={playCacheKeep} onChange={value => { setPlayCacheKeep(value); setSaved(false); }}/>
+            <small>Items already downloaded stay in memory while they are within this many items of the one on screen, even after paging moves them out of the range above, so going back to them needs no new download. Beyond it their memory is released. 0 releases them as soon as they leave the range; Unlimited keeps everything loaded until you leave play mode.</small>
+          </fieldset>
+        </>}
+        {tab === "map" && <>
+          <fieldset><legend>Map tiles</legend>
+            <label>Tile source in light mode<Combobox value={mapTileProviderLight} ariaLabel="Tile source in light mode" options={LIGHT_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderLight(value as MapTileSource); setSaved(false); }}/></label>
+            <label>Tile source in dark/forest mode<Combobox value={mapTileProviderDark} ariaLabel="Tile source in dark/forest mode" options={DARK_MAP_TILE_OPTIONS} onSelect={value => { setMapTileProviderDark(value as MapTileSource); setSaved(false); }}/></label>
+            <small>Dark or forest themes use a native dark source when available (CARTO Voyager dark, CARTO Native dark); other sources get a dark filter, except satellite and aerial imagery. OSM and Esri need no key; every CARTO and Mapy.com source needs one, configured by the admin in the Admin panel → Map tiles. Without a configured key, CARTO tiles show an "API key required" watermark and Mapy.com tiles do not load.</small>
+            <label>Maximum zoom<input type="number" min={1} max={24} value={mapMaxZoom}
+              onChange={event => { const next = Number(event.target.value); if (Number.isFinite(next)) { setMapMaxZoom(next); setSaved(false); } }}/></label>
+            <small>Deepest zoom level the map may reach (1–24). Recommended: 19 for OpenStreetMap, 20 for CARTO, Esri and Mapy.com (Mapy.com stops at 20; its aerial imagery reaches 19–20 only in parts of Central Europe and 13 elsewhere). Higher values are allowed and just upscale the provider's best tiles, so expect blurry imagery past the recommended level.</small>
+          </fieldset>
+          <fieldset><legend>Map points of interest</legend>
+            <label>POI provider in light mode<Combobox value={poiProviderLight} ariaLabel="POI provider in light mode" options={POI_SOURCE_OPTIONS} onSelect={value => { setPoiProviderLight(value as POISource); setSaved(false); }}/></label>
+            <label>POI provider in dark/forest mode<Combobox value={poiProviderDark} ariaLabel="POI provider in dark/forest mode" options={POI_SOURCE_OPTIONS} onSelect={value => { setPoiProviderDark(value as POISource); setSaved(false); }}/></label>
+            <small>Show restaurants, fuel stations, hotels and similar places inside the map. Geoapify and Mapbox need an API key configured by the admin in the Admin panel → Maps. Overpass is free and requires no key.</small>
+          </fieldset>
+        </>}
+        {tab === "account" && <>
+          <fieldset><legend>Email</legend>
+            <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} onBlur={() => void saveEmail()} autoComplete="email" placeholder="you@example.com"/></label>
+            <small>Required to receive password reset links when you forget your password. Saved automatically when you leave the field.</small>
+            {emailError && <p className="error">{emailError}</p>}
+            {emailSaved && <p className="success">Email saved.</p>}
+          </fieldset>
+          <fieldset><legend>Security</legend>
+            <button type="button" className="secondary" onClick={() => setPasswordModalOpen(true)}>Change password…</button>
+            <small>Requires your current password. Use a separate strong password.</small>
+          </fieldset>
+        </>}
+      </div>
       {error && <p className="error">{error}</p>}
       {saved && <p className="success">Settings saved.</p>}
       <button type="button" className="settings-save" onClick={() => void saveSettings()} disabled={saving || !loaded}>{saving ? "Saving…" : "Save settings"}</button>
@@ -3530,6 +3553,7 @@ const DEFAULT_THUMB_PICTURES = [
 function svgDataUri(svg:string) { return `data:image/svg+xml,${encodeURIComponent(svg)}`; }
 
 const userDefaultThumbs = {image:"mountains", video:"mountains", folder:"mountains"};
+let userShowTranscodeReason = true;
 let userDateFormat: DateFormat = "auto";
 const dateFormatListeners = new Set<() => void>();
 function normalizeDateFormat(value:unknown): DateFormat {
@@ -3558,6 +3582,7 @@ function syncUserDefaultThumbs(settings:UserSettingsPayload) {
   userDefaultThumbs.image = settings.defaultThumbImage || "mountains";
   userDefaultThumbs.video = settings.defaultThumbVideo || "mountains";
   userDefaultThumbs.folder = settings.defaultThumbFolder || "mountains";
+  userShowTranscodeReason = settings.showTranscodeReason !== false;
   setUserDateFormat(normalizeDateFormat(settings.dateFormat));
 }
 function defaultThumbPicture(kind?:string) {
@@ -5496,15 +5521,20 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
       {renderVideo(active)}
       {transcoded && pending !== null && renderVideo(targetSlot)}
     </div>}
-    {transcoded && <div className="video-badge-wrap">
-      <button type="button" className="video-badge" aria-expanded={reportOpen} aria-controls="transcode-reasons"
-        onClick={event => { event.stopPropagation(); setReportOpen(v => !v); }}>Transcoded ▾</button>
-      {reportOpen && <div className="video-badge-popover" id="transcode-reasons" role="tooltip">
-        <strong>Why transcoded?</strong>
-        <ul>{playback.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
-      </div>}
-    </div>}
     <div className="video-controls">
+        {userShowTranscodeReason && <div className="video-badge-wrap">
+        <button type="button" className={`video-badge${transcoded ? "" : " video-badge-direct"}`} aria-expanded={reportOpen} aria-controls="playback-report"
+          onClick={event => { event.stopPropagation(); setReportOpen(v => !v); }}><span>{transcoded ? "Transcoded" : "Direct play"}</span><span className="video-badge-arrow" aria-hidden="true">▴</span></button>
+        {reportOpen && <div className="video-badge-popover" id="playback-report" role="tooltip">
+          {transcoded ? <>
+            <strong>Why transcoded?</strong>
+            <ul>{playback.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
+          </> : <>
+            <strong>Why direct play?</strong>
+            <p>The original file plays in your browser without transcoding.</p>
+          </>}
+        </div>}
+      </div>}
       <span className="video-time-current">{formatTime(current)}</span>
       <div className="timeline" onMouseMove={hoverTimeline} onMouseLeave={() => setHover(null)}>
         <input aria-label="Seek video" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(current, duration || current)}
