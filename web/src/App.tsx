@@ -2389,13 +2389,13 @@ function Browser() {
     if (consumedReturnKey.current === location.key) return;
     if (returnToFolderId != null && entries.some(entry => entry.type === "folder" && entry.id === returnToFolderId)) {
       consumedReturnKey.current = location.key;
-      kb.focus(`f${returnToFolderId}`);
+      kb.focus(`f${returnToFolderId}`, true);
       return;
     }
     if (returnToMediaId != null && entries.some(entry => entry.type === "media" && entry.media?.id === returnToMediaId)) {
       consumedReturnKey.current = location.key;
       consumeReturnMediaId(returnToMediaId);
-      kb.focus(`m${returnToMediaId}`);
+      kb.focus(`m${returnToMediaId}`, true);
     }
   }, [entries, returnToFolderId, returnToMediaId, location.key, kb.focus]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
@@ -2483,7 +2483,7 @@ function LibraryTimeline() {
     if (!items.some(item => item.id === returnToMediaId)) return;
     consumedReturnKey.current = location.key;
     consumeReturnMediaId(returnToMediaId);
-    kb.focus(`m${returnToMediaId}`);
+    kb.focus(`m${returnToMediaId}`, true);
   }, [items, visibleGroups, returnToMediaId, location.key, kb.focus]);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
     setItems(current => current.map(item => {
@@ -2807,7 +2807,7 @@ function FavoriteViewPage() {
     if (!present) return;
     consumedReturnKey.current = location.key;
     consumeReturnMediaId(returnToMediaId);
-    kb.focus(`m${returnToMediaId}`);
+    kb.focus(`m${returnToMediaId}`, true);
   }, [items, mediaItems, returnToMediaId, location.key, kb.focus]);
   async function keyboardFavorite(raw:string) {
     if (!Number.isFinite(favoriteViewId)) return;
@@ -3070,13 +3070,49 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
   const [focusId, setFocusId] = useState<string|null>(null);
   const [anchorId, setAnchorId] = useState<string|null>(null);
   const [bandIds, setBandIds] = useState<string[]>([]);
-  const focus = useCallback((nextId:string) => {
-    const el = options.containerRef.current;
-    const card = el ? Array.from(el.querySelectorAll<HTMLElement>("[data-kb-card]")).find(card => card.dataset.kbId === nextId) : undefined;
+  const cancelReveal = useRef<(()=>void)|null>(null);
+  useEffect(() => () => cancelReveal.current?.(), []);
+  // focus(id, true) also reveals the card: returning from the viewer lands on
+  // a grid that is still growing (progressive groups, thumbnails resizing
+  // rows), so a single scroll can come too early or be pushed off screen. It
+  // keeps re-centring the card each frame until it stays visible for a while,
+  // and gives up as soon as the user scrolls or presses a key.
+  const focus = useCallback((nextId:string, reveal = false) => {
+    const findCard = () => {
+      const el = options.containerRef.current;
+      return el ? Array.from(el.querySelectorAll<HTMLElement>("[data-kb-card]")).find(card => card.dataset.kbId === nextId) : undefined;
+    };
     setAnchorId(nextId);
     setFocusId(nextId);
     setBandIds([]);
-    card?.scrollIntoView?.({block:"nearest", inline:"nearest"});
+    cancelReveal.current?.();
+    if (!reveal) {
+      findCard()?.scrollIntoView?.({block:"nearest", inline:"nearest"});
+      return;
+    }
+    const started = performance.now();
+    let steady = 0;
+    let frame = 0;
+    let centred = false;
+    const userEvents = ["wheel", "touchstart", "keydown", "mousedown"] as const;
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      userEvents.forEach(type => window.removeEventListener(type, stop));
+      cancelReveal.current = null;
+    };
+    const tick = () => {
+      const card = findCard();
+      if (card) {
+        const rect = card.getBoundingClientRect();
+        if (!centred || rect.top < 0 || rect.bottom > window.innerHeight) { card.scrollIntoView?.({block:"center", inline:"nearest"}); centred = true; steady = 0; }
+        else steady++;
+      }
+      if (steady >= 15 || performance.now() - started > 3000) { stop(); return; }
+      frame = requestAnimationFrame(tick);
+    };
+    userEvents.forEach(type => window.addEventListener(type, stop, {passive:true}));
+    cancelReveal.current = stop;
+    tick();
   }, [options.containerRef]);
   const stateRef = useRef({focusId, anchorId, onToggle:options.onToggle, onFavorite:options.onFavorite, enabled:options.enabled});
   useEffect(() => {

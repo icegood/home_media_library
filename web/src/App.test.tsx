@@ -2515,7 +2515,7 @@ test("breadcrumb back to a parent folder selects and reveals the folder you came
   // The folder opened from is highlighted and scrolled into view so the user
   // sees where they came back to without scrolling.
   await waitFor(() => expect(card).toHaveClass("kb-focus"));
-  expect(scrollIntoView).toHaveBeenCalled();
+  expect(scrollIntoView).toHaveBeenCalledWith({block:"center", inline:"nearest"});
   delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
 });
 
@@ -2588,12 +2588,23 @@ test("any timeline crumb of the viewer returns focused on the item that was open
   const two = {...one, id:101, relativePath:"Nested/two.jpg", name:"two.jpg", takenAt:"2020-10-31T13:44:47Z"};
   mockApi.folderMedia.mockResolvedValue([one, two]);
   mockApi.media.mockResolvedValue(two);
-  render(<MemoryRouter initialEntries={["/library/1/view/21?item=101&sort=date-asc&root=20"]}><App/></MemoryRouter>);
-  await screen.findByText("two.jpg");
-  // "Photos" is the timeline root, not the item's own folder.
-  fireEvent.click(screen.getByRole("link", {name:"Photos"}));
-  await waitFor(() => expect(document.querySelector('[data-kb-id="m101"]')).toHaveClass("kb-focus"));
-  expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
+  const scrolled:string[] = [];
+  (HTMLElement.prototype as unknown as {scrollIntoView:unknown}).scrollIntoView = function(this:HTMLElement, options:ScrollIntoViewOptions) {
+    if (options?.block === "center") scrolled.push(this.dataset.kbId ?? "");
+  };
+  try {
+    render(<MemoryRouter initialEntries={["/library/1/view/21?item=101&sort=date-asc&root=20"]}><App/></MemoryRouter>);
+    await screen.findByText("two.jpg");
+    // "Photos" is the timeline root, not the item's own folder.
+    fireEvent.click(screen.getByRole("link", {name:"Photos"}));
+    await waitFor(() => expect(document.querySelector('[data-kb-id="m101"]')).toHaveClass("kb-focus"));
+    expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
+    // The grid scrolls so the row of the focused item is centred on screen.
+    await waitFor(() => expect(scrolled).toContain("m101"));
+    expect(scrolled).not.toContain("m100");
+  } finally {
+    delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
+  }
 });
 
 test("scoped map viewer breadcrumb walks the subfolder chain to the item", async () => {
