@@ -5523,17 +5523,14 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
     </div>}
     <div className="video-controls">
         {userShowTranscodeReason && <div className="video-badge-wrap">
-        <button type="button" className={`video-badge${transcoded ? "" : " video-badge-direct"}`} aria-expanded={reportOpen} aria-controls="playback-report"
-          onClick={event => { event.stopPropagation(); setReportOpen(v => !v); }}><span>{transcoded ? "Transcoded" : "Direct play"}</span><span className="video-badge-arrow" aria-hidden="true">▴</span></button>
-        {reportOpen && <div className="video-badge-popover" id="playback-report" role="tooltip">
-          {transcoded ? <>
+        {transcoded ? <>
+          <button type="button" className="video-badge" aria-expanded={reportOpen} aria-controls="playback-report"
+            onClick={event => { event.stopPropagation(); setReportOpen(v => !v); }}><span>Transcoded</span><span className="video-badge-arrow" aria-hidden="true">▴</span></button>
+          {reportOpen && <div className="video-badge-popover" id="playback-report" role="tooltip">
             <strong>Why transcoded?</strong>
             <ul>{playback.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
-          </> : <>
-            <strong>Why direct play?</strong>
-            <p>The original file plays in your browser without transcoding.</p>
-          </>}
-        </div>}
+          </div>}
+        </> : <span className="video-badge video-badge-direct">Direct play</span>}
       </div>}
       <span className="video-time-current">{formatTime(current)}</span>
       <div className="timeline" onMouseMove={hoverTimeline} onMouseLeave={() => setHover(null)}>

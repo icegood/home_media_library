@@ -2900,11 +2900,9 @@ test("video player shows a green direct play badge when the video can be direct-
   try {
     await renderDirectPlayVideo();
     expect(screen.queryByRole("button", {name:/Transcoded/})).not.toBeInTheDocument();
-    const badge = await screen.findByRole("button", {name:/Direct play/});
+    const badge = await screen.findByText("Direct play");
     expect(badge).toHaveClass("video-badge-direct");
-    fireEvent.click(badge);
-    expect(screen.getByText("Why direct play?")).toBeInTheDocument();
-    expect(screen.getByText("The original file plays in your browser without transcoding.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", {name:/Direct play/})).not.toBeInTheDocument();
   } finally {
     HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
   }
@@ -2916,7 +2914,7 @@ test("video player hides the playback badge when the user turned off the transco
   mockApi.userSettings.mockResolvedValue({...(await mockApi.userSettings()), showTranscodeReason:false});
   try {
     await renderDirectPlayVideo();
-    await waitFor(() => expect(screen.queryByRole("button", {name:/Direct play/})).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Direct play")).not.toBeInTheDocument());
     expect(screen.queryByRole("button", {name:/Transcoded/})).not.toBeInTheDocument();
   } finally {
     HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
