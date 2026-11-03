@@ -3259,6 +3259,8 @@ test("folder-scoped map isolates a named trajectory and can show only the map", 
   fireEvent.click(morning);
   // Selecting the segment keeps its two markers, hides the other trajectory.
   await waitFor(() => expect(document.querySelectorAll(".media-point-marker").length).toBe(2));
+  // The single edge 100 → 101 carries one arrow pointing toward the later item.
+  expect(document.querySelectorAll(".trajectory-arrow-marker").length).toBe(1);
   // Travel-order numbers are hidden by default; they must be switched on.
   expect(document.querySelectorAll(".trajectory-number-marker").length).toBe(0);
   fireEvent.click(await within(filter).findByRole("checkbox", {name:"Numbers"}));

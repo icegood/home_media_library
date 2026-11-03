@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildTrajectories } from "./App";
+import { buildTrajectories, trajectoryArrows } from "./App";
 import type { MapMedia } from "./types";
 
 function item(partial:Partial<MapMedia> & {id:number}):MapMedia {
@@ -114,5 +114,20 @@ describe("buildTrajectories", () => {
     ]);
     expect(segments).toHaveLength(1);
     expect(segments[0].points).toEqual([[10,10],[10.1,10.1]]);
+  });
+});
+
+describe("trajectoryArrows", () => {
+  test("each arrow points along increasing time, in screen space", () => {
+    // East, then north, then back west: 0°, -90° (screen y grows downward), 180°.
+    const arrows = trajectoryArrows([[50, 30], [50, 30.01], [50.01, 30.01], [50.01, 30]], 16, false);
+    expect(arrows.map(arrow => Math.round(arrow.angle))).toEqual([0, -90, 180]);
+    expect(arrows[0].position[0]).toBe(50);
+    expect(arrows[0].position[1]).toBeCloseTo(30.005, 9);
+  });
+  test("skips edges too short to hold an arrow and shifts it beside numbers", () => {
+    expect(trajectoryArrows([[50, 30], [50, 30]], 16, false)).toEqual([]);
+    expect(trajectoryArrows([[50, 30], [50, 30.01]], 1, false)).toEqual([]);
+    expect(trajectoryArrows([[50, 30], [50, 30.01]], 16, true)[0].position[1]).toBeCloseTo(30.0075, 9);
   });
 });

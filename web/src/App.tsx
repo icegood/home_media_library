@@ -6615,6 +6615,8 @@ function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onR
         const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
         return <Marker key={`${key}-e${edgeIndex}`} position={mid} icon={trajectoryNumberIcon(edgeIndex + 1, color)} interactive={false} keyboard={false}/>;
       })}
+        {segment.points.length >= 2 && trajectoryArrows(segment.points, zoom, showTrajectoryNumbers).map(arrow =>
+          <Marker key={`${key}-a${arrow.edge}`} position={arrow.position} icon={trajectoryArrowIcon(arrow.angle, color)} interactive={false} keyboard={false}/>)}
       </Fragment>;
     })}
     {visibleClusters.map(cluster => {
@@ -7022,6 +7024,45 @@ function mediaPointIcon(kind:"start"|"end"|"none" = "none") {
 }
 
 // Number glyph marking travel order along a trajectory (1 = first point).
+// Direction arrows along a trajectory: points are in taken-at order, so each
+// edge's arrow points from the earlier item to the later one. The angle is
+// taken in Web Mercator screen space (zoom-independent); edges shorter than
+// the arrow on screen get none. With travel-order numbers on, the number sits
+// at the edge's middle, so the arrow moves to three quarters and needs a
+// longer edge to fit beside it.
+export function trajectoryArrows(points:[number, number][], zoom:number, withNumbers:boolean) {
+  const world = 256 * 2 ** zoom;
+  const project = ([lat, lng]:[number, number]) => [
+    (lng + 180) / 360 * world,
+    (1 - Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)) / Math.PI) / 2 * world,
+  ];
+  const along = withNumbers ? 0.75 : 0.5;
+  const minLength = withNumbers ? 64 : 28;
+  const arrows:{edge:number; position:[number, number]; angle:number}[] = [];
+  for (let edge = 0; edge < points.length - 1; edge++) {
+    const a = points[edge];
+    const b = points[edge + 1];
+    const [ax, ay] = project(a);
+    const [bx, by] = project(b);
+    if (Math.hypot(bx - ax, by - ay) < minLength) continue;
+    arrows.push({
+      edge,
+      position:[a[0] + (b[0] - a[0]) * along, a[1] + (b[1] - a[1]) * along],
+      angle:Math.atan2(by - ay, bx - ax) * 180 / Math.PI,
+    });
+  }
+  return arrows;
+}
+
+function trajectoryArrowIcon(angle:number, color:string) {
+  return L.divIcon({
+    className:"trajectory-arrow-marker",
+    html:`<svg viewBox="0 0 14 14" width="14" height="14" style="transform:rotate(${angle.toFixed(1)}deg)" aria-hidden="true"><path d="M2 2 L12 7 L2 12 L5 7 Z" fill="${color}" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
+    iconSize:[14,14],
+    iconAnchor:[7,7],
+  });
+}
+
 function trajectoryNumberIcon(n:number, color:string) {
   return L.divIcon({
     className:"trajectory-number-marker",

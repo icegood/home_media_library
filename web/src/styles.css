@@ -867,6 +867,8 @@ form.map-trajectory-toggle { margin: 0; }
 .media-point-marker span { display: block; width: 9px; height: 9px; border-radius: 999px; background: white; }
 .trajectory-start-marker span, .trajectory-end-marker span { width: auto; height: auto; border-radius: 0; background: none; font-size: 18px; line-height: 1; }
 .trajectory-end-marker { background: var(--map-search); }
+.trajectory-arrow-marker { display: grid; place-items: center; }
+.trajectory-arrow-marker svg { display: block; filter: drop-shadow(0 1px 2px #00000099); }
 .trajectory-number-marker { display: grid; place-items: center; }
 .trajectory-number-marker span { display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 3px; box-sizing: border-box; border-radius: 999px; background: #fff; border: 2px solid currentColor; box-shadow: 0 1px 4px #00000099; font-size: 12px; font-weight: 700; line-height: 1; }
 
