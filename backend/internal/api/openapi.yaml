@@ -514,10 +514,10 @@ paths:
             enum: [name, date, date-asc]
         - name: kind
           in: query
-          description: Restrict to a media kind.
+          description: Restrict to media kinds, a comma list of image, video, document (e.g. `image,video`).
           schema:
             type: string
-            enum: [image, video, document]
+            pattern: '^(image|video|document)(,(image|video|document))*$'
         - name: gps
           in: query
           description: Restrict to geotagged or non-geotagged media.

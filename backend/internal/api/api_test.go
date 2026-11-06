@@ -1338,6 +1338,19 @@ func TestMediaNeighborsReturnsBoundedWindow(t *testing.T) {
 		}
 	}
 
+	// A kind list includes every listed kind: image,video keeps the video.
+	result = get(fmt.Sprintf("anchor=%d&sort=date-asc&kind=video,image&before=5&after=5", aPhoto.ID))
+	sawVideo := false
+	for _, item := range append(append([]domain.Media{}, result.Before...), result.After...) {
+		sawVideo = sawVideo || item.ID == video.ID
+	}
+	if !sawVideo {
+		t.Fatalf("kind=video,image window misses video %d: before=%#v after=%#v", video.ID, ids(result.Before), ids(result.After))
+	}
+	if response := request(f.handler, http.MethodGet, fmt.Sprintf("/api/v1/libraries/%d/media/neighbors?anchor=%d&kind=image,audio", f.libraryID, aPhoto.ID), alice, nil); response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown kind in list status = %d, want 400", response.Code)
+	}
+
 	// gps=only window excludes non-geotagged media.
 	result = get(fmt.Sprintf("anchor=%d&sort=date-asc&gps=gps&before=5&after=5", cPhoto.ID))
 	for _, item := range append(append([]domain.Media{}, result.Before...), result.After...) {

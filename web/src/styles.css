@@ -440,6 +440,8 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .bar-listbox li { display: block; padding: 8px 12px; border-radius: 8px; cursor: pointer; font-weight: 600; }
 .bar-listbox li:hover { background: var(--surface-hover); }
 .bar-listbox li[aria-selected="true"] { background: var(--surface-active); }
+.kind-filter-panel .check { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+.kind-filter-panel .check:hover { background: var(--surface-hover); }
 
 /* ===== Combobox (native select look, portal listbox below trigger) ===== */
 .combobox-wrap { position: relative; }
@@ -987,3 +989,11 @@ form.map-trajectory-toggle { margin: 0; }
 .map.leaflet-container .leaflet-control-scale-line { padding: 3px 6px; font-size: 11px; font-weight: 700; letter-spacing: .04em; line-height: 1.2; box-shadow: 0 4px 14px rgba(0,0,0,.3); }
 :root .leaflet-control-scale-line { background: rgba(255,255,255,.92); color: #1f2937; border-color: #334155; }
 :root[data-theme="dark"] .leaflet-control-scale-line, :root[data-theme="forest"] .leaflet-control-scale-line { background: rgba(10,17,32,.78); color: #fff; border-color: rgba(255,255,255,.65); }
+
+/* Transient error popups (ErrorPopup): fixed stack above everything, auto-close. */
+.popup-stack { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 10000; display: flex; flex-direction: column-reverse; gap: 8px; width: min(480px, calc(100vw - 32px)); pointer-events: none; }
+.error-popup { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px 10px 14px; border-radius: 10px; background: var(--danger-surface); border: 1px solid var(--danger-surface-border); border-left: 4px solid var(--danger); color: var(--text); box-shadow: var(--shadow-md); font-size: 14px; line-height: 1.4; animation: error-popup-in .18s ease-out; }
+.error-popup-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.error-popup-close { flex-shrink: 0; min-width: 0; padding: 0 6px; height: 24px; line-height: 1; border: 0; background: transparent; color: var(--text-muted); font-size: 18px; cursor: pointer; box-shadow: none; }
+.error-popup-close:hover { color: var(--text); background: var(--surface-hover); }
+@keyframes error-popup-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }

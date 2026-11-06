@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { App, clearAdjustCacheForTests, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -1714,12 +1714,34 @@ test("timeline Documents filter shows only document items", async () => {
   await screen.findByText("notes.pdf");
   expect(screen.getByText("photo.jpg")).toBeInTheDocument();
   expect(screen.getByText("clip.mp4")).toBeInTheDocument();
-  pickOption(screen.getByRole("combobox", {name:/^All$/}), "Documents");
+  fireEvent.click(screen.getByRole("button", {name:"Media kinds"}));
+  const kinds = await screen.findByRole("dialog", {name:"Media kinds"});
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Images"}));
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Videos"}));
   await waitFor(() => {
     expect(screen.queryByText("photo.jpg")).not.toBeInTheDocument();
     expect(screen.queryByText("clip.mp4")).not.toBeInTheDocument();
   });
   expect(screen.getByText("notes.pdf")).toBeInTheDocument();
+  // The last checked kind cannot be unchecked: something always shows.
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Documents"}));
+  expect(within(kinds).getByRole("checkbox", {name:"Documents"})).toBeChecked();
+  // Several kinds at once: documents + videos, and the viewer link carries both.
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Videos"}));
+  await screen.findByText("clip.mp4");
+  expect(screen.queryByText("photo.jpg")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", {name:"Media kinds"})).toHaveTextContent("Videos, Documents");
+  expect(within(kinds).getAllByRole("checkbox")).toHaveLength(3);
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Images"}));
+  await screen.findByText("photo.jpg");
+  expect(screen.getByRole("button", {name:"Media kinds"})).toHaveTextContent("All");
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Images"}));
+  // The viewer opened from the filtered timeline walks only those kinds.
+  const clip = {id:102, folderId:20, relativePath:"clip.mp4", name:"clip.mp4", kind:"video", mimeType:"video/mp4", size:10, metadata:{}, gps:"", takenAt:"2023-03-03T03:03:03Z"};
+  mockApi.media.mockResolvedValue(clip);
+  mockApi.mediaNeighbors.mockResolvedValue({anchor:clip, before:[], after:[]});
+  fireEvent.click(screen.getByText("clip.mp4"));
+  await waitFor(() => expect(mockApi.mediaNeighbors).toHaveBeenCalledWith(1, 20, 102, expect.objectContaining({kind:"video,document"})));
 });
 
 test("map in a folder can list the media without GPS in a side panel", async () => {
@@ -2041,8 +2063,10 @@ test("library timeline groups media by date along a vertical ruler", async () =>
       expect.stringContaining("2020")
     ]);
   }
-  fireEvent.click(screen.getByRole("combobox", {name:/^All$/}));
-  fireEvent.click(await screen.findByRole("option", {name:"Images"}));
+  fireEvent.click(screen.getByRole("button", {name:"Media kinds"}));
+  const kinds = await screen.findByRole("dialog", {name:"Media kinds"});
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Videos"}));
+  fireEvent.click(within(kinds).getByRole("checkbox", {name:"Documents"}));
   expect(screen.queryByText("two.mp4")).not.toBeInTheDocument();
   fireEvent.click(screen.getByText("one.jpg"));
   expect(mockApi.entries).not.toHaveBeenCalledWith(1, "2020");
@@ -3879,7 +3903,7 @@ test("login shows errors for bad credentials and can request a reset link", asyn
   fireEvent.change(await screen.findByLabelText("Login"), {target:{value:"alice"}});
   fireEvent.change(screen.getByLabelText("Password"), {target:{value:"wrong"}});
   fireEvent.click(screen.getByRole("button", {name:"Sign in"}));
-  await waitFor(() => expect(document.querySelector(".login .error")).not.toBeNull());
+  await waitFor(() => expect(document.querySelector("#popup-stack .error-popup")).not.toBeNull());
 
   fireEvent.click(screen.getByRole("button", {name:"Forgot password?"}));
   fireEvent.change(await screen.findByLabelText("Email"), {target:{value:"a@b.c"}});
@@ -4353,7 +4377,7 @@ test("user settings modal covers codec listbox thumbnail pickers and password ch
   fireEvent.change(within(pw).getByLabelText("New password"), {target:{value:"verylongpass9"}});
   fireEvent.change(within(pw).getByLabelText("Confirm new password"), {target:{value:"verylongpass9"}});
   fireEvent.click(within(pw).getByRole("button", {name:"Update password"}));
-  expect(await within(pw).findByText("wrong password")).toBeInTheDocument();
+  expect((await screen.findByText("wrong password")).closest("#popup-stack .error-popup")).not.toBeNull();
   fireEvent.change(within(pw).getByLabelText("Current password"), {target:{value:"good"}});
   fireEvent.click(within(pw).getByRole("button", {name:"Update password"}));
   await waitFor(() => expect(mockApi.changePassword).toHaveBeenCalledWith("good", "verylongpass9"));
@@ -4506,4 +4530,27 @@ test.each([
   const quarter = Math.abs(rotation) % 180 === 90;
   expect(quarter ? fitted.height : fitted.width).toBeLessThanOrEqual(boxWidth);
   expect(quarter ? fitted.width : fitted.height).toBeLessThanOrEqual(boxHeight);
+});
+
+test("ErrorPopup shows in the shared popup stack and closes itself after the timeout or on dismiss", () => {
+  vi.useFakeTimers();
+  try {
+    const onClose = vi.fn();
+    const {rerender} = render(<ErrorPopup message="GPS is required" onClose={onClose}/>);
+    const popup = screen.getByRole("alert");
+    expect(popup).toHaveTextContent("GPS is required");
+    expect(popup.closest("#popup-stack")).not.toBeNull();
+    act(() => { vi.advanceTimersByTime(POPUP_TIMEOUT_MS - 1); });
+    expect(screen.queryByRole("alert")).not.toBeNull();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    rerender(<ErrorPopup message="Select at least one item" onClose={onClose}/>);
+    fireEvent.click(screen.getByRole("button", {name:"Dismiss"}));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onClose).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });

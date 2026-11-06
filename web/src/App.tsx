@@ -553,6 +553,40 @@ function closeOnBackdropClick(event:MouseEvent<HTMLElement>, close:()=>void) {
   if (event.target === event.currentTarget) close();
 }
 
+export const POPUP_TIMEOUT_MS = 10_000;
+
+function popupStack():HTMLElement {
+  let stack = document.getElementById("popup-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "popup-stack";
+    stack.className = "popup-stack";
+    document.body.appendChild(stack);
+  }
+  return stack;
+}
+
+// Common transient error message for forms and dialogs: a popup in a fixed stack
+// at the bottom of the screen (it never pushes or covers the form's controls) that
+// closes itself after POPUP_TIMEOUT_MS or on its × button. Closing calls onClose so
+// the owner clears its error state, and the same error shows again when repeated.
+export function ErrorPopup({message, onClose}:{message:string; onClose?:()=>void}) {
+  const [hidden, setHidden] = useState(false);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    setHidden(false);
+    if (!message) return;
+    const timer = window.setTimeout(() => { setHidden(true); closeRef.current?.(); }, POPUP_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+  if (!message || hidden) return null;
+  return createPortal(<div className="error-popup" role="alert">
+    <span className="error-popup-text">{message}</span>
+    <button type="button" className="error-popup-close" aria-label="Dismiss" onClick={() => { setHidden(true); onClose?.(); }}>×</button>
+  </div>, popupStack());
+}
+
 type SettingsSection = "network" | "mail" | "thumbnails" | "libraries" | "users" | "jobs" | "logs" | "database" | "map";
 
 const settingsSections: Record<SettingsSection, {label:string; description:string}> = {
@@ -632,7 +666,7 @@ function StopServerButton() {
     <div>
       <strong>Server lifecycle</strong>
       <small>Docker stop is for Compose deployment. Process stop is for container-less deployment or restart testing.</small>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
     </div>
     <div className="settings-stop-buttons">
       <button type="button" className="danger" disabled={stopping !== ""} onClick={() => void stop("docker")}>{stopping === "docker" ? "Stopping container…" : "Stop Docker container"}</button>
@@ -663,7 +697,7 @@ function DatabaseVacuumAction() {
       <strong>Database maintenance</strong>
       <small>Reclaims space freed by deleted libraries, users, media, and finished job history.</small>
       {started && <p className="success">Vacuum started in the background. Track it in the job list below.</p>}
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
     </div>
     <div className="settings-stop-buttons">
       <button type="button" className="secondary" disabled={busy} onClick={() => void run()}>{busy ? "Compacting…" : "Compact database now"}</button>
@@ -810,7 +844,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
         <div className="panel-title"><h2>Delete library</h2><button type="button" className="secondary" onClick={() => setDeleting(null)}>Close</button></div>
         <p>Delete <strong>{deleting.name}</strong>?</p>
         <p className="muted">Items and folders that are not reachable from other libraries will be removed from the database. Files on disk are not deleted.</p>
-        {error && <p className="error">{error}</p>}
+        <ErrorPopup message={error} onClose={() => setError("")}/>
         <div className="action-row">
           <button type="button" className="danger" disabled={busy} onClick={confirmDelete}>Delete library</button>
           <button type="button" className="secondary" disabled={busy} onClick={() => setDeleting(null)}>Cancel</button>
@@ -835,7 +869,7 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
             </div>
           </div>)}</div>
         <button type="button" className="secondary" onClick={addRoot}>Add root folder</button>
-        {error && <p className="error">{error}</p>}
+        <ErrorPopup message={error} onClose={() => setError("")}/>
         <button disabled={busy}>{busy ? "Saving…" : "Create library"}</button>
       </form>
       {pickingRoot != null && <DirectoryPickerModal title="Choose root folder" filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(pickingRoot, path)} onSelect={selectPickerPath} onClose={closePicker}/>}
@@ -987,7 +1021,7 @@ function LibraryDialog({library, onClose}:{library:Library; onClose:()=>void}) {
           <button type="button" disabled={busy} onClick={() => setRefreshing("metadata")}>Refresh metadata…</button>
         </div>
       </div>}
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       {notice && <p className="success">{notice}</p>}
       <div className="dialog-footer">
         <InlineStatsLine key={`${library.id}-${library.name}`} load={() => api.libraryStats(library.id)}/>
@@ -1038,7 +1072,7 @@ function MoveRootModal({library, oldPath, onMoved, onClose}:{library:Library; ol
       <label>Old base path<input value={selected} readOnly/></label>
       <label>New base path<input value={newPath} onChange={event => setNewPath(event.target.value)} placeholder="/media/new-root-path" required/></label>
       <p className="muted">This rewrites stored folder and media paths only. It does not move files or start a scan.</p>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       <button disabled={busy || !selected || !newPath.trim()}>{busy ? "Updating paths…" : "Update database paths"}</button>
     </form>
   </div>;
@@ -1048,7 +1082,7 @@ function DirectoryPickerModal({title,filesystem,error,onOpen,onSelect,onClose}:{
   return <div className="modal-backdrop nested" role="dialog" aria-modal="true" aria-label={title} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal file-picker">
       <div className="panel-title"><div><h2>{title}</h2><p>Folders visible to the api process user</p></div><button type="button" onClick={onClose}>Close</button></div>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error}/>
       {filesystem && <>
         <div className="picker-path"><span>{filesystem.path}</span><button type="button" onClick={() => onSelect(filesystem.path)}>Select this folder</button></div>
         <div className="file-list">
@@ -1119,7 +1153,7 @@ function UserManagement() {
       <label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} required/></label>
       <button disabled={busy}>Add user</button>
     </form>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     <div className="library-table">{users.map(user => <div className="library-row" key={user.id}>
       <div className="library-main"><span className="folder">👤</span><span><strong>{user.login}</strong><small>{user.role}{user.role === "admin" ? " · reads every library" : ""}</small></span></div>
       <button type="button" className="secondary" disabled={busy || user.role === "admin"} onClick={() => setAccessUser(user)}>Manage access</button>
@@ -1170,7 +1204,7 @@ function UserAccessEditor({user,onClose}:{user:User; onClose:()=>void}) {
     <div className="card settings modal">
       <div className="panel-title"><h2>Library access</h2><button type="button" onClick={onClose}>Close</button></div>
       <p>Grant <strong>{user.login}</strong> read access to libraries.</p>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       {libraries.length === 0 ? <p className="muted">No libraries yet.</p> :
         <fieldset className="library-access"><legend>Read access</legend>
           {libraries.map(library => <label className="check" key={library.id}>
@@ -1205,7 +1239,7 @@ function LibraryAccessEditor({library}:{library:Library}) {
   }
   return <fieldset className="library-access"><legend>Read access</legend>
     <small>Admins always read every library. Enable regular users that should see this library.</small>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     {access.length === 0 ? <p className="muted">No users yet.</p> : access.map(item => <label className="check" key={item.user.id}>
       <input type="checkbox" checked={item.allowed} disabled={item.user.role === "admin" || busyUser === item.user.id} onChange={event => void toggle(item, event.target.checked)}/>
       {item.user.login} <span className="muted">({item.user.role}{item.user.role === "admin" ? ", always allowed" : ""})</span>
@@ -1245,7 +1279,7 @@ function JobMonitor() {
   const completedJobs = jobs.filter(job => !isActiveJob(job)).slice(0, 10);
   return <section className="jobs-panel">
     <div className="panel-title"><h2>Job instances</h2><small>{activeJobs.length} active instances</small></div>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     {jobs.length === 0 && <p className="muted">No jobs yet.</p>}
     {activeJobs.length === 0 && jobs.length > 0 && <p className="muted">No active jobs. Completed jobs are shown below for a short time.</p>}
     {activeJobs.length > 0 && <div className="jobs-list">{activeJobs.map(job => <JobInstanceRow job={job} key={job.id} onControl={control}/>)}</div>}
@@ -1368,7 +1402,7 @@ function ScheduledTaskManager() {
   return <div className="card settings scheduled-tasks">
     <div className="panel-title"><div><h2>Scheduled tasks</h2><p>Automate library scans, thumbnail creation, and database maintenance.</p></div><button onClick={startAdd}>Add</button></div>
     {notice && <p className="success">{notice}</p>}
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     {tasks.length === 0 ? <div className="empty-state"><p>No scheduled tasks yet. Use the Add button to create one.</p></div> :
       <div className="library-table">{tasks.map(task =>
         <div className="library-row" key={task.id}>
@@ -1386,7 +1420,7 @@ function ScheduledTaskManager() {
         <label>Cron expression<input value={cron} onChange={event => setCron(event.target.value)} placeholder="0 3 * * *" required/></label>
         <small>Format: minute hour day-of-month month day-of-week. Example: <code>0 3 * * *</code> runs daily at 03:00.</small>
         <label className="check"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)}/> Enabled</label>
-        {error && <p className="error">{error}</p>}
+        <ErrorPopup message={error} onClose={() => setError("")}/>
         <button disabled={busy}>{busy ? "Saving…" : editing ? "Save task" : "Create task"}</button>
       </form>
     </div>}
@@ -1443,7 +1477,7 @@ function LogViewer() {
       <label>Lines<input type="number" min="1" max="2000" value={limit} onChange={event => setLimit(Number(event.target.value))}/></label>
       {tail.path && <small>File: <code>{tail.path}</code></small>}
     </div>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     {message && <p className="success">{message}</p>}
     {tail.lines.length === 0 && !error && <p className="muted">No log lines yet.</p>}
     {tail.lines.length > 0 && <pre className="log-output" aria-label="Application logs">{tail.lines.join("\n")}</pre>}
@@ -1511,7 +1545,7 @@ function EmbyImportPanel({onImported}:{onImported:()=>Promise<void>}) {
       </div>)}
       <button type="button" className="secondary" onClick={() => setPathMappings(current => [...current, {from:"", to:""}])}>Add mapping</button>
     </fieldset>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     {result && <div className="import-result">
       <p className="success">Imported {result.libraries.length} libraries, {result.users.length} users, {result.access.length} access links.</p>
       {result.users.some(user => user.temporaryPassword) && <details open><summary>Temporary passwords for users without importable Emby passwords</summary>
@@ -1670,7 +1704,7 @@ function AdminSettings({section}:{section:"network"|"map"|"mail"|"thumbnails"|"j
       <small>Application logs use Android-style prefixes D/I/W/E. Level is applied immediately; rotate rules are saved for the configured log sink.</small>
     </fieldset>}
     </>}
-    {error && <p className="error">{error}</p>}{saving && <p className="muted">Saving…</p>}{saved && !saving && <p className="success">Settings saved.</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>{saving && <p className="muted">Saving…</p>}{saved && !saving && <p className="success">Settings saved.</p>}
   </div>;
 }
 
@@ -1707,7 +1741,7 @@ function FirstSetup({onComplete}:{onComplete:(user:User)=>void}) {
     <label><span>Login</span><input name="login" autoComplete="username" minLength={3} maxLength={64} pattern="[A-Za-z0-9._-]+" required/></label>
     <label><span>Password</span><input name="password" type="password" autoComplete="new-password" required/></label>
     <label><span>Confirm password</span><input name="confirmPassword" type="password" autoComplete="new-password" required/></label>
-    {error && <p className="error">{error}</p>}<button type="submit">Create administrator</button>
+    <ErrorPopup message={error} onClose={() => setError("")}/><button type="submit">Create administrator</button>
   </form></main>;
 }
 
@@ -1760,7 +1794,7 @@ function Login({onLogin}:{onLogin:(user:User)=>void}) {
   return <main className="center"><form className="card login" autoComplete="on" onSubmit={submit}><h1>Media Library</h1>
     <label><span>Login</span><input name="login" id="login" type="text" autoComplete="username" autoCorrect="off" autoCapitalize="none" spellCheck={false} required/></label>
     <label><span>Password</span><input name="password" id="password" type="password" autoComplete="current-password" required/></label>
-    {error && <p className="error">{error}</p>}<button type="submit">Sign in</button>
+    <ErrorPopup message={error} onClose={() => setError("")}/><button type="submit">Sign in</button>
     {isNativeApp() && servers.length > 0 && <>
       <p className="muted">Or switch to a saved library:</p>
       <SavedServers servers={servers} onServersChanged={setServers} onPick={server => { window.location.replace(server.url); }}/>
@@ -1805,7 +1839,7 @@ function ResetPassword() {
     {!token ? <p className="error">This reset link is missing its token.</p> : <>
       <label>New password<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" required/></label>
       <label>Confirm password<input type="password" value={confirm} onChange={event => setConfirm(event.target.value)} autoComplete="new-password" required/></label>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       <button type="submit" disabled={busy}>Reset password</button>
     </>}
     {message && <p className="success">{message}</p>}
@@ -2054,7 +2088,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
           <fieldset><legend>Email</legend>
             <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} onBlur={() => void saveEmail()} autoComplete="email" placeholder="you@example.com"/></label>
             <small>Required to receive password reset links when you forget your password. Saved automatically when you leave the field.</small>
-            {emailError && <p className="error">{emailError}</p>}
+            <ErrorPopup message={emailError} onClose={() => setEmailError("")}/>
             {emailSaved && <p className="success">Email saved.</p>}
           </fieldset>
           <fieldset><legend>Security</legend>
@@ -2063,7 +2097,7 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
           </fieldset>
         </>}
       </div>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       {saved && <p className="success">Settings saved.</p>}
       <button type="button" className="settings-save" onClick={() => void saveSettings()} disabled={saving || !loaded}>{saving ? "Saving…" : "Save settings"}</button>
     </div>
@@ -2143,7 +2177,7 @@ function ChangePasswordModal({onClose}:{onClose:()=>void}) {
         <label>Current password<input type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} autoComplete="current-password" required/></label>
         <label>New password<input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} autoComplete="new-password" required/></label>
         <label>Confirm new password<input type="password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} autoComplete="new-password" required/></label>
-        {error && <p className="error">{error}</p>}
+        <ErrorPopup message={error} onClose={() => setError("")}/>
         {saved && <p className="success">Password updated.</p>}
         <button type="submit" disabled={busy}>{busy ? "Saving…" : "Update password"}</button>
       </form>
@@ -2229,7 +2263,7 @@ function ThumbnailRefreshModal({title,busy,error,onClose,onRefresh}:{title:strin
     <div className="card settings modal">
       <div className="panel-title"><h2>Refresh thumbnails: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
       <p className="muted">Choose whether existing thumbnails should be kept or regenerated.</p>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error}/>
       <div className="action-row">
         <button type="button" disabled={busy} onClick={() => onRefresh(false)}>Missing only</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => onRefresh(true)}>Recreate existing</button>
@@ -2245,7 +2279,7 @@ function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Refresh metadata ${title}`} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal">
       <div className="panel-title"><h2>Re-extract metadata: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error}/>
       <p className="muted">Every file is re-extracted; a checked option also overwrites values files already have, an unchecked one only fills what is still missing. This does not recreate thumbnail files; use Refresh thumbnails separately.</p>
       <label className="check"><input type="checkbox" checked={recreateExisting} onChange={event => setRecreateExisting(event.target.checked)}/> Re-extract metadata JSON for all files</label>
       <label className="check"><input type="checkbox" checked={updateGps} onChange={event => setUpdateGps(event.target.checked)}/> Update GPS coordinates</label>
@@ -2254,6 +2288,68 @@ function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string
         <button type="button" disabled={busy} onClick={() => onRefresh(recreateExisting, updateGps, updateTakenAt)}>Refresh</button>
       </div>
     </div>
+  </div>;
+}
+
+// Media-kind filter shared by Folders, Timeline and Favorites: any subset of
+// the kinds can be checked. The selection travels to the viewer as the `kind`
+// URL parameter: "all" (omitted) or a comma list in MEDIA_KINDS order.
+const MEDIA_KINDS = ["image", "video", "document"] as const;
+type MediaKind = typeof MEDIA_KINDS[number];
+const ALL_MEDIA_KINDS:MediaKind[] = [...MEDIA_KINDS];
+const MEDIA_KIND_LABELS:Record<MediaKind, string> = {image:"Images", video:"Videos", document:"Documents"};
+
+function parseKinds(raw:string|null|undefined):MediaKind[] {
+  const parts = (raw ?? "").split(",").map(part => part.trim());
+  const kinds = MEDIA_KINDS.filter(kind => parts.includes(kind));
+  return kinds.length > 0 ? kinds : ALL_MEDIA_KINDS;
+}
+
+function kindsParam(kinds:readonly MediaKind[]):string {
+  const ordered = MEDIA_KINDS.filter(kind => kinds.includes(kind));
+  return ordered.length === 0 || ordered.length === MEDIA_KINDS.length ? "all" : ordered.join(",");
+}
+
+// Checkbox dropdown of the kinds; the button reads "All" when every kind is
+// checked. At least one kind always stays checked, so unchecking the last one
+// is ignored.
+function KindFilter({value, onChange}:{value:MediaKind[]; onChange:(next:MediaKind[])=>void}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{top:number; left:number; minWidth:number}>({top:0, left:0, minWidth:0});
+  const buttonRef = useRef<HTMLButtonElement|null>(null);
+  const panelRef = useRef<HTMLDivElement|null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const btn = buttonRef.current;
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      setPos({top: r.bottom + 6, left: r.left, minWidth: Math.max(r.width, 140)});
+    }
+    function onDocClick(event:Event) {
+      if (buttonRef.current && !buttonRef.current.contains(event.target as Node)
+          && panelRef.current && !panelRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    function onKey(event:KeyboardEvent) { if (event.key === "Escape") setOpen(false); }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  const all = kindsParam(value) === "all";
+  const label = all ? "All" : MEDIA_KINDS.filter(kind => value.includes(kind)).map(kind => MEDIA_KIND_LABELS[kind]).join(", ");
+  function toggle(kind:MediaKind, checked:boolean) {
+    const next = checked ? [...value, kind] : value.filter(item => item !== kind);
+    if (next.length > 0) onChange(MEDIA_KINDS.filter(item => next.includes(item)));
+  }
+  return <div className={`select-wrap bar-select-wrap${open ? " open" : ""}`}>
+    <button type="button" className="bar-select bar-select-button kind-filter-button" ref={buttonRef} aria-label="Media kinds" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(v => !v)}>
+      <span>{label}</span><span className="select-caret" aria-hidden="true">▾</span>
+    </button>
+    {open && createPortal(<div className="bar-listbox portal-fixed kind-filter-panel" role="dialog" aria-label="Media kinds" ref={panelRef}
+      style={{top: pos.top, left: pos.left, minWidth: pos.minWidth}}>
+      {MEDIA_KINDS.map(kind => (
+        <label key={kind} className="check"><input type="checkbox" checked={value.includes(kind)} onChange={event => toggle(kind, event.target.checked)}/> {MEDIA_KIND_LABELS[kind]}</label>
+      ))}
+    </div>, document.body)}
   </div>;
 }
 
@@ -2351,14 +2447,15 @@ function Browser() {
   const currentFolderId = folderId == null ? null : Number(folderId);
   const favParam = new URLSearchParams(location.search).get("fav");
   const [view, setView] = useState<"tile"|"list">("tile");
-  const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
+  const [kinds, setKinds] = useState<MediaKind[]>(ALL_MEDIA_KINDS);
+  const kind = kindsParam(kinds);
   const streamChunkSize = useContext(StreamChunkSizeCtx);
   useSyncBrowserBarMetrics();
   const {entries, setEntries, done:entriesDone, loading:entriesLoading, loadMore} = useBufferedFolderEntries(libraryId, currentFolderId, kind !== "all", streamChunkSize);
   const [selected, setSelected] = useState<ID[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<ID[]>([]);
   const mediaItems = entries.flatMap(entry => entry.type === "media" && entry.media ? [entry.media] : []);
-  const visibleEntries = kind === "all" ? entries : entries.filter(entry => entry.type === "media" && entry.media != null && entry.media.kind === kind);
+  const visibleEntries = kind === "all" ? entries : entries.filter(entry => entry.type === "media" && entry.media != null && kinds.includes(entry.media.kind as MediaKind));
   const gridRef = useRef<HTMLDivElement|null>(null);
   const [favItem, setFavItem] = useState<Media|null>(null);
   const [favFolder, setFavFolder] = useState<{id:ID; name:string}|null>(null);
@@ -2418,7 +2515,7 @@ function Browser() {
     <span className="bar-sep"/>
     <BarSelect value={view} options={[{value:"tile", label:"Tile"}, {value:"list", label:"List"}]} onChange={v => setView(v as "tile"|"list")}/>
     <span className="bar-sep"/>
-    <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}, {value:"document", label:"Documents"}]} onChange={v => setKind(v as "all"|"image"|"video"|"document")}/>
+    <KindFilter value={kinds} onChange={setKinds}/>
     <span className="bar-sep"/>
     <ThumbSizeBar/>
     <span className="bar-sep"/>
@@ -2439,7 +2536,8 @@ function LibraryTimeline() {
   useSyncBrowserBarMetrics();
   const [items, setItems] = useState<Media[]>([]);
   const [loading, setLoading] = useState(true);
-  const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
+  const [kinds, setKinds] = useState<MediaKind[]>(ALL_MEDIA_KINDS);
+  const kind = kindsParam(kinds);
   const [sort, setSort] = useState<"desc"|"asc">("asc");
   const [gpsFilter, setGpsFilter] = useState<"all"|"gps"|"nogps">("all");
   const {size:thumbSize} = useContext(ThumbCtx);
@@ -2454,9 +2552,9 @@ function LibraryTimeline() {
     return () => { cancelled = true; };
   }, [libraryId, currentFolderId]);
   const filtered = useMemo(() => items.filter(item =>
-    (kind === "all" || item.kind === kind) &&
+    kinds.includes(item.kind as MediaKind) &&
     (gpsFilter === "all" ? true : gpsFilter === "nogps" ? item.gps === "" : item.gps !== "")
-  ), [items, kind, gpsFilter]);
+  ), [items, kinds, gpsFilter]);
   const sorted = useMemo(() => sortMedia(filtered, sort), [filtered, sort]);
   // A whole-library timeline can mount tens of thousands of cards at once.
   // Render the date groups in batches so the first paint stays responsive and
@@ -2502,7 +2600,7 @@ function LibraryTimeline() {
         ]}
         onChange={v => { if (v) navigate(v); }}/>
       <span className="bar-sep"/>
-      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}, {value:"document", label:"Documents"}]} onChange={v => setKind(v as "all"|"image"|"video"|"document")}/>
+      <KindFilter value={kinds} onChange={setKinds}/>
       <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
       <BarSelect ariaLabel="GPS" value={gpsFilter} options={[{value:"all", label:"All"}, {value:"gps", label:"Geotagged"}, {value:"nogps", label:"No GPS"}]} onChange={v => setGpsFilter(v as "all"|"gps"|"nogps")}/>
       <span className="bar-sep"/>
@@ -2662,7 +2760,7 @@ function Favorites() {
       <label>New view<input value={name} onChange={event => setName(event.target.value)} placeholder="Best photos"/></label>
       <button type="submit">Create</button>
     </form>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     {views.length === 0 ? <div className="empty-state"><p>No favorite views yet. Create one, then add media into it.</p></div> :
       <div className="library-table">{views.map(view => <FavoriteViewRow key={view.id} view={view} onChange={load}/>)}</div>}
   </main>;
@@ -2718,6 +2816,7 @@ function selectLabelClick(event:React.MouseEvent, kbFocus?:()=>void) {
 
 function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected, onToggleSelected, kbFocused=false, kbRange=false, kbFocus}:{id:ID; name:string; view:"tile"|"list"; favoriteViewId?:ID; onRemove?:(id:ID)=>void; selected?:boolean; onToggleSelected?:(id:ID)=>void; kbFocused?:boolean; kbRange?:boolean; kbFocus?:()=>void}) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   async function remove(event:MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
     if (!favoriteViewId) return;
@@ -2742,7 +2841,7 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected,
     setBusy(true);
     try {
       const libId = await resolveLibrary();
-      if (libId == null) { window.alert("Could not open folder: library not found or access denied."); return; }
+      if (libId == null) { setError("Could not open folder: library not found or access denied."); return; }
       navigate(favoriteViewId != null ? `/library/${libId}/folder/${id}?fav=${favoriteViewId}` : `/library/${libId}/folder/${id}`);
     } finally {
       setBusy(false);
@@ -2768,6 +2867,7 @@ function FavoriteFolderCard({id, name, view, favoriteViewId, onRemove, selected,
     {view === "tile" && <div className="thumb-wrap"><FolderCover folderId={id}/></div>}
     <div className="media-text"><strong>{name}</strong></div>
     {favoriteViewId != null && <button type="button" className="favorite-button active" aria-label={`Remove ${name} from this favorite view`} disabled={busy} onClick={remove}>★</button>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
   </article>;
 }
 
@@ -2782,7 +2882,8 @@ function FavoriteViewPage() {
   const mediaReqRef = useRef(0);
   const [view, setView] = useState<"tile"|"list">("tile");
   const [displayMode, setDisplayMode] = useState<"folders"|"timeline"|"map">("folders");
-  const [kind, setKind] = useState<"all"|"image"|"video"|"document">("all");
+  const [kinds, setKinds] = useState<MediaKind[]>(ALL_MEDIA_KINDS);
+  const kind = kindsParam(kinds);
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   const {size:thumbSize} = useContext(ThumbCtx);
   const [selected, setSelected] = useState<ID[]>([]);
@@ -2848,11 +2949,11 @@ function FavoriteViewPage() {
     }
     ensureMedia();
   }, [favoriteViewId, displayMode, mediaLoaded, selected, selectedFolders]);
-  const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (kind === "image" ? i.mimeType?.startsWith("image/") : kind === "video" ? i.mimeType?.startsWith("video/") : i.mimeType != null && !i.mimeType.startsWith("image/") && !i.mimeType.startsWith("video/")));
+  const filteredItems = kind === "all" ? items : items.filter(i => i.isFolder || (i.mimeType != null && kinds.includes(i.mimeType.startsWith("image/") ? "image" : i.mimeType.startsWith("video/") ? "video" : "document")));
   const orderedItems = useMemo(() => [...filteredItems].sort((a, b) =>
     Number(Boolean(b.isFolder)) - Number(Boolean(a.isFolder)) || a.name.localeCompare(b.name, undefined, {sensitivity:"base"}) || a.id - b.id
   ), [filteredItems]);
-  const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => m.kind === kind);
+  const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => kinds.includes(m.kind as MediaKind));
   const sortedMedia = useMemo(() => sortMedia(filteredMedia, sort), [filteredMedia, sort]);
   const visibleMediaGroups = useProgressiveReveal(useMemo(() => groupByDate(sortedMedia), [sortedMedia]), 120);
   function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
@@ -2869,7 +2970,7 @@ function FavoriteViewPage() {
       <span className="bar-sep"/>
       <BarSelect value={view} options={[{value:"tile", label:"Tile"}, {value:"list", label:"List"}]} onChange={v => setView(v as "tile"|"list")}/>
       <span className="bar-sep"/>
-      <BarSelect value={kind} options={[{value:"all", label:"All"}, {value:"image", label:"Images"}, {value:"video", label:"Videos"}, {value:"document", label:"Documents"}]} onChange={v => setKind(v as "all"|"image"|"video"|"document")}/>
+      <KindFilter value={kinds} onChange={setKinds}/>
       {displayMode === "timeline" && <>
         <span className="bar-sep"/>
         <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
@@ -2879,7 +2980,7 @@ function FavoriteViewPage() {
       <span className="bar-sep"/>
       <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
     </div></div>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     {!loaded && <div className="empty-state"><p>Loading…</p></div>}
     {loaded && displayMode === "folders" && <>
       {orderedItems.length === 0 ? <div className="empty-state"><p>No favorites yet.</p></div> :
@@ -3051,7 +3152,7 @@ function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdate
       <button type="button" className="secondary" disabled={downloadBusy || (selectedIds.length === 0 && selectedFolders.length === 0)} onClick={download}>{downloadBusy ? "Zipping…" : "Download"}</button>
       <span className="bar-sep"/>
       <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>selected: {selectedIds.length}{selectedFolders.length ? ` (${selectedFolders.length} folders)` : ""}</span></div>
-    {error && <small className="error">{error}</small>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
   </form>;
 }
 
@@ -3512,12 +3613,15 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
   const [thumbnailError, setThumbnailError] = useState("");
   const [metadataOptionsOpen, setMetadataOptionsOpen] = useState(false);
   const [metadataError, setMetadataError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [favoriteChooserOpen, setFavoriteChooserOpen] = useState(false);
   const folderSelected = selectedFolderIds?.includes(entry.id) ?? false;
   async function refreshFolder() {
     setRefreshing(true);
     try {
       await api.scanLibrary(libraryId, {rootId:entry.id});
+    } catch (cause) {
+      setActionError((cause as Error).message);
     } finally {
       setRefreshing(false);
     }
@@ -3567,12 +3671,13 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
       <button type="button" role="menuitem" disabled={refreshing} onClick={() => setThumbnailOptionsOpen(true)}>Refresh thumbnails…</button>
       <button type="button" role="menuitem" disabled={refreshing} onClick={() => setMetadataOptionsOpen(true)}>Refresh metadata…</button>
       <button type="button" role="menuitem" onClick={() => setFavoriteChooserOpen(true)}>Add to favorites…</button>
-      <button type="button" role="menuitem" onClick={() => { void api.downloadArchive([], [entry.id]).catch(cause => window.alert(`ZIP download failed: ${(cause as Error).message}`)); }}>Download as ZIP</button>
+      <button type="button" role="menuitem" onClick={() => { void api.downloadArchive([], [entry.id]).catch(cause => setActionError(`ZIP download failed: ${(cause as Error).message}`)); }}>Download as ZIP</button>
       <InlineStatsLine load={() => api.folderStats(libraryId, entry.id)}/>
     </CardMenu>
     {favoriteChooserOpen && createPortal(<FolderFavoriteViewChooser folderId={entry.id} folderName={entry.name} onChange={() => {}} onClose={() => setFavoriteChooserOpen(false)}/>, document.body)}
     {thumbnailOptionsOpen && createPortal(<ThumbnailRefreshModal title={entry.name} busy={refreshing} error={thumbnailError} onClose={() => setThumbnailOptionsOpen(false)} onRefresh={refreshFolderThumbnails}/>, document.body)}
     {metadataOptionsOpen && createPortal(<MetadataRefreshModal title={entry.name} busy={refreshing} error={metadataError} onClose={() => setMetadataOptionsOpen(false)} onRefresh={refreshMetadata}/>, document.body)}
+    <ErrorPopup message={actionError} onClose={() => setActionError("")}/>
   </div>;
 }
 
@@ -3807,7 +3912,7 @@ function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item
   return <ModalBackdrop ariaLabel={`Favorite views for ${item.name}`} onClick={event => closeOnBackdropClick(event as any, onClose)}>
     <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
       <div className="panel-title"><h2>Favorites: {item.name}</h2><button type="button" onClick={onClose}>Close</button></div>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       {views.length === 0 ? <p className="muted">No favorite views yet. Create one below.</p> :
         <div className="favorite-picker-list">
           {views.map(view => (
@@ -3875,7 +3980,7 @@ function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{fo
   return <ModalBackdrop ariaLabel={`Favorite views for ${folderName}`} onClick={event => closeOnBackdropClick(event as any, onClose)}>
     <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
       <div className="panel-title"><h2>Add to favorites: {folderName}</h2><button type="button" onClick={onClose}>Close</button></div>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       {views.length > 0 && <div className="favorite-picker-list">
         {views.map(view => (
           <label key={view.id} className="favorite-picker-item" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
@@ -3977,7 +4082,7 @@ function MediaViewerPage() {
       return;
     }
     let cancelled = false;
-    const kind = kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : undefined;
+    const kind = kindParam != null && kindsParam(parseKinds(kindParam)) !== "all" ? kindsParam(parseKinds(kindParam)) : undefined;
     const gps = gpsParam ?? undefined;
     // Folder mode scopes prev/next to the folder (like the index-based list);
     // root/timeline mode scopes to the requested subtree (rootParam).
@@ -4000,9 +4105,10 @@ function MediaViewerPage() {
       ?? (listIds.length > 0
         ? items.filter(media => Number.isFinite(media.id) && listIds.includes(media.id))
         : null);
-    const kindScoped = kindParam === "image" || kindParam === "video" || kindParam === "document";
+    const kindFilter = parseKinds(kindParam);
+    const kindScoped = kindsParam(kindFilter) !== "all";
     const baseSource = scoped == null && kindScoped
-      ? items.filter(media => media.folderId === routeFolderId && media.kind === kindParam)
+      ? items.filter(media => media.folderId === routeFolderId && kindFilter.includes(media.kind as MediaKind))
       : scoped ?? items.filter(media => media.folderId === routeFolderId);
     const base = baseSource.map(media => mediaOverrides[media.id] ?? media);
     if (sortParam === "name") return base;
@@ -4067,8 +4173,8 @@ function MediaViewerPage() {
     const fav = query.get("fav") ?? undefined;
     if (listParam) return {list:listParam, fav};
     if (bounds && Number.isFinite(bounds.west)) return {bounds, fav};
-    if (rootParam != null) return {root:rootParam, kind: kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : "all", gps: gpsParam ?? undefined, fav};
-    const kindNav = kindParam === "image" || kindParam === "video" || kindParam === "document" ? kindParam : "all";
+    const kindNav = kindsParam(parseKinds(kindParam));
+    if (rootParam != null) return {root:rootParam, kind: kindNav, gps: gpsParam ?? undefined, fav};
     return fav ? {kind: kindNav, fav} : kindNav !== "all" ? {kind: kindNav} : {};
   }, [bounds, rootParam, kindParam, gpsParam, listParam, location.search]);
   function go(media:Media|null) {
@@ -4129,7 +4235,8 @@ function mapContextOf(libraryId:ID, item:Media, fav:string|null) {
 
 export interface ItemNav {
   root?:string;
-  kind?:"all"|"image"|"video"|"document";
+  // "all" or a comma list of media kinds (see kindsParam).
+  kind?:string;
   gps?:"gps"|"nogps";
   bounds?:{west:number; south:number; east:number; north:number};
   list?:string;
@@ -5217,7 +5324,7 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
         </div>
         {adjustSaved && <span className="media-adjust-saved" role="status">Adjustments saved</span>}
       </div>}
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
     </div>}
     {activeTab === "metadata" && <div role="tabpanel" aria-label="Metadata" aria-labelledby="media-tab-metadata"><MetadataSummary metadata={current.metadata}/></div>}
     {activeTab === "notes" && <div className="media-edit" role="tabpanel" aria-label="Notes" aria-labelledby="media-tab-notes">
@@ -6789,20 +6896,21 @@ function MapToolIcon({name}:{name:"area"|"cancel"|"clear"|"pin"}) {
 function PickedPointPopup({gps,onSetGPS,onWalkFrom}:{gps:string; onSetGPS:(gps:string)=>void; onWalkFrom?:(gps:string)=>void}) {
   const [value, setValue] = useState(gps);
   const [status, setStatus] = useState("");
-  useEffect(() => { setValue(gps); setStatus(""); }, [gps]);
+  const [error, setError] = useState("");
+  useEffect(() => { setValue(gps); setStatus(""); setError(""); }, [gps]);
   async function copyPickedGPS() {
     try {
       await copyText(value.trim());
-      setStatus("Copied.");
+      setStatus("Copied."); setError("");
     } catch {
-      setStatus("Could not copy automatically. Select and copy the field manually.");
+      setStatus(""); setError("Could not copy automatically. Select and copy the field manually.");
     }
   }
   function setPoint() {
     const pt = parseGPS(value.trim());
-    if (!pt) { setStatus("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614)."); return; }
+    if (!pt) { setStatus(""); setError("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614)."); return; }
     onSetGPS(formatGPS(pt[0], pt[1]));
-    setStatus("Point set.");
+    setStatus("Point set."); setError("");
   }
   return <div className="map-item picked-point-popup">
     <strong>Picked point</strong>
@@ -6814,23 +6922,25 @@ function PickedPointPopup({gps,onSetGPS,onWalkFrom}:{gps:string; onSetGPS:(gps:s
       {onWalkFrom && <button type="button" onClick={() => {
         const pt = parseGPS(value.trim());
         if (pt) onWalkFrom(formatGPS(pt[0], pt[1]));
-        else setStatus("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614).");
+        else { setStatus(""); setError("Enter coordinates like 50.45,30.52 or a Google Maps link (e.g. N 50° 4.035, E 19° 56.614)."); }
       }}>Walk from here</button>}
     </div>
-    {status && <small className={status === "Point set." || status === "Copied." ? "success" : "error"}>{status}</small>}
+    {status && <small className="success">{status}</small>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
   </div>;
 }
 
 function MediaGPSCopyPopup({title, gps, fromYou = ""}:{title:string; gps:string; fromYou?:string}) {
   const [value, setValue] = useState(gps);
   const [status, setStatus] = useState("");
-  useEffect(() => { setValue(gps); setStatus(""); }, [gps]);
+  const [error, setError] = useState("");
+  useEffect(() => { setValue(gps); setStatus(""); setError(""); }, [gps]);
   async function copyGPS() {
     try {
       await copyText(value.trim());
-      setStatus("Copied.");
+      setStatus("Copied."); setError("");
     } catch {
-      setStatus("Could not copy automatically. Select and copy the field manually.");
+      setStatus(""); setError("Could not copy automatically. Select and copy the field manually.");
     }
   }
   return <div className="map-item picked-point-popup">
@@ -6841,7 +6951,8 @@ function MediaGPSCopyPopup({title, gps, fromYou = ""}:{title:string; gps:string;
     <div className="picked-point-actions">
       <button type="button" className="secondary" onClick={copyGPS}>Copy</button>
     </div>
-    {status && <small className={status === "Copied." ? "success" : "error"}>{status}</small>}
+    {status && <small className="success">{status}</small>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
   </div>;
 }
 
@@ -6921,7 +7032,7 @@ export function TrajectoryNameDialog({item,onClose,onSave,onRemove,initialName,r
   return <ModalBackdrop ariaLabel={`Name trajectory for ${item.name}`} onClick={event => closeOnBackdropClick(event as unknown as React.MouseEvent<HTMLDivElement>, onClose)}>
     <div className="card settings modal trajectory-name-modal" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
       <div className="panel-title"><h2>{rename ? "Rename trajectory" : "New trajectory"}</h2><button type="button" className="secondary" disabled={busy} onClick={onClose}>Close</button></div>
-      {error && <p className="error">{error}</p>}
+      <ErrorPopup message={error} onClose={() => setError("")}/>
       <form onSubmit={submit}>
         <input aria-label="Trajectory name" placeholder="Trajectory name" value={value} disabled={busy} onChange={event => { setValue(event.target.value); setSaved(false); }} autoFocus />
         <div className="action-row">
@@ -7462,7 +7573,7 @@ function useNativeServerGate():ReactNode|null {
     <SavedServers servers={servers} onServersChanged={setServers} onPick={server => void connect(server.url)}/>
     <label>Server address<input value={url} onChange={event => setUrl(event.target.value)} type="url" inputMode="url" autoComplete="url"
       placeholder="https://media.example.com" required/></label>
-    {error && <p className="error">{error}</p>}
+    <ErrorPopup message={error} onClose={() => setError("")}/>
     <button type="submit">Connect</button>
   </form></main>;
 }

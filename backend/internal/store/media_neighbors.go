@@ -54,8 +54,13 @@ func mediaNeighborsSQL(driver string, scopeLibrary bool, scopeID int, userID int
 	}
 	var where []string
 	if kind != "" {
-		args = append(args, kind)
-		where = append(where, "mmt.media_type = "+next())
+		// kind is a comma list of media kinds (validated by the API).
+		var in []string
+		for _, part := range strings.Split(kind, ",") {
+			args = append(args, part)
+			in = append(in, next())
+		}
+		where = append(where, "mmt.media_type IN ("+strings.Join(in, ", ")+")")
 	}
 	switch gps {
 	case "gps":

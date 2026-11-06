@@ -875,11 +875,9 @@ func (a *API) mediaNeighbors(w http.ResponseWriter, r *http.Request) {
 	if sort == "" {
 		sort = "name"
 	}
-	kind := query.Get("kind")
-	switch kind {
-	case "", "image", "video", "document":
-	default:
-		problem(w, 400, "kind must be one of: image, video, document")
+	kind, ok := normalizeKinds(query.Get("kind"))
+	if !ok {
+		problem(w, 400, "kind must be a comma list of: image, video, document")
 		return
 	}
 	gps := query.Get("gps")
@@ -3057,6 +3055,34 @@ func renewUnchanged(item domain.Media, opts domain.MetadataWriteOptions) bool {
 		return false
 	}
 	return len(item.Metadata) > 0 && item.MetadataError == ""
+}
+
+// normalizeKinds validates a comma list of media kinds and returns it in a
+// fixed order without duplicates; "" (or every kind) means no kind filter.
+func normalizeKinds(raw string) (string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return "", true
+	}
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		switch part {
+		case "image", "video", "document":
+			seen[part] = true
+		default:
+			return "", false
+		}
+	}
+	kinds := []string{}
+	for _, kind := range []string{"image", "video", "document"} {
+		if seen[kind] {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) == 3 {
+		return "", true
+	}
+	return strings.Join(kinds, ","), true
 }
 
 // applyRenewResume drops the first processed items from a stable-ordered list

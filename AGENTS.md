@@ -51,7 +51,7 @@ Key facts:
   transcodes to the requesting user's chosen fallback codec (h264/h265/vp9, set per
   account in user settings).
 - Media kinds: `image`/`video`/`document` (classified via `media_mime_types.media_type`).
-  Kind filters (All/Images/Videos/Documents) exist on Timeline, Folders and Favorites;
+  Kind filters (multi-checkbox: Images/Videos/Documents, any subset, "All" when all checked; `kind=` is a comma list) exist on Timeline, Folders and Favorites;
   the Timeline also filters by GPS presence (All/Geotagged/No GPS) with `gps=` kept in the
   viewer URL, and the map has a "No GPS" side panel in folder-scoped view and parses Google
   Maps coordinate formats (`N 050° 4.035, E 19° 56.614`, DMS, links) in its coordinate search.

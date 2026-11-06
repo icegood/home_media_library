@@ -49,6 +49,7 @@ via `sh deploy/start.sh e2e`.
 - Named favorite views; media and folders can be members of multiple views.
 - Favorites index: create editor as a separate full-width panel above the list, submit right-aligned inside the editor.
 - Favorite view page: folders + media cards, both selectable (top-left checkboxes), display-mode switch Folders/Timeline/Map, kind filter, sort.
+- Kind filter (Folders, Timeline, Favorites) is a multi-checkbox dropdown of Images, Videos, Documents; any subset can be checked (at least one stays checked; the button reads "All" when every kind is checked). The viewer receives it as `kind=` with a comma list (e.g. `image,video`), and `/media/neighbors` accepts the same list.
 - Removing a member from a view never deletes the underlying media/folder.
 
 ## Map
@@ -90,6 +91,7 @@ via `sh deploy/start.sh e2e`.
 - Themes: light / dark / forest (+ system-follow). All component colors come from CSS custom properties defined per theme; hardcoded theme-specific colors are forbidden.
 - Active/selected controls use `--primary-text` background with `--primary-contrast` text; primary buttons glow uses `--btn-shadow-color`.
 - Global unified focus ring (`:focus-visible` outline in `--primary`).
+- Form and dialog errors (validation like an unparsable GPS, failed requests, ZIP/refresh failures) use one common format: an `ErrorPopup` toast in a fixed stack at the bottom centre of the screen, above everything, so it never overlaps or shifts the form's controls; it closes itself after 10 s or on its × button and clears the owner's error state. Persistent states (a failed settings load, a job's error, a missing reset token) stay inline.
 - User settings, grouped into tabs (Appearance, Browsing, Playback, Map, Account): UI zoom, stream chunk size, date format, video fallback codec, show transcoded reason, default thumbnails, map tile sources per light/dark theme, map maximum zoom.
 - Play-mode video badge (bottom left, above the controls, opens upward): orange "Transcoded" listing why the original cannot play, or green "Direct play"; hidden when "Show transcoded reason" is off.
 - Languages: UI is authored in English; a per-user setting (`auto` or a fixed language: `en`, `ua`, `de`, `nl`, `fi`, `sv`, `pl`, `che` (Czech), `slo` (Slovak), `hu`, `es`, `it`, `sl` (Slovenian), `no`, `pt`; `auto` follows the browser) applies live translations to all rendered text and common attributes without page reload. New UI strings must keep English as the canonical source and add an entry to every table in `web/src/i18n.ts`.
