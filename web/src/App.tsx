@@ -2,7 +2,7 @@ import { createContext, FormEvent, Fragment, MouseEvent, PointerEvent as ReactPo
 import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
-import { applyLanguageSetting, installDomTranslation, LANGUAGES, useLanguage } from "./i18n";
+import { applyLanguageSetting, installDomTranslation, LANGUAGES, translateMessage, useLanguage } from "./i18n";
 import type { LanguageSetting } from "./api";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
@@ -658,7 +658,7 @@ function StopServerButton() {
     const message = mode === "docker"
       ? "Stop the Docker container now? Restart it later with sh deploy/start.sh local-build or docker compose -f deploy/compose.yaml up -d api."
       : "Stop only the server process now? In Docker with restart policy, this can start again automatically.";
-    if (!window.confirm(message)) return;
+    if (!window.confirm(translateMessage(message))) return;
     setStopping(mode); setError("");
     try { await api.shutdown(mode); } catch (cause) { setError((cause as Error).message); setStopping(""); }
   }
@@ -681,7 +681,7 @@ function DatabaseVacuumAction() {
   const [error, setError] = useState("");
   async function run() {
     const message = "Compact the database file now? It runs in the background and briefly locks the database while the compacted file is written.";
-    if (!window.confirm(message)) return;
+    if (!window.confirm(translateMessage(message))) return;
     setBusy(true); setStarted(false); setError("");
     try {
       await api.vacuumDatabase();
@@ -1376,7 +1376,7 @@ function ScheduledTaskManager() {
     }
   }
   async function remove(task:ScheduledTask) {
-    if (!window.confirm(`Delete scheduled task "${task.name}"?`)) return;
+    if (!window.confirm(translateMessage(`Delete scheduled task "${task.name}"?`))) return;
     setBusy(true); setError("");
     try {
       await api.deleteScheduledTask(task.id);
@@ -1445,7 +1445,7 @@ function LogViewer() {
     }
   }
   async   function clear() {
-    if (!window.confirm("Clear the application log file? This cannot be undone.")) return;
+    if (!window.confirm(translateMessage("Clear the application log file? This cannot be undone."))) return;
     setClearing(true); setError(""); setMessage("");
     try {
       const result = await api.clearLogs();
@@ -2783,7 +2783,7 @@ function FavoriteViewRow({view,onChange}:{view:FavoriteView; onChange:()=>void})
     }
   }
   async function remove() {
-    if (!window.confirm(`Delete favorite view "${view.name}"?`)) return;
+    if (!window.confirm(translateMessage(`Delete favorite view "${view.name}"?`))) return;
     setBusy(true);
     try {
       await api.deleteFavoriteView(view.id);

@@ -7,6 +7,8 @@
 // full coverage, including dynamically mounted menus, dialogs and virtual
 // lists, without touching every component literal.
 
+import { MESSAGE_STRINGS } from "./i18n-messages";
+
 export type LanguageSetting = "auto" | "en" | "ua" | "de" | "nl" | "fi" | "sv" | "pl" | "che" | "slo" | "hu" | "es" | "it" | "sl" | "no" | "pt";
 export type Lang = Exclude<LanguageSetting, "auto">;
 
@@ -6299,7 +6301,7 @@ function sloItemCount(n:number):string {
 }
 
 const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
-  ua: {strings:UA_STRINGS, grammar:{
+  ua: {strings:{...UA_STRINGS, ...MESSAGE_STRINGS.ua}, grammar:{
     fromThisView: name => `${name} з цієї підбірки`,
     itemCount: uaItemCount,
     statsLine: (images, videos, documents) => `Фото: ${images} · Відео: ${videos} · Документи: ${documents}`,
@@ -6309,7 +6311,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Меню бібліотеки", folder:"Меню папки", view:"Меню підбірки"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Спочатку нові" : "Спочатку старі"}: ${name}`,
   }},
-  de: {strings:DE_STRINGS, grammar:{
+  de: {strings:{...DE_STRINGS, ...MESSAGE_STRINGS.de}, grammar:{
     fromThisView: name => `${name} aus dieser Favoriten-Ansicht`,
     itemCount: n => n === 1 ? "1 Element" : `${n} Elemente`,
     statsLine: (images, videos, documents) => `Fotos: ${images} · Videos: ${videos} · Dokumente: ${documents}`,
@@ -6319,7 +6321,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Bibliotheksmenü", folder:"Ordnermenü", view:"Ansichtsmenü"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Neueste zuerst" : "Älteste zuerst"}: ${name}`,
   }},
-  nl: {strings:NL_STRINGS, grammar:{
+  nl: {strings:{...NL_STRINGS, ...MESSAGE_STRINGS.nl}, grammar:{
     fromThisView: name => `${name} uit deze verzameling`,
     itemCount: n => n === 1 ? "1 item" : `${n} items`,
     statsLine: (images, videos, documents) => `Foto's: ${images} · Video's: ${videos} · Documenten: ${documents}`,
@@ -6329,7 +6331,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Bibliotheekmenu", folder:"Mapmenu", view:"Verzamelingsmenu"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Nieuwste eerst" : "Oudste eerst"}: ${name}`,
   }},
-  fi: {strings:FI_STRINGS, grammar:{
+  fi: {strings:{...FI_STRINGS, ...MESSAGE_STRINGS.fi}, grammar:{
     fromThisView: name => `${name} tästä kokoelmasta`,
     itemCount: n => n === 1 ? "1 kohde" : `${n} kohdetta`,
     statsLine: (images, videos, documents) => `Kuvat: ${images} · Videot: ${videos} · Asiakirjat: ${documents}`,
@@ -6339,7 +6341,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Kirjaston valikko", folder:"Kansion valikko", view:"Kokoelman valikko"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Uusin ensin" : "Vanhin ensin"}: ${name}`,
   }},
-  sv: {strings:SV_STRINGS, grammar:{
+  sv: {strings:{...SV_STRINGS, ...MESSAGE_STRINGS.sv}, grammar:{
     fromThisView: name => `${name} från den här samlingen`,
     itemCount: n => n === 1 ? "1 objekt" : `${n} objekt`,
     statsLine: (images, videos, documents) => `Bilder: ${images} · Videor: ${videos} · Dokument: ${documents}`,
@@ -6349,7 +6351,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Biblioteksmeny", folder:"Mappmeny", view:"Samlingsmeny"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Nyaste först" : "Äldsta först"}: ${name}`,
   }},
-  pl: {strings:PL_STRINGS, grammar:{
+  pl: {strings:{...PL_STRINGS, ...MESSAGE_STRINGS.pl}, grammar:{
     fromThisView: name => `${name} z tego ulubionego widoku`,
     itemCount: plItemCount,
     statsLine: (images, videos, documents) => `Zdjęcia: ${images} · Filmy: ${videos} · Dokumenty: ${documents}`,
@@ -6359,7 +6361,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Menu biblioteki", folder:"Menu folderu", view:"Menu widoku"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Najnowsze pierwsze" : "Najstarsze pierwsze"}: ${name}`,
   }},
-  che: {strings:CHE_STRINGS, grammar:{
+  che: {strings:{...CHE_STRINGS, ...MESSAGE_STRINGS.che}, grammar:{
     fromThisView: name => `${name} z tohoto oblíbeného zobrazení`,
     itemCount: cheItemCount,
     statsLine: (images, videos, documents) => `Fotky: ${images} · Videa: ${videos} · Dokumenty: ${documents}`,
@@ -6369,7 +6371,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Menu knihovny", folder:"Menu složky", view:"Menu zobrazení"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Nejnovější první" : "Nejstarší první"}: ${name}`,
   }},
-  slo: {strings:SLO_STRINGS, grammar:{
+  slo: {strings:{...SLO_STRINGS, ...MESSAGE_STRINGS.slo}, grammar:{
     fromThisView: name => `${name} z tohto obľúbeného zobrazenia`,
     itemCount: sloItemCount,
     statsLine: (images, videos, documents) => `Fotky: ${images} · Videá: ${videos} · Dokumenty: ${documents}`,
@@ -6379,7 +6381,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Menu knižnice", folder:"Menu priečinka", view:"Menu zobrazenia"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Najnovšie prvé" : "Najstaršie prvé"}: ${name}`,
   }},
-  hu: {strings:HU_STRINGS, grammar:{
+  hu: {strings:{...HU_STRINGS, ...MESSAGE_STRINGS.hu}, grammar:{
     fromThisView: name => `${name} ebből a kedvenc nézetből`,
     itemCount: n => `${n} elem`,
     statsLine: (images, videos, documents) => `Képek: ${images} · Videók: ${videos} · Dokumentumok: ${documents}`,
@@ -6389,7 +6391,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Könyvtár menüje", folder:"Mappa menüje", view:"Nézet menüje"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Legújabb előre" : "Legrégebbi előre"}: ${name}`,
   }},
-  es: {strings:ES_STRINGS, grammar:{
+  es: {strings:{...ES_STRINGS, ...MESSAGE_STRINGS.es}, grammar:{
     fromThisView: name => `${name} de esta vista favorita`,
     itemCount: n => n === 1 ? "1 elemento" : `${n} elementos`,
     statsLine: (images, videos, documents) => `Fotos: ${images} · Vídeos: ${videos} · Documentos: ${documents}`,
@@ -6399,7 +6401,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Menú de biblioteca", folder:"Menú de carpeta", view:"Menú de vista favorita"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Más recientes primero" : "Más antiguos primero"}: ${name}`,
   }},
-  it: {strings:IT_STRINGS, grammar:{
+  it: {strings:{...IT_STRINGS, ...MESSAGE_STRINGS.it}, grammar:{
     fromThisView: name => `${name} da questa vista preferita`,
     itemCount: n => n === 1 ? "1 elemento" : `${n} elementi`,
     statsLine: (images, videos, documents) => `Foto: ${images} · Video: ${videos} · Documenti: ${documents}`,
@@ -6409,7 +6411,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Menu libreria", folder:"Menu cartella", view:"Menu vista preferita"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Più recenti prima" : "Più vecchi prima"}: ${name}`,
   }},
-  sl: {strings:SL_STRINGS, grammar:{
+  sl: {strings:{...SL_STRINGS, ...MESSAGE_STRINGS.sl}, grammar:{
     fromThisView: name => `${name} iz tega priljubljenega pogleda`,
     itemCount: n => n === 1 ? `${n} predmet` : n === 2 ? `${n} predmeta` : n === 3 || n === 4 ? `${n} predmeti` : `${n} predmetov`,
     statsLine: (images, videos, documents) => `Fotografije: ${images} · Videoposnetki: ${videos} · Dokumenti: ${documents}`,
@@ -6419,7 +6421,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Meni knjižnice", folder:"Meni mape", view:"Meni priljubljenega pogleda"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Najnovejše najprej" : "Najstarejše najprej"}: ${name}`,
   }},
-  no: {strings:NO_STRINGS, grammar:{
+  no: {strings:{...NO_STRINGS, ...MESSAGE_STRINGS.no}, grammar:{
     fromThisView: name => `${name} fra denne favorittvisningen`,
     itemCount: n => n === 1 ? "1 element" : `${n} elementer`,
     statsLine: (images, videos, documents) => `Bilder: ${images} · Videoer: ${videos} · Dokumenter: ${documents}`,
@@ -6429,7 +6431,7 @@ const TABLES: Record<Exclude<Lang,"en">, LangTable> = {
     menus: {library:"Bibliotekmeny", folder:"Mappemeny", view:"Visningsmeny"},
     sortedFirst: (kind, name) => `${kind === "Newest" ? "Nyeste først" : "Eldste først"}: ${name}`,
   }},
-  pt: {strings:PT_STRINGS, grammar:{
+  pt: {strings:{...PT_STRINGS, ...MESSAGE_STRINGS.pt}, grammar:{
     fromThisView: name => `${name} desta vista favorita`,
     itemCount: n => n === 1 ? "1 elemento" : `${n} elementos`,
     statsLine: (images, videos, documents) => `Fotos: ${images} · Vídeos: ${videos} · Documentos: ${documents}`,
@@ -6450,12 +6452,62 @@ function wrap(original:string, translated:string):string {
   return lead + translated + trail;
 }
 
+// Table keys containing "%s" are templates: "Map of %s" matches "Map of Family"
+// and each captured argument is translated again (an exact entry or another
+// template), so "ZIP download failed: %s" also translates the server's message.
+const templateCache = new Map<Lang, {pattern:RegExp; translated:string}[]>();
+
+function escapeRegExp(text:string):string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function templatesFor(lang:Exclude<Lang,"en">) {
+  let templates = templateCache.get(lang);
+  if (!templates) {
+    templates = Object.entries(TABLES[lang].strings)
+      .filter(([key]) => key.includes("%s"))
+      .map(([key, translated]) => ({pattern:new RegExp(`^${key.split("%s").map(escapeRegExp).join("(.+?)")}$`, "s"), translated}))
+      // longer (more specific) templates first
+      .sort((a, b) => b.pattern.source.length - a.pattern.source.length);
+    templateCache.set(lang, templates);
+  }
+  return templates;
+}
+
+function translateTemplate(trimmed:string, depth = 0):string|null {
+  if (current === "en" || depth > 3) return null;
+  for (const {pattern, translated} of templatesFor(current)) {
+    const match = trimmed.match(pattern);
+    if (!match) continue;
+    const args = match.slice(1);
+    let index = 0;
+    return translated.replace(/%s/g, () => {
+      const arg = args[index++] ?? "";
+      return TABLES[current as Exclude<Lang,"en">].strings[arg.trim()] ?? translateTemplate(arg.trim(), depth + 1) ?? arg;
+    });
+  }
+  return null;
+}
+
+// translateMessage translates a whole message outside the DOM (window.confirm,
+// window.alert): an exact entry or a "%s" template; unknown text is unchanged.
+export function translateMessage(message:string):string {
+  if (current === "en") return message;
+  const trimmed = message.trim();
+  const direct = TABLES[current].strings[trimmed];
+  if (direct) return wrap(message, direct);
+  const templated = translateTemplate(trimmed);
+  return templated == null ? message : wrap(message, templated);
+}
+
 function translateText(value:string):string {
   if (current === "en") return value;
   const table = TABLES[current];
   const trimmed = value.trim();
   const direct = table.strings[trimmed];
   if (direct) return wrap(value, direct);
+  const templated = translateTemplate(trimmed);
+  if (templated != null) return wrap(value, templated);
   // composite patterns: "<Name> from this favorite view", counts, stats line
   let match = trimmed.match(/^(.*?)\s+from this favorite view$/);
   if (match) return table.grammar.fromThisView(match[1]);
@@ -6474,6 +6526,9 @@ function translateAttribute(name:string, value:string):string {
   const trimmed = value.trim();
   const direct = table.strings[trimmed];
   if (direct) return wrap(value, direct);
+  // "%s" templates first: "Open library %s" must win over the generic "Open <Name>"
+  const templated = translateTemplate(trimmed);
+  if (templated != null) return wrap(value, templated);
   // "<Action> <Name>" composites used in aria-labels
   let match = trimmed.match(/^(Open|Remove|Select|Manage favorite views for|Delete)\s+(.+)$/);
   if (match) {

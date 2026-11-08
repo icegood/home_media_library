@@ -228,3 +228,39 @@ test("map Layers dropdown and GPS filter translate every switch", () => {
   expect(document.querySelector("span")?.textContent).toBe("З GPS");
   expect(document.querySelector("button")?.getAttribute("title")).toContain("Встановити точку — ");
 });
+
+test("message table rows cover every language and keep their %s placeholders", async () => {
+  const {ALL_ROWS: MESSAGES, MESSAGE_LANGS} = await import("./i18n-messages");
+  const placeholders = (text:string) => text.split("%s").length - 1;
+  for (const [source, translations] of MESSAGES) {
+    expect(translations, source).toHaveLength(MESSAGE_LANGS.length);
+    for (const translated of translations) expect(placeholders(translated), `${source} → ${translated}`).toBe(placeholders(source));
+  }
+  expect(new Set(MESSAGES.map(([source]) => source)).size).toBe(MESSAGES.length);
+});
+
+test("%s templates translate the map title and nested error messages", () => {
+  applyLanguageSetting("ua");
+  const body = translateSnippet(`<nav><a>Map of Family 2024</a></nav><div role="alert"><span>ZIP download failed: access denied</span></div><p>GPS is required</p><p>Map of</p>`);
+  expect(body.querySelector("a")!.textContent).toBe("Карта «Family 2024»");
+  expect(body.querySelector("span")!.textContent).toBe("Не вдалося завантажити ZIP: доступ заборонено");
+  expect(body.querySelectorAll("p")[0].textContent).toBe("Потрібно вказати GPS");
+  expect(body.querySelectorAll("p")[1].textContent).toBe("Map of");
+  applyLanguageSetting("de");
+  installDomTranslation();
+  const de = translateSnippet(`<a>Map of Family</a>`);
+  expect(de.querySelector("a")!.textContent).toBe("Karte von „Family“");
+});
+
+test("attribute templates win over generic verb composites and confirm texts translate", async () => {
+  const {translateMessage} = await import("./i18n");
+  applyLanguageSetting("ua");
+  const body = translateSnippet(`<button aria-label="Open library Family"></button><button aria-label="Open Family"></button><h3>Notes</h3><p>Timeline of Libraries</p>`);
+  expect(body.querySelectorAll("button")[0].getAttribute("aria-label")).toBe("Відкрити бібліотеку Family");
+  expect(body.querySelectorAll("button")[1].getAttribute("aria-label")).toBe("Відкрити Family");
+  expect(body.querySelector("h3")!.textContent).toBe("Нотатки");
+  expect(body.querySelector("p")!.textContent).toBe("Хронологія бібліотек");
+  expect(translateMessage(`Delete favorite view "Trip"?`)).toBe("Видалити підбірку «Trip»?");
+  applyLanguageSetting("en");
+  expect(translateMessage(`Delete favorite view "Trip"?`)).toBe(`Delete favorite view "Trip"?`);
+});
