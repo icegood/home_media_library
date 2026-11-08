@@ -478,7 +478,7 @@ function useBreadcrumb(): Crumb[] | null {
       if (!library) return null;
       const base: Crumb[] = [{label:`Map of ${library.name}`, to:`/map?library=${libraryID}`}];
       if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
-        base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:`/map?library=${libraryID}&folder=${folder.id}`})));
+        base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:`/map?library=${libraryID}&folder=${folder.id}`, ...(Number.isFinite(mapItemId) ? {returnToMediaId: mapItemId} : {})})));
       }
       if (Number.isFinite(mapItemId) && viewerItemName) {
         base.push({label:viewerItemName, to:null, current:true});
@@ -504,7 +504,7 @@ function useBreadcrumb(): Crumb[] | null {
         if (favParam) base.push({label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:`/favorites/${favParam}`});
         if (fromTimeline) base.push({label:library.name, to:origin});
         if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
-          base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: fromTimeline ? `/library/${libraryID}/timeline/${folder.id}${favSuffix}` : `/map?library=${libraryID}&folder=${folder.id}`})));
+          base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to: fromTimeline ? `/library/${libraryID}/timeline/${folder.id}${favSuffix}` : `/map?library=${libraryID}&folder=${folder.id}`, ...(!fromTimeline ? {returnToMediaId: viewerItemId} : {})})));
         }
         // Coming back from the timeline viewer must land on the item that was
         // open: every timeline crumb (the library and each folder of the chain)
@@ -5893,6 +5893,11 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
     });
     return () => { cancelled = true; };
   }, [showNoGPS, folderScoped, libraryParam, folderParam]);
+  // Back from the viewer (or a breadcrumb) to a folder map zooms in on the
+  // item that was open, once per arrival.
+  const location = useLocation();
+  const returnMediaId = useReturnMediaId();
+  const returnFocus = folderScoped && itemParam == null && returnMediaId != null ? {id:returnMediaId, key:location.key} : undefined;
   const focused = items.find(item => item.id === Number(query.get("item")));
   const focusedGPS = focused ? parseGPS(focused.gps) : null;
   // "Open on map" links to /map?item=… (no library/folder/favorite scope): show
@@ -6067,7 +6072,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <PlaceSearch onWalkFrom={walkFrom}/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
         {clustered && <ServerClusters scope={mapScope} selectMode={selectMode} hideMarkers={hideMarkers} onSelectCluster={selectCluster} onLoading={setRendering} onError={setMapError} myPosition={myPosition}/>}
-        <MapItems items={displayItems} focused={focused} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
+        <MapItems items={displayItems} focused={focused} returnFocus={returnFocus} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
         {myPosition && <MyPositionLayer key={walkAnchor ? walkAnchor.join(",") : "device"} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} recenterTick={recenterTick}/>}
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
@@ -6653,7 +6658,9 @@ function ServerClusters({scope, selectMode, hideMarkers, onSelectCluster, onLoad
   })}</>;
 }
 
-function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; focused?:MapMedia; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
+const RETURN_FOCUS_ZOOM = 17;
+
+function MapItems({items,focused,returnFocus,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; focused?:MapMedia; returnFocus?:{id:ID; key:string}; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
@@ -6690,6 +6697,18 @@ function MapItems({items,focused,pickedGPS,selectMode,onPick,onSelectCluster,onR
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focused, fitItems, map]);
+  // Runs after the fit above, so the zoom onto the returned-to item wins; the
+  // arrival key makes it happen once, not on every later trajectory change.
+  const returnedKey = useRef<string|null>(null);
+  useEffect(() => {
+    if (!returnFocus || returnedKey.current === returnFocus.key) return;
+    const item = items.find(entry => entry.id === returnFocus.id);
+    if (!item) return;
+    returnedKey.current = returnFocus.key;
+    consumeReturnMediaId(returnFocus.id);
+    const gps = parseGPS(item.gps);
+    if (gps) map.setView(gps, Math.max(map.getZoom(), RETURN_FOCUS_ZOOM));
+  }, [returnFocus?.id, returnFocus?.key, items, map]);
   // External "set point by coordinates" (from the map menu) recenters the map.
   const flyToRef = useRef<string | null>(null);
   useEffect(() => {
