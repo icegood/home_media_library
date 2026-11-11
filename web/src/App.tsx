@@ -1154,7 +1154,7 @@ function UserManagement() {
       <button disabled={busy}>Add user</button>
     </form>
     <ErrorPopup message={error} onClose={() => setError("")}/>
-    <div className="library-table">{users.map(user => <div className="library-row" key={user.id}>
+    <div className="library-table">{users.map(user => <div className="library-row user-row" key={user.id}>
       <div className="library-main"><span className="folder">👤</span><span><strong>{user.login}</strong><small>{user.role}{user.role === "admin" ? " · reads every library" : ""}</small></span></div>
       <button type="button" className="secondary" disabled={busy || user.role === "admin"} onClick={() => setAccessUser(user)}>Manage access</button>
       <button type="button" className="secondary" disabled={busy} onClick={() => startEdit(user)}>Edit</button>

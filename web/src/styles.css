@@ -312,6 +312,9 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .library-table { display: grid; gap: 10px; }
 .library-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: stretch; }
 .library-row.admin-library { grid-template-columns: auto minmax(0, 1fr) auto auto auto; }
+/* A user, Manage access and Edit share one line on every viewport. */
+.library-row.user-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+.library-row.user-row > button { white-space: nowrap; }
 /* Move and Delete stay on the name line; they never wrap underneath it. */
 .library-row .row-action { align-self: stretch; white-space: nowrap; }
 .library-main { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 14px; text-align: left; background: linear-gradient(180deg, var(--surface) 0%, var(--surface-raised) 100%); color: var(--text); border: 1px solid var(--border); border-radius: 14px; }
