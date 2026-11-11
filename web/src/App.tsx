@@ -5455,6 +5455,16 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
   const [active, setActive] = useState(0);
   const [pending, setPending] = useState<number|null>(null);
   const videoRefs = [useRef<HTMLVideoElement|null>(null), useRef<HTMLVideoElement|null>(null)];
+  // Stable per-slot refs: a <video> that leaves (paging away, or a seek slot
+  // being replaced) stops its download at once; Chrome otherwise keeps
+  // buffering a detached element with preload="auto" and starves the item on
+  // screen of bandwidth.
+  const slotRefs = useMemo(() => [0, 1].map(slot => (el:HTMLVideoElement|null) => {
+    const previous = videoRefs[slot].current;
+    if (previous && previous !== el) stopVideoDownload(previous);
+    videoRefs[slot].current = el;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
   const activeRef = useRef(0);
   const seekTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
   const seekPending = useRef(false);
@@ -5635,7 +5645,7 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
     const isActive = active === slot;
     const offset = offsets[slot];
     const filterStyle = { filter: applyAdjust(adjust) };
-    return <video key={`slot-${slot}-${offset}`} ref={videoRefs[slot]} src={api.playbackUrl(item.id, supported, offset)} poster={api.thumbnailUrl(item.id, 0)}
+    return <video key={`slot-${slot}-${offset}`} ref={slotRefs[slot]} src={api.playbackUrl(item.id, supported, offset)} poster={api.thumbnailUrl(item.id, 0)}
       style={isActive ? filterStyle : {...filterStyle, visibility:"hidden", position:"absolute", top:0, left:0, width:"100%"}}
       preload="auto" muted={!isActive || muted} autoPlay={isActive && playing} playsInline
       onCanPlay={() => {
@@ -5708,6 +5718,12 @@ const VIDEO_FORMAT_PROBES: Record<string,{label:string; probe:string[]}> = {
   vp8: {label:"WebM — VP8 + Vorbis", probe:['video/webm; codecs="vp8,vorbis"', 'video/webm; codecs="vp8,opus"']},
   av1: {label:"WebM — AV1 + Opus", probe:['video/webm; codecs="av01.0.04M.08,opus"']}
 };
+
+export function stopVideoDownload(video:HTMLVideoElement) {
+  try { video.pause(); } catch { /* not playing */ }
+  video.removeAttribute("src");
+  try { video.load(); } catch { /* nothing to reset */ }
+}
 
 function supportedVideoFormats() {
   const video = document.createElement("video");

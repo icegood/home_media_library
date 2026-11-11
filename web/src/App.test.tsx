@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -4552,5 +4552,18 @@ test("ErrorPopup shows in the shared popup stack and closes itself after the tim
     expect(onClose).toHaveBeenCalledTimes(2);
   } finally {
     vi.useRealTimers();
+  }
+});
+
+test("stopVideoDownload drops the source and resets the element so the stream is aborted", () => {
+  {
+    const video = document.createElement("video");
+    video.setAttribute("src", "/api/v1/media/1/play");
+    const pause = vi.spyOn(video, "pause").mockImplementation(() => undefined);
+    const load = vi.spyOn(video, "load").mockImplementation(() => undefined);
+    stopVideoDownload(video);
+    expect(video.hasAttribute("src")).toBe(false);
+    expect(pause).toHaveBeenCalled();
+    expect(load).toHaveBeenCalled();
   }
 });
