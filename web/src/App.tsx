@@ -4898,8 +4898,10 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
   </div>;
 }
 
+// Image/video zoom in play mode: 50% … 3000%.
+export const MAX_IMAGE_ZOOM = 30;
 function clampZoom(value:number) {
-  return Math.min(10, Math.max(0.5, value));
+  return Math.min(MAX_IMAGE_ZOOM, Math.max(0.5, value));
 }
 
 const defaultAdjust = {brightness:100, hue:0, saturation:100, gamma:100, contrast:100} as const;

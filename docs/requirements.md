@@ -41,7 +41,7 @@ via `sh deploy/start.sh e2e`.
 ## Media viewer
 
 - Opens from any surface preserving context (folder range, root/kind/GPS scope, favorites origin chain via `?fav=`, map selections via `?list=`).
-- Images: zoom/pan. Videos: direct play when browser codecs allow, otherwise FFmpeg transcode to the user's chosen fallback codec (h264/h265/vp9); server-side seek offset support.
+- Images: zoom/pan (zoom 50%–3000%). Videos: direct play when browser codecs allow, otherwise FFmpeg transcode to the user's chosen fallback codec (h264/h265/vp9); server-side seek offset support.
 - Fullscreen control for videos; keyboard arrows page within the active range only.
 - A video element that leaves the stage (paging away, a seek slot replaced) stops its download at once (`src` removed + `load()`), so a clip skipped past never keeps streaming and starving the item on screen.
 
