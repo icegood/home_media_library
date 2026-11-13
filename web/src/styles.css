@@ -409,6 +409,11 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .form-row > label { flex: 1; }
 .form-row .check { flex: 0 0 auto; }
 .picker-path { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
+.picker-go { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.picker-go input { min-width: 0; font-family: inherit; }
+.picker-checked { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+.picker-checked span { margin-right: auto; color: var(--crumbs-text); }
+.file-row.checkable { grid-template-columns: auto 1fr auto; }
 .picker-path span { overflow-wrap: anywhere; color: var(--crumbs-text); }
 .file-list { display: grid; gap: 8px; }
 .file-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; width: 100%; padding: 10px; text-align: left; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: 10px; }
@@ -458,6 +463,8 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .bulk-toolbar button, .bulk-toolbar .secondary { background: var(--surface-interactive); color: var(--text); border: 1px solid var(--border-strong); border-radius: 999px; padding: 9px 12px; text-decoration: none; font-weight: 700; font-size: .9rem; cursor: pointer; }
 .bulk-toolbar button.active { background: var(--primary-text); color: var(--primary-contrast); }
 .shift-group { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 12px; }
+.notes-group { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 12px; }
+.bulk-notes-input { border: none; background: transparent; outline: none; font-size: .9rem; width: 200px; padding: 9px 0; color: var(--text); }
 .gps-group { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 12px; }
 .shift-label { font-weight: 700; font-size: .9rem; white-space: nowrap; }
 .gps-label { font-weight: 700; font-size: .9rem; white-space: nowrap; }
@@ -605,6 +612,17 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .favorite-button.active { background: var(--fav-active-bg); color: #111827; border-color: var(--fav-active-border); }
 .list-view .favorite-button { top: 50%; transform: translateY(-50%); }
 
+/* Notes: a card button (left, under the selection checkbox) and a popover. */
+.card-notes-button { position: absolute; z-index: 6; left: 10px; top: calc(10px + 46px); width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 17px; line-height: 1; box-shadow: var(--shadow-md); cursor: pointer; }
+.card-notes-button:hover { background: var(--handle-bg); color: white; }
+.list-view .card-notes-button { left: auto; right: 56px; top: 50%; transform: translateY(-50%); }
+.notes-popover { position: fixed; z-index: 9000; max-height: min(60vh, 480px); display: flex; flex-direction: column; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-md); }
+.notes-popover-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.notes-popover-head strong { min-width: 0; overflow-wrap: anywhere; }
+.notes-popover-close { padding: 0 8px; min-height: 0; line-height: 1.4; background: transparent; color: var(--text); border: none; font-size: 20px; cursor: pointer; }
+.notes-popover-body { overflow: auto; padding: 10px 12px; display: grid; gap: 10px; }
+.notes-entry small { color: var(--crumbs-text); overflow-wrap: anywhere; }
+.notes-text { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .trajectory-controls { position: absolute; z-index: 6; right: 10px; top: calc(10px + 46px); display: flex; flex-direction: column; gap: 8px; }
 .trajectory-controls button { width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 17px; line-height: 1; box-shadow: var(--shadow-md); cursor: pointer; }
 .trajectory-controls button:hover:not(:disabled) { background: var(--handle-bg); color: white; }

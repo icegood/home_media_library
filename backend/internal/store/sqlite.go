@@ -1986,6 +1986,33 @@ func (s *SQLite) BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folder
 	return out, rows.Err()
 }
 
+func (s *SQLite) BulkUpdateMediaNotes(ctx context.Context, ids []int, folderIDs []int, notes string) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSub(ctx, ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	fullArgs := s.bulkSetArgs(ids, folderIDs, args, notes)
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET notes = ? WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.notes FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		var value string
+		if err := rows.Scan(&r.ID, &value); err != nil {
+			return nil, err
+		}
+		r.Notes = &value
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLite) queryMediaByIDs(ctx context.Context, idCond string, idArgs []any) ([]domain.Media, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+mediaColumns+` FROM media m WHERE m.id IN (`+idCond+`)`, idArgs...)
 	if err != nil {

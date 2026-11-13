@@ -507,12 +507,15 @@ type BulkMediaPatch struct {
 	GPS             *string  `json:"gps"`
 	TakenAt         *string  `json:"takenAt"`
 	ShiftMinutes    *float64 `json:"shiftMinutes"`
+	// Notes, when present, replaces the notes of every target with the same text.
+	Notes *string `json:"notes"`
 }
 
 type BulkMediaResult struct {
 	ID      int    `json:"id"`
 	TakenAt string `json:"takenAt,omitempty"`
 	GPS     string `json:"gps,omitempty"`
+	Notes   *string `json:"notes,omitempty"`
 }
 
 func CanonicalGPS(value string) (string, bool) {

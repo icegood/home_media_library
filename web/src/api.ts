@@ -176,8 +176,8 @@ export const api = {
   getAdjust: (id:ID) => call<MediaAdjust>(`/media/${id}/adjust`),
   saveAdjust: (id:ID, adj:MediaAdjust) =>
     call<MediaAdjust>(`/media/${id}/adjust`, {method:"PUT", body:JSON.stringify(adj)}),
-  bulkUpdateMedia: (input:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string|null; takenAt?:string|null; shiftMinutes?:number|null}) =>
-    call<{id:ID; takenAt?:string; gps?:string}[]>(`/media/bulk`, {method:"PATCH", body:JSON.stringify(input)}),
+  bulkUpdateMedia: (input:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string|null; takenAt?:string|null; shiftMinutes?:number|null; notes?:string|null}) =>
+    call<{id:ID; takenAt?:string; gps?:string; notes?:string}[]>(`/media/bulk`, {method:"PATCH", body:JSON.stringify(input)}),
   metadataRenew: (libraryId:ID, input:{recreateExisting?:boolean; updateGps?:boolean; updateTakenAt?:boolean; rootId?:ID}) =>
     call<JobStatus>(`/admin/libraries/${libraryId}/metadata/renew${input.rootId ? `?root=${input.rootId}` : ""}`, {method:"POST", body:JSON.stringify({recreateExisting:input.recreateExisting, updateGps:input.updateGps, updateTakenAt:input.updateTakenAt})}),
   settings: () => call<AdminSettings>("/admin/settings"),

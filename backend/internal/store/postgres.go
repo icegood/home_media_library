@@ -1731,6 +1731,34 @@ func (s *Postgres) BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs 
 	return out, rows.Err()
 }
 
+func (s *Postgres) BulkUpdateMediaNotes(ctx context.Context, ids []int, folderIDs []int, notes string) ([]domain.BulkMediaResult, error) {
+	cte, targetSub, args := s.bulkTargetSubPG(ids, folderIDs)
+	if targetSub == "" {
+		return []domain.BulkMediaResult{}, nil
+	}
+	n := len(args)
+	fullArgs := append(append([]any{}, args...), notes)
+	if _, err := s.db.ExecContext(ctx, cte+`UPDATE media SET notes = $`+strconv.Itoa(n+1)+` WHERE id IN (`+targetSub+`)`, fullArgs...); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, cte+`SELECT m.id, m.notes FROM media m WHERE m.id IN (`+targetSub+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.BulkMediaResult
+	for rows.Next() {
+		var r domain.BulkMediaResult
+		var value string
+		if err := rows.Scan(&r.ID, &value); err != nil {
+			return nil, err
+		}
+		r.Notes = &value
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Postgres) BulkUpdateMediaSetTime(ctx context.Context, ids []int, folderIDs []int, takenAt string) ([]domain.BulkMediaResult, error) {
 	cte, targetSub, args := s.bulkTargetSubPG(ids, folderIDs)
 	if targetSub == "" {

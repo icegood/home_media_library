@@ -730,7 +730,7 @@ function LoginTimeoutField() {
 }
 
 function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
-  const { setDialogLibrary } = useLibraryDialog();
+  const { dialogLibrary, setDialogLibrary } = useLibraryDialog();
   const navigate = useNavigate();
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [adding, setAdding] = useState(false);
@@ -746,7 +746,9 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   const [notice, setNotice] = useState("");
   const [deleting, setDeleting] = useState<Library|null>(null);
   const [moving, setMoving] = useState<Library|null>(null);
-  useEffect(() => { loadLibraries(); }, []);
+  // Reload whenever the library dialog opens, saves or closes, so the rows (and
+  // the library handed to the next Edit) never lag behind a saved root list.
+  useEffect(() => { loadLibraries(); }, [dialogLibrary]);
   async function loadLibraries() {
     const items = await api.libraries();
     setLibraries(items);
@@ -786,6 +788,11 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
   function selectPickerPath(path:string) {
     if (pickingRoot == null) return;
     updateRoot(pickingRoot, path);
+    closePicker();
+  }
+  function selectPickerPaths(paths:string[]) {
+    if (pickingRoot == null) return;
+    setRoots(current => fillRoots(current, pickingRoot, paths));
     closePicker();
   }
   async function confirmDelete() {
@@ -872,9 +879,18 @@ function LibraryManagement({activeSection}:{activeSection:SettingsSection}) {
         <ErrorPopup message={error} onClose={() => setError("")}/>
         <button disabled={busy}>{busy ? "Saving…" : "Create library"}</button>
       </form>
-      {pickingRoot != null && <DirectoryPickerModal title="Choose root folder" filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(pickingRoot, path)} onSelect={selectPickerPath} onClose={closePicker}/>}
+      {pickingRoot != null && <DirectoryPickerModal title="Choose root folder" filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(pickingRoot, path)} onSelect={selectPickerPath} onSelectMany={selectPickerPaths} onClose={closePicker}/>}
     </div>}
   </div>;
+}
+
+// Checked picker folders: the first fills the row the picker was opened from,
+// the rest become new rows after it; paths already listed are skipped.
+export function fillRoots<T extends {path:string}>(roots:T[], index:number, paths:string[]):(T|{path:string})[] {
+  const taken = new Set(roots.filter((_, i) => i !== index).map(root => root.path.trim()));
+  const fresh = paths.filter((path, i) => !taken.has(path) && paths.indexOf(path) === i);
+  if (fresh.length === 0) return roots;
+  return [...roots.slice(0, index), {...roots[index], path:fresh[0]}, ...fresh.slice(1).map(path => ({path})), ...roots.slice(index + 1)];
 }
 
 // The admin row leads with the library name and shows the root folder it points
@@ -902,14 +918,31 @@ function LibraryDialog({library, onClose}:{library:Library; onClose:()=>void}) {
   const [filesystemError, setFilesystemError] = useState("");
   const [movingRoot, setMovingRoot] = useState<string|null>(null);
   const [refreshing, setRefreshing] = useState<"" | "thumbs" | "metadata">("");
+  const edited = useRef(false);
+  // The library handed in may come from a list loaded earlier; saving that stale
+  // root list would drop roots added since. Start from the stored library instead.
+  useEffect(() => {
+    let alive = true;
+    api.libraries().then(items => {
+      const fresh = items.find(item => item.id === library.id);
+      if (!alive || !fresh || edited.current) return;
+      setName(fresh.name);
+      setWatch(Boolean(fresh.watch));
+      setRoots((fresh.roots ?? []).map(root => ({id:root.id, path:root.path ?? ""})));
+    }).catch(() => { /* keep what was handed in */ });
+    return () => { alive = false; };
+  }, [library.id]);
   function openTab(next:number) { setError(""); setNotice(""); setTab(next); }
   function updateRootPath(index:number, value:string) {
+    edited.current = true;
     setRoots(current => current.map((root, i) => i === index ? {...root, path:value} : root));
   }
   function addRoot() {
+    edited.current = true;
     setRoots(current => [...current, {path:""}]);
   }
   function removeRoot(index:number) {
+    edited.current = true;
     setRoots(current => current.filter((_, i) => i !== index));
   }
   async function openPicker(index:number, path = roots[index]?.path ?? "") {
@@ -928,6 +961,12 @@ function LibraryDialog({library, onClose}:{library:Library; onClose:()=>void}) {
     updateRootPath(pickingRoot, path);
     closePicker();
   }
+  function selectPickerPaths(paths:string[]) {
+    if (pickingRoot == null) return;
+    edited.current = true;
+    setRoots(current => fillRoots(current, pickingRoot, paths));
+    closePicker();
+  }
   function applyLibrary(saved:Library) {
     setDialogLibrary(saved);
     setName(saved.name);
@@ -937,9 +976,17 @@ function LibraryDialog({library, onClose}:{library:Library; onClose:()=>void}) {
   async function save() {
     setBusy(true); setError(""); setNotice("");
     const cleanedRoots = roots.map(root => ({path:root.path.trim()})).filter(root => root.path);
+    const added = roots.some(root => root.id == null && root.path.trim());
     try {
-      applyLibrary(await api.updateLibrary(library.id, {name:name.trim(), watch, roots:cleanedRoots}));
-      setNotice("Library saved.");
+      const saved = await api.updateLibrary(library.id, {name:name.trim(), watch, roots:cleanedRoots});
+      edited.current = false;
+      applyLibrary(saved);
+      if (added) {
+        await api.scanLibrary(library.id);
+        setNotice("Library saved. Scan started in background; thumbnails will start after scan.");
+      } else {
+        setNotice("Library saved.");
+      }
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -994,8 +1041,8 @@ function LibraryDialog({library, onClose}:{library:Library; onClose:()=>void}) {
       </div>}
       {canManage && tab===0 && <div className="dialog-tab-content" role="tabpanel">
         <div className="form-row">
-          <label>Library name<input value={name} onChange={event => setName(event.target.value)} required/></label>
-          <label className="check"><input type="checkbox" checked={watch} onChange={event => setWatch(event.target.checked)}/> Watch for changes</label>
+          <label>Library name<input value={name} onChange={event => { edited.current = true; setName(event.target.value); }} required/></label>
+          <label className="check"><input type="checkbox" checked={watch} onChange={event => { edited.current = true; setWatch(event.target.checked); }}/> Watch for changes</label>
         </div>
         <p className="muted">Watching is a library setting: when on, every root below is watched for file changes.</p>
         <div className="root-list">{roots.map((root, index) =>
@@ -1027,7 +1074,7 @@ function LibraryDialog({library, onClose}:{library:Library; onClose:()=>void}) {
         <InlineStatsLine key={`${library.id}-${library.name}`} load={() => api.libraryStats(library.id)}/>
       </div>
     </div>
-    {pickingRoot != null && <DirectoryPickerModal title="Choose root folder" filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(pickingRoot, path)} onSelect={selectPickerPath} onClose={closePicker}/>}
+    {pickingRoot != null && <DirectoryPickerModal title="Choose root folder" filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(pickingRoot, path)} onSelect={selectPickerPath} onSelectMany={selectPickerPaths} onClose={closePicker}/>}
     {movingRoot && <MoveRootModal library={library} oldPath={movingRoot} onMoved={(updated, result) => { applyLibrary(updated); setNotice(`Updated ${result.folders} folder paths and ${result.media} media paths. No scan was started.`); }} onClose={() => setMovingRoot(null)}/>}
     {refreshing === "thumbs" && <ThumbnailRefreshModal title={library.name} busy={busy} error={error} onClose={() => setRefreshing("")} onRefresh={recreateExisting => void refreshThumbs(recreateExisting)}/>}
     {refreshing === "metadata" && <MetadataRefreshModal title={library.name} busy={busy} error={error} onClose={() => setRefreshing("")} onRefresh={(recreateExisting, updateGps, updateTakenAt) => void refreshMetadata(recreateExisting, updateGps, updateTakenAt)}/>}
@@ -1078,17 +1125,44 @@ function MoveRootModal({library, oldPath, onMoved, onClose}:{library:Library; ol
   </div>;
 }
 
-function DirectoryPickerModal({title,filesystem,error,onOpen,onSelect,onClose}:{title:string; filesystem:FilesystemListing|null; error:string; onOpen:(path:string)=>void; onSelect:(path:string)=>void; onClose:()=>void}) {
+// Folder picker. The path box takes a pasted path (Enter or Open jumps there);
+// with onSelectMany, subfolders get checkboxes that persist while browsing so
+// several roots can be added at once.
+function DirectoryPickerModal({title,filesystem,error,onOpen,onSelect,onSelectMany,onClose}:{title:string; filesystem:FilesystemListing|null; error:string; onOpen:(path:string)=>void; onSelect:(path:string)=>void; onSelectMany?:(paths:string[])=>void; onClose:()=>void}) {
+  const [typed, setTyped] = useState(filesystem?.path ?? "");
+  const [checked, setChecked] = useState<string[]>([]);
+  // Follow the listed folder unless the user is typing or pasting a path.
+  const typing = useRef(false);
+  useEffect(() => { if (filesystem && !typing.current) setTyped(filesystem.path); }, [filesystem?.path]);
+  function go(event?:FormEvent) {
+    event?.preventDefault();
+    const path = typed.trim();
+    typing.current = false;
+    if (path) onOpen(path);
+  }
+  function toggle(path:string) {
+    setChecked(current => current.includes(path) ? current.filter(item => item !== path) : [...current, path]);
+  }
   return <div className="modal-backdrop nested" role="dialog" aria-modal="true" aria-label={title} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal file-picker">
       <div className="panel-title"><div><h2>{title}</h2><p>Folders visible to the api process user</p></div><button type="button" onClick={onClose}>Close</button></div>
       <ErrorPopup message={error}/>
+      <form className="picker-go" onSubmit={go}>
+        <input aria-label="Folder path" value={typed} onChange={event => { typing.current = true; setTyped(event.target.value); }} placeholder="/media/…" spellCheck={false}/>
+        <button type="submit" className="secondary">Open</button>
+      </form>
       {filesystem && <>
         <div className="picker-path"><span>{filesystem.path}</span><button type="button" onClick={() => onSelect(filesystem.path)}>Select this folder</button></div>
+        {onSelectMany && checked.length > 0 && <div className="picker-checked">
+          <span>{`${checked.length} folders checked`}</span>
+          <button type="button" className="secondary" onClick={() => setChecked([])}>Clear</button>
+          <button type="button" onClick={() => onSelectMany(checked)}>Add checked</button>
+        </div>}
         <div className="file-list">
           {filesystem.parent && <button type="button" className="file-row" onClick={() => onOpen(filesystem.parent)}>../</button>}
           {filesystem.directories.map(directory =>
-            <div className="file-row" key={directory.path}>
+            <div className={`file-row${onSelectMany ? " checkable" : ""}`} key={directory.path}>
+              {onSelectMany && <input type="checkbox" aria-label={`Check ${directory.name}`} checked={checked.includes(directory.path)} onChange={() => toggle(directory.path)}/>}
               <button type="button" className="file-main" onClick={() => onOpen(directory.path)}>▰ {directory.name}</button>
               <button type="button" className="secondary" onClick={() => onSelect(directory.path)}>Select</button>
             </div>)}
@@ -2495,12 +2569,12 @@ function Browser() {
       kb.focus(`m${returnToMediaId}`, true);
     }
   }, [entries, returnToFolderId, returnToMediaId, location.key, kb.focus]);
-  function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
+  function applyBulkGPS(patches:BulkPatch[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
       const p = patches.find(patch => patch.id === entry.media?.id);
       if (!p) return entry;
-      return {...entry, media:{...entry.media, ...(p.takenAt != null ? {takenAt:p.takenAt} : {}), ...(p.gps != null ? {gps:p.gps} : {})}};
+      return {...entry, media:mergeBulkPatch(entry.media, p)};
     }));
     setSelected([]);
   }
@@ -2583,10 +2657,10 @@ function LibraryTimeline() {
     consumeReturnMediaId(returnToMediaId);
     kb.focus(`m${returnToMediaId}`, true);
   }, [items, visibleGroups, returnToMediaId, location.key, kb.focus]);
-  function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
+  function applyBulkGPS(patches:BulkPatch[]) {
     setItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
-      return p ? {...item, ...(p.takenAt != null ? {takenAt:p.takenAt} : {}), ...(p.gps != null ? {gps:p.gps} : {})} : item;
+      return p ? mergeBulkPatch(item, p) : item;
     }));
     setSelected([]);
   }
@@ -2956,10 +3030,10 @@ function FavoriteViewPage() {
   const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => kinds.includes(m.kind as MediaKind));
   const sortedMedia = useMemo(() => sortMedia(filteredMedia, sort), [filteredMedia, sort]);
   const visibleMediaGroups = useProgressiveReveal(useMemo(() => groupByDate(sortedMedia), [sortedMedia]), 120);
-  function applyBulkGPS(patches:{id:ID; takenAt?:string; gps?:string}[]) {
+  function applyBulkGPS(patches:BulkPatch[]) {
     setMediaItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
-      return p ? {...item, ...(p.takenAt != null ? {takenAt:p.takenAt} : {}), ...(p.gps != null ? {gps:p.gps} : {})} : item;
+      return p ? mergeBulkPatch(item, p) : item;
     }));
     setSelected([]);
     setSelectedFolders([]);
@@ -3070,61 +3144,49 @@ function FavoriteMediaViewerPage() {
   </main>;
 }
 
-function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdated}:{items:Media[]; selectedIds:ID[]; selectedFolders?:ID[]; onSelectedIds:(ids:ID[])=>void; onUpdated:(patches:{id:ID; takenAt?:string; gps?:string}[])=>void}) {
+type BulkPatch = {id:ID; takenAt?:string; gps?:string; notes?:string};
+function mergeBulkPatch<T extends Media>(item:T, patch:BulkPatch):T {
+  return {...item,
+    ...(patch.takenAt != null ? {takenAt:patch.takenAt} : {}),
+    ...(patch.gps != null ? {gps:patch.gps} : {}),
+    ...(patch.notes != null ? {notes:patch.notes} : {})};
+}
+
+// One form, one Apply: every filled field (GPS, time shift, notes) goes to
+// the selection in a single request; empty fields are left untouched. Notes
+// replace the notes of every selected item with the same text.
+function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdated}:{items:Media[]; selectedIds:ID[]; selectedFolders?:ID[]; onSelectedIds:(ids:ID[])=>void; onUpdated:(patches:BulkPatch[])=>void}) {
   const [gps, setGPS] = useState("");
   const [shiftHours, setShiftHours] = useState("");
   const [shiftMinutes, setShiftMinutes] = useState("");
-  const [gpsBusy, setGpsBusy] = useState(false);
-  const [shiftBusy, setShiftBusy] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [error, setError] = useState("");
   const selected = items.filter(item => selectedIds.includes(item.id));
   const hasSelection = selectedIds.length > 0 || selectedFolders.length > 0;
   async function save(event:FormEvent) {
     event.preventDefault();
-    const trimmed = gps.trim();
-    if (!hasSelection) {
-      setError("Select at least one item");
-      return;
-    }
-    if (!trimmed) {
-      setError("GPS is required");
-      return;
-    }
-    setGpsBusy(true); setError("");
-    try {
-      const payload:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string} = {};
-      if (selectedIds.length > 0) payload.selectedIds = selectedIds;
-      if (selectedFolders.length > 0) payload.selectedFolders = selectedFolders;
-      payload.gps = trimmed;
-      const result = await api.bulkUpdateMedia(payload);
-      onUpdated(result);
-      setGPS("");
-    } catch (cause) {
-      setError((cause as Error).message);
-    } finally {
-      setGpsBusy(false);
-    }
-  }
-  async function shift() {
     if (!hasSelection) { setError("Select at least one item"); return; }
-    const h = parseFloat(shiftHours) || 0;
-    const m = parseFloat(shiftMinutes) || 0;
-    const total = h * 60 + m;
-    if (total === 0) { setError("Enter hours or minutes"); return; }
-    setShiftBusy(true); setError("");
+    const trimmedGPS = gps.trim();
+    const total = (parseFloat(shiftHours) || 0) * 60 + (parseFloat(shiftMinutes) || 0);
+    const trimmedNotes = notes.trim();
+    if (!trimmedGPS && total === 0 && !trimmedNotes) { setError("Fill in GPS, time shift or notes"); return; }
+    setBusy(true); setError("");
     try {
-      const payload:{selectedIds?:ID[]; selectedFolders?:ID[]; shiftMinutes?:number} = {};
+      const payload:{selectedIds?:ID[]; selectedFolders?:ID[]; gps?:string; shiftMinutes?:number; notes?:string} = {};
       if (selectedIds.length > 0) payload.selectedIds = selectedIds;
       if (selectedFolders.length > 0) payload.selectedFolders = selectedFolders;
-      payload.shiftMinutes = total;
+      if (trimmedGPS) payload.gps = trimmedGPS;
+      if (total !== 0) payload.shiftMinutes = total;
+      if (trimmedNotes) payload.notes = trimmedNotes;
       const result = await api.bulkUpdateMedia(payload);
       onUpdated(result);
-      setShiftHours(""); setShiftMinutes("");
+      setGPS(""); setShiftHours(""); setShiftMinutes(""); setNotes("");
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
-      setShiftBusy(false);
+      setBusy(false);
     }
   }
   async function download() {
@@ -3141,14 +3203,16 @@ function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdate
   return <form className="bulk-toolbar" aria-label="Bulk edit selected media" onSubmit={save}>
       <div className="gps-group"><span className="gps-label">GPS</span>
         <input className="bulk-gps-input" aria-label="GPS" value={gps} onChange={event => setGPS(event.target.value)} placeholder="50.45,30.52"/>
-        <button type="submit" disabled={gpsBusy || !hasSelection}>{gpsBusy ? "Saving…" : "Apply"}</button>
       </div>
-      <span className="bar-sep"/>
       <div className="shift-group"><span className="shift-label">Time shift</span>
-        <input className="shift-input" value={shiftHours} onChange={event => setShiftHours(event.target.value)} placeholder="h" type="number" step="any"/>
-        <input className="shift-input" value={shiftMinutes} onChange={event => setShiftMinutes(event.target.value)} placeholder="m" type="number" step="any" max="59"/>
-        <button type="button" className="secondary" disabled={shiftBusy || !hasSelection} onClick={shift}>{shiftBusy ? "Shifting…" : "Apply"}</button>
+        <input className="shift-input" aria-label="Shift hours" value={shiftHours} onChange={event => setShiftHours(event.target.value)} placeholder="h" type="number" step="any"/>
+        <input className="shift-input" aria-label="Shift minutes" value={shiftMinutes} onChange={event => setShiftMinutes(event.target.value)} placeholder="m" type="number" step="any" max="59"/>
       </div>
+      <div className="notes-group"><span className="shift-label">Notes</span>
+        <input className="bulk-notes-input" aria-label="Notes for all selected" value={notes} onChange={event => setNotes(event.target.value)} placeholder="Same notes for all selected"/>
+      </div>
+      <button type="submit" disabled={busy || !hasSelection}>{busy ? "Saving…" : "Apply"}</button>
+      <span className="bar-sep"/>
       <button type="button" className="secondary" disabled={downloadBusy || (selectedIds.length === 0 && selectedFolders.length === 0)} onClick={download}>{downloadBusy ? "Zipping…" : "Download"}</button>
       <span className="bar-sep"/>
       <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>selected: {selectedIds.length}{selectedFolders.length ? ` (${selectedFolders.length} folders)` : ""}</span></div>
@@ -3784,7 +3848,59 @@ function MediaCard({item,view,libraryId,favoriteViewId,trajectoryFolderId,select
     </div>
     <FavoriteButton item={item} viewId={favoriteViewId} onChange={onFavoriteChange}/>
     <TrajectoryControls item={item} folderId={trajectoryFolderId ?? item.folderId}/>
+    {item.notes?.trim() && <NotesButton className="card-notes-button" title={item.name} entries={[{id:item.id, name:item.name, notes:item.notes.trim()}]}/>}
   </article>;
+}
+
+type NotesEntry = {id:ID; name:string; takenAt?:string; notes:string};
+
+// A media's notes on demand: the button shows only when there is text, and
+// opens a popover beside itself (portal, so card overflow never clips it)
+// that closes on an outside click, Escape or the × button. Several entries
+// (a map cluster's items) list each item's name above its notes.
+function NotesButton({entries, title, className, label}:{entries:NotesEntry[]; title:string; className?:string; label?:string}) {
+  const [anchor, setAnchor] = useState<DOMRect|null>(null);
+  const buttonRef = useRef<HTMLButtonElement|null>(null);
+  function toggle(event:React.MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    setAnchor(current => current ? null : buttonRef.current?.getBoundingClientRect() ?? null);
+  }
+  return <>
+    <button ref={buttonRef} type="button" className={className} aria-label="Show notes" title="Show notes" aria-expanded={anchor != null}
+      onClick={toggle} onKeyDown={event => event.stopPropagation()}>{label ?? "📝"}</button>
+    {anchor && <NotesPopover anchor={anchor} title={title} entries={entries} onClose={() => setAnchor(null)}/>}
+  </>;
+}
+
+function NotesPopover({anchor, title, entries, onClose}:{anchor:DOMRect; title:string; entries:NotesEntry[]; onClose:()=>void}) {
+  const ref = useRef<HTMLDivElement|null>(null);
+  const closeRef = useRef(onClose); closeRef.current = onClose;
+  useEffect(() => {
+    const onPointer = (event:PointerEvent) => { if (!ref.current?.contains(event.target as Node)) closeRef.current(); };
+    const onKey = (event:KeyboardEvent) => { if (event.key === "Escape") closeRef.current(); };
+    // Registered after the opening click finished, so it does not close at once.
+    const timer = window.setTimeout(() => document.addEventListener("pointerdown", onPointer, true), 0);
+    document.addEventListener("keydown", onKey);
+    return () => { window.clearTimeout(timer); document.removeEventListener("pointerdown", onPointer, true); document.removeEventListener("keydown", onKey); };
+  }, []);
+  const width = Math.min(360, window.innerWidth - 24);
+  const left = Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12));
+  const below = anchor.bottom + 6;
+  const style:CSSProperties = below < window.innerHeight * 0.6
+    ? {left, top: below, width}
+    : {left, bottom: window.innerHeight - anchor.top + 6, width};
+  const single = entries.length === 1 && entries[0].name === title;
+  return createPortal(<div ref={ref} className="notes-popover" role="dialog" aria-label={`Notes: ${title}`} style={style}
+    onClick={event => event.stopPropagation()}>
+    <div className="notes-popover-head"><strong>{title}</strong><button type="button" className="notes-popover-close" aria-label="Close" onClick={onClose}>×</button></div>
+    <div className="notes-popover-body">{single
+      ? <p className="notes-text">{entries[0].notes}</p>
+      : entries.map(entry => <section key={entry.id} className="notes-entry">
+          <small>{entry.name}{entry.takenAt ? ` · ${formatDateTime(entry.takenAt)}` : ""}</small>
+          <p className="notes-text">{entry.notes}</p>
+        </section>)}</div>
+  </div>, document.body);
 }
 
 // Trajectory markers belong to the folder they are set in: the folder being
@@ -6249,6 +6365,8 @@ function SelectionRectangle({bounds}:{bounds:L.LatLngBounds}) {
 function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
   const [sort, setSort] = useState<"desc"|"asc">("desc");
   const sorted = useMemo(() => sortMedia(items, sort), [items, sort]);
+  // Every note of the cluster / area, in the panel's order, behind one button.
+  const noted = useMemo(() => sorted.filter(item => item.notes?.trim()).map(item => ({id:item.id, name:item.name, takenAt:item.takenAt, notes:item.notes!.trim()})), [sorted]);
   const visible = useProgressiveReveal(sorted, 100);
   // Group by date, ordering every item within a date by time exactly as the
   // timeline view does (following the Newest/Oldest toggle); date groups
@@ -6303,6 +6421,7 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
     <div className="map-resize-handle" aria-hidden="true" onPointerDown={startResize}/>
     <div className="map-timeline-head">
       <strong>{sorted.length} {sorted.length === 1 ? "item" : "items"}</strong>
+      {noted.length > 0 && <NotesButton className="secondary" title="Notes" label={`📝 ${noted.length}`} entries={noted}/>}
       <button className="secondary" onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
       <button className="secondary" onClick={onClear}>Clear</button>
     </div>

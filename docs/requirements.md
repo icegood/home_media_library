@@ -17,6 +17,8 @@ via `sh deploy/start.sh e2e`.
 
 - Media files stay in their original folders; operators mount them into the api container and add them as libraries referencing explicit absolute paths. Relative paths are never stored; both DB stores compute them from the library-root prefix.
 - After moving files locally, an admin can replace one exact library root path from the Admin → Libraries menu. The operation transactionally rewrites the root, descendant folder, and media paths in SQLite or PostgreSQL without rescanning; it does not move files itself and is rejected while the library has active jobs.
+- The library dialog (Edit) always starts from the stored library, re-read when it opens, and the admin list reloads whenever the dialog saves or closes, so saving never writes back a stale root list and drops roots added earlier. Saving with newly added roots starts a library scan.
+- The root-folder picker has a path box: paste a path (e.g. `/media/data1/0ira`) and press Enter or Open to jump there. In the library editors each subfolder has a checkbox; checks persist while browsing, and "Add checked" fills the row the picker was opened from with the first checked folder and adds the rest as new root rows (paths already listed are skipped).
 - Scanner runs as a background job: walks folders with progress/pause/cancel, upserts folder + media indexes (slim tasks `{filePath, mimeType, parentID}`), extracts ExifTool/FFprobe metadata, then a thumbnail-create job runs.
 - Duplicate-job guard: starting a job that is already active for the same category+library is rejected.
 - Metadata renewal supports resume-by-offset after restart (deterministic ordering by relative path).
@@ -34,7 +36,7 @@ via `sh deploy/start.sh e2e`.
 - Timeline groups by date along a vertical ruler; its filter bar scopes the view by kind (All / Images / Videos / Documents) and by GPS presence (All / Geotagged / No GPS). Opening an item keeps the current folder/kind/GPS scope in the viewer (`root=`, `kind=`, `gps=` URL params), so prev/next paging stays inside the active filter.
 - Folders view kind scope (All / Images / Videos / Documents) filters the entry cards client-side and keeps the scope when opening the viewer (`kind=` URL param, no `root`).
 - Fixed filters bar auto-hides under the header (`VV` handle); its height publishes `--filters-h` on every page that has one, including Map.
-- Bulk selection: checkboxes top-left on every card where selection applies (media and folder cards, tile and list). Selection feeds bulk GPS set/shift and download.
+- Bulk selection: checkboxes top-left on every card where selection applies (media and folder cards, tile and list). Selection feeds the bulk bar and download. The bulk bar has GPS, Time shift (h/m) and Notes fields and ONE Apply button: every non-empty field is applied to the selection in a single `PATCH /media/bulk` (GPS, then the time shift, then notes; all validated before anything is written); Notes replace the notes of every selected item with the same text.
 - Item dropdowns (three-dot): ONE component (`CardMenu`) for library tiles, folder entries, admin library rows and favorite rows; portal popup, closes on outside click and on menu-item click, fetches lazy contents only while open.
 - Placement rules: three-dot trigger top-right on every card (list rows: right edge); selection checkbox top-left wherever applicable.
 
@@ -43,6 +45,7 @@ via `sh deploy/start.sh e2e`.
 - Opens from any surface preserving context (folder range, root/kind/GPS scope, favorites origin chain via `?fav=`, map selections via `?list=`).
 - Images: zoom/pan (zoom 50%–3000%). Videos: direct play when browser codecs allow, otherwise FFmpeg transcode to the user's chosen fallback codec (h264/h265/vp9); server-side seek offset support.
 - Fullscreen control for videos; keyboard arrows page within the active range only.
+- Notes: a media card (Folders, Timeline, Favorites; tile and list) with notes shows a 📝 button (tile: left, under the selection checkbox) that opens the notes in a popover; it closes on an outside click, Escape or ×. On the map, the cluster/area list panel shows a `📝 N` button when any of its items has notes, opening one popover with every note (item name, date, text) in the panel's order.
 - A video element that leaves the stage (paging away, a seek slot replaced) stops its download at once (`src` removed + `load()`), so a clip skipped past never keeps streaming and starving the item on screen.
 
 ## Favorites
@@ -71,6 +74,7 @@ via `sh deploy/start.sh e2e`.
 - Thumbnail files live at `THUMBNAIL_DIR/media/<id/1000>/<id>_<index>.jpg`; folder covers at `THUMBNAIL_DIR/folders/<id/1000>/<id>_0.jpg` (3-way ffmpeg hstack JPEGs).
 - Default-thumb pictures per kind; refresh flows support "missing only" and "recreate existing". Metadata refresh's "create existing" rewrites metadata only; use thumbnail refresh to regenerate image files.
 - Recreated media thumbnails use the source media's stored orientation metadata, do not apply per-user viewer adjustments, clear any prior thumbnail error and retry, and feed the rendered media thumbnails into folder covers. Thumbnail responses are private but revalidate so replacements appear immediately instead of remaining cached under stable URLs.
+- Image thumbnails take only the first frame, so animated GIFs (and other multi-frame images) thumbnail like a still instead of failing in ffmpeg.
 - Original media content is privately cached for prefetching but revalidates with the source file modification time, so external file edits are visible without a long stale-content lease.
 
 ## Watch folders

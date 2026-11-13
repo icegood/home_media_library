@@ -2672,6 +2672,41 @@ func TestBulkMediaUpdateRequiresReadAccess(t *testing.T) {
 	}
 }
 
+func TestBulkMediaUpdateAppliesGPSShiftAndNotesTogether(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	if _, err := f.store.BulkUpdateMediaSetTime(ctx, []int{f.photoID}, nil, "2020-01-01T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	alice := login(t, f.handler, "alice")
+	body, _ := json.Marshal(map[string]any{"selectedIds": []int{f.photoID}, "gps": "50.45,30.52", "shiftMinutes": 90, "notes": "  zoo trip  "})
+	res := request(f.handler, http.MethodPatch, "/api/v1/media/bulk", alice, body)
+	if res.Code != http.StatusOK {
+		t.Fatalf("combined bulk status = %d: %s", res.Code, res.Body)
+	}
+	var results []domain.BulkMediaResult
+	if err := json.Unmarshal(res.Body.Bytes(), &results); err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].GPS == "" || results[0].TakenAt != "2020-01-01T13:30:00Z" || results[0].Notes == nil || *results[0].Notes != "zoo trip" {
+		t.Fatalf("merged results = %+v", results)
+	}
+	photo, err := f.store.Media(ctx, f.photoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if photo.GPS == "" || photo.TakenAt != "2020-01-01T13:30:00Z" || photo.Notes != "zoo trip" {
+		t.Fatalf("stored = gps %q takenAt %q notes %q", photo.GPS, photo.TakenAt, photo.Notes)
+	}
+	bad, _ := json.Marshal(map[string]any{"selectedIds": []int{f.photoID}, "gps": "999,1", "notes": "x"})
+	if got := request(f.handler, http.MethodPatch, "/api/v1/media/bulk", alice, bad).Code; got != http.StatusBadRequest {
+		t.Fatalf("invalid gps status = %d, want 400", got)
+	}
+	if after, _ := f.store.Media(ctx, f.photoID); after.Notes != "zoo trip" {
+		t.Fatalf("rejected request still wrote notes %q", after.Notes)
+	}
+}
+
 func TestMediaNeighborsRejectsScopeOutsideLibrary(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

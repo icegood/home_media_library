@@ -1613,7 +1613,7 @@ func (a *API) bulkMediaUpdate(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid JSON")
 		return
 	}
-	applog.Printf(applog.Debug, "bulkMediaUpdate user=%d ids=%d folders=%d gps=%v takenAt=%v shift=%v", p.ID, len(patch.SelectedIDs), len(patch.SelectedFolders), patch.GPS != nil, patch.TakenAt != nil, patch.ShiftMinutes != nil)
+	applog.Printf(applog.Debug, "bulkMediaUpdate user=%d ids=%d folders=%d gps=%v takenAt=%v shift=%v notes=%v", p.ID, len(patch.SelectedIDs), len(patch.SelectedFolders), patch.GPS != nil, patch.TakenAt != nil, patch.ShiftMinutes != nil, patch.Notes != nil)
 	if patch.ShiftMinutes != nil && patch.TakenAt != nil {
 		problem(w, 400, "cannot combine shiftMinutes with takenAt")
 		return
@@ -1634,41 +1634,94 @@ func (a *API) bulkMediaUpdate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	storeStart := time.Now()
+	// Every field present is applied, in one request: GPS, then the date
+	// (set or shift), then notes. Each is validated before anything is written.
 	var (
-		results []domain.BulkMediaResult
-		err     error
+		gps       string
+		lat, lng  float64
+		takenAt   string
+		hasGPS    = patch.GPS != nil
+		hasSet    = patch.TakenAt != nil
+		hasShift  = patch.ShiftMinutes != nil && *patch.ShiftMinutes != 0
+		hasNotes  = patch.Notes != nil
 	)
-	switch {
-	case patch.GPS != nil:
+	if hasGPS {
 		canonical, ok := domain.CanonicalGPS(strings.TrimSpace(*patch.GPS))
 		if !ok {
 			problem(w, 400, "gps must use valid latitude,longitude format")
 			return
 		}
-		gps := canonical
-		if canonical == "" {
-			gps = ""
-		}
-		lat, lng := domain.GPSCoords(canonical)
-		results, err = a.Store.BulkUpdateMediaGPS(r.Context(), patch.SelectedIDs, patch.SelectedFolders, gps, lat, lng)
-	case patch.TakenAt != nil:
+		gps = canonical
+		lat, lng = domain.GPSCoords(canonical)
+	}
+	if hasSet {
 		normalized, ok := normalizeMediaDate(*patch.TakenAt)
 		if !ok {
 			problem(w, 400, "takenAt must be a valid date/time")
 			return
 		}
-		results, err = a.Store.BulkUpdateMediaSetTime(r.Context(), patch.SelectedIDs, patch.SelectedFolders, normalized)
-	case patch.ShiftMinutes != nil && *patch.ShiftMinutes != 0:
-		results, err = a.Store.BulkUpdateMediaShiftTime(r.Context(), patch.SelectedIDs, patch.SelectedFolders, *patch.ShiftMinutes)
-	default:
+		takenAt = normalized
+	}
+	if !hasGPS && !hasSet && !hasShift && !hasNotes {
 		problem(w, 400, "nothing to update")
 		return
 	}
-	if err != nil {
-		applog.Printf(applog.Error, "bulkMediaUpdate store error: %v (%s)", err, time.Since(storeStart).Round(time.Millisecond))
-		problem(w, 500, err.Error())
-		return
+	storeStart := time.Now()
+	merged := map[int]*domain.BulkMediaResult{}
+	order := []int{}
+	merge := func(batch []domain.BulkMediaResult) {
+		for _, item := range batch {
+			entry, ok := merged[item.ID]
+			if !ok {
+				copied := domain.BulkMediaResult{ID: item.ID}
+				entry = &copied
+				merged[item.ID] = entry
+				order = append(order, item.ID)
+			}
+			if item.GPS != "" {
+				entry.GPS = item.GPS
+			}
+			if item.TakenAt != "" {
+				entry.TakenAt = item.TakenAt
+			}
+			if item.Notes != nil {
+				entry.Notes = item.Notes
+			}
+		}
+	}
+	steps := []func() ([]domain.BulkMediaResult, error){}
+	if hasGPS {
+		steps = append(steps, func() ([]domain.BulkMediaResult, error) {
+			return a.Store.BulkUpdateMediaGPS(r.Context(), patch.SelectedIDs, patch.SelectedFolders, gps, lat, lng)
+		})
+	}
+	if hasSet {
+		steps = append(steps, func() ([]domain.BulkMediaResult, error) {
+			return a.Store.BulkUpdateMediaSetTime(r.Context(), patch.SelectedIDs, patch.SelectedFolders, takenAt)
+		})
+	} else if hasShift {
+		steps = append(steps, func() ([]domain.BulkMediaResult, error) {
+			return a.Store.BulkUpdateMediaShiftTime(r.Context(), patch.SelectedIDs, patch.SelectedFolders, *patch.ShiftMinutes)
+		})
+	}
+	if hasNotes {
+		notes := strings.TrimSpace(*patch.Notes)
+		steps = append(steps, func() ([]domain.BulkMediaResult, error) {
+			return a.Store.BulkUpdateMediaNotes(r.Context(), patch.SelectedIDs, patch.SelectedFolders, notes)
+		})
+	}
+	for _, step := range steps {
+		batch, err := step()
+		if err != nil {
+			applog.Printf(applog.Error, "bulkMediaUpdate store error: %v (%s)", err, time.Since(storeStart).Round(time.Millisecond))
+			problem(w, 500, err.Error())
+			return
+		}
+		merge(batch)
+	}
+	results := make([]domain.BulkMediaResult, 0, len(order))
+	for _, id := range order {
+		results = append(results, *merged[id])
 	}
 	applog.Printf(applog.Debug, "bulkMediaUpdate done %d items (%s)", len(results), time.Since(storeStart).Round(time.Millisecond))
 	writeJSON(w, 200, results)
@@ -2058,7 +2111,7 @@ func (a *API) generateImageThumbnail(ctx context.Context, source string, index i
 	if index != 0 {
 		return fmt.Errorf("images only have thumbnail index 0")
 	}
-	return a.generateThumbnail(ctx, source, target, []string{"-i", source})
+	return a.generateThumbnail(ctx, source, target, []string{"-i", source, "-frames:v", "1"})
 }
 
 func (a *API) generateVideoThumbnail(ctx context.Context, source string, item domain.Media, index int, target string) error {

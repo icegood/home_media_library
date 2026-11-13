@@ -73,6 +73,7 @@ type Store interface {
 	BulkUpdateMediaGPS(ctx context.Context, ids []int, folderIDs []int, gps string, lat, lng float64) ([]domain.BulkMediaResult, error)
 	BulkUpdateMediaSetTime(ctx context.Context, ids []int, folderIDs []int, takenAt string) ([]domain.BulkMediaResult, error)
 	BulkUpdateMediaShiftTime(ctx context.Context, ids []int, folderIDs []int, shiftMinutes float64) ([]domain.BulkMediaResult, error)
+	BulkUpdateMediaNotes(ctx context.Context, ids []int, folderIDs []int, notes string) ([]domain.BulkMediaResult, error)
 	GeotaggedMedia(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int) ([]domain.MapMedia, error)
 	MediaInArea(ctx context.Context, userID int, admin bool, libraryID, folderID, favoriteID int, bounds domain.Bounds) ([]domain.MapMedia, error)
 	// MapView groups the scope's geotagged media inside bounds into grid cells

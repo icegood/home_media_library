@@ -304,6 +304,48 @@ test("library dialog never re-points an existing root path by typing, only Move 
   })));
 });
 
+test("library dialog starts from the stored roots, not a stale list, and scans added roots", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  // The admin list was loaded before a second root was saved elsewhere.
+  mockApi.libraries
+    .mockResolvedValueOnce([{id:1, name:"Family", roots:[{id:10, path:"/media/family/photos"}]}])
+    .mockResolvedValue([{id:1, name:"Family", roots:[{id:10, path:"/media/family/photos"}, {id:11, path:"/media/family/videos"}]}]);
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Edit library Family"));
+  const dialog = await screen.findByRole("dialog", {name:"Library actions Family"});
+  await waitFor(() => expect(within(dialog).getAllByLabelText("Root path")).toHaveLength(2));
+  fireEvent.click(within(dialog).getByRole("button", {name:"Add root folder"}));
+  fireEvent.change(within(dialog).getAllByLabelText("Root path")[2], {target:{value:"/media/family/new"}});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Save changes"}));
+  await waitFor(() => expect(mockApi.updateLibrary).toHaveBeenCalledWith(1, expect.objectContaining({
+    roots: [{path:"/media/family/photos"}, {path:"/media/family/videos"}, {path:"/media/family/new"}]
+  })));
+  await waitFor(() => expect(mockApi.scanLibrary).toHaveBeenCalledWith(1));
+});
+
+test("folder picker opens a pasted path and adds checked subfolders as roots", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.filesystem.mockImplementation(async (path:string) => path === "/media/data1/0ira"
+    ? {path:"/media/data1/0ira", parent:"/media/data1", directories:[
+        {name:"a", path:"/media/data1/0ira/a"}, {name:"b", path:"/media/data1/0ira/b"}, {name:"c", path:"/media/data1/0ira/c"}]}
+    : {path:"/media", parent:"", directories:[]});
+  render(<MemoryRouter initialEntries={["/admin?section=libraries"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Add"}));
+  const dialog = await screen.findByRole("dialog", {name:"Add library"});
+  fireEvent.click(within(dialog).getByRole("button", {name:"Browse"}));
+  const picker = await screen.findByRole("dialog", {name:"Choose root folder"});
+  fireEvent.change(within(picker).getByLabelText("Folder path"), {target:{value:" /media/data1/0ira "}});
+  fireEvent.click(within(picker).getByRole("button", {name:"Open"}));
+  await waitFor(() => expect(mockApi.filesystem).toHaveBeenCalledWith("/media/data1/0ira"));
+  fireEvent.click(await within(picker).findByLabelText("Check a"));
+  fireEvent.click(within(picker).getByLabelText("Check c"));
+  expect(within(picker).getByText("2 folders checked")).toBeInTheDocument();
+  fireEvent.click(within(picker).getByRole("button", {name:"Add checked"}));
+  await waitFor(() => expect(screen.queryByRole("dialog", {name:"Choose root folder"})).not.toBeInTheDocument());
+  const paths = within(dialog).getAllByLabelText("Root path").map(input => (input as HTMLInputElement).value);
+  expect(paths).toEqual(["/media/data1/0ira/a", "/media/data1/0ira/c"]);
+});
+
 test("authenticated header renders user menu and clicking logout logs out", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter><App/></MemoryRouter>);
@@ -1609,7 +1651,7 @@ test("selected media items can receive the same gps in bulk", async () => {
   fireEvent.click(await screen.findByLabelText("Select one.jpg"));
   fireEvent.click(await screen.findByLabelText("Select two.jpg"));
   fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"50.45,30.52"}});
-  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[0]);
+  fireEvent.click(screen.getByRole("button", {name:"Apply"}));
   await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledTimes(1));
   expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith({selectedIds: [100, 101], gps: "50.45,30.52"});
 });
@@ -3410,14 +3452,14 @@ test("bulk time shift validates input and applies the offset to selected items",
 
   // Zero offset is rejected before hitting the API.
   fireEvent.change(screen.getByPlaceholderText("h"), {target:{value:"0"}});
-  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[1]);
-  expect(await screen.findByText("Enter hours or minutes")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Apply"}));
+  expect(await screen.findByText("Fill in GPS, time shift or notes")).toBeInTheDocument();
   expect(mockApi.bulkUpdateMedia).not.toHaveBeenCalledWith(expect.objectContaining({shiftMinutes:expect.any(Number)}));
 
   fireEvent.change(screen.getByPlaceholderText("h"), {target:{value:"1"}});
   fireEvent.change(screen.getByPlaceholderText("m"), {target:{value:"30"}});
   fireEvent.click(await screen.findByLabelText("Select two.jpg"));
-  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[1]);
+  fireEvent.click(screen.getByRole("button", {name:"Apply"}));
   await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith({selectedIds:[100, 101], shiftMinutes:90}));
 });
 
@@ -4153,19 +4195,38 @@ test("bulk GPS apply validates selection and supports whole folders", async () =
 
   // Empty GPS is rejected.
   fireEvent.click(await screen.findByLabelText("Select one.jpg"));
-  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[0]);
-  expect(await screen.findByText("GPS is required")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"Apply"}));
+  expect(await screen.findByText("Fill in GPS, time shift or notes")).toBeInTheDocument();
   expect(mockApi.bulkUpdateMedia).not.toHaveBeenCalled();
 
   // Selecting the folder targets it instead of individual items.
   fireEvent.click(await screen.findByLabelText("Select Photos"));
   fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"10,20"}});
-  fireEvent.click(screen.getAllByRole("button", {name:"Apply"})[0]);
+  fireEvent.click(screen.getByRole("button", {name:"Apply"}));
   await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith(expect.objectContaining({gps:"10,20"})));
   const lastCall = mockApi.bulkUpdateMedia.mock.calls.at(-1)![0];
   expect(lastCall.selectedFolders ?? lastCall.selectedIds).toBeTruthy();
 });
 
+
+test("bulk bar has one Apply that sends every filled field, notes included", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => {
+    state.entries.set(1, [
+      {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+      {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:20, metadata:{}, gps:"", takenAt:""}}
+    ]);
+  });
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Select one.jpg"));
+  fireEvent.click(await screen.findByLabelText("Select two.jpg"));
+  expect(screen.getAllByRole("button", {name:"Apply"})).toHaveLength(1);
+  fireEvent.change(screen.getByLabelText("GPS"), {target:{value:"50.45,30.52"}});
+  fireEvent.change(screen.getByPlaceholderText("m"), {target:{value:"15"}});
+  fireEvent.change(screen.getByLabelText("Notes for all selected"), {target:{value:"  zoo  "}});
+  fireEvent.click(screen.getByRole("button", {name:"Apply"}));
+  await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith({selectedIds:[100, 101], gps:"50.45,30.52", shiftMinutes:15, notes:"zoo"}));
+});
 
 test("folder card favorite chooser toggles membership and creates views inline", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
