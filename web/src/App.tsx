@@ -107,6 +107,7 @@ export function App() {
   const [userSettingsOpen, setUserSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsWarn, setSettingsWarn] = useState(false);
+  const newBuild = useNewBuildAvailable();
   const [dialogLibrary, setDialogLibrary] = useState<Library|null>(null);
   const shellRef = useRef<HTMLDivElement|null>(null);
   // Subscribes App to language switches: the shell below is keyed by the
@@ -248,6 +249,7 @@ export function App() {
   }
   return <TopMenuCtx.Provider value={topMenuValue}><PlayCacheCtx.Provider value={playCache}><StreamChunkSizeCtx.Provider value={streamChunkSize}><ThumbCtx.Provider value={thumbValue}><LibraryDialogContext.Provider value={libraryDialogValue}><div key={lang} className={`shell ${viewerMode ? "viewer-shell" : ""} ${topMenuOpen ? "top-menu-open" : ""}`} ref={shellRef}>
     <button type="button" className="top-menu-handle" aria-label={topMenuOpen ? "Hide main menu" : "Show main menu"} onClick={() => setTopMenuOpen(value => !value)}>{topMenuOpen ? "^^" : "vv"}</button>
+    {newBuild && <div className="shell-warning" role="alert">A new version of the app was deployed. Reload so saves don't use the old page. <button type="button" onClick={() => window.location.reload()}>Reload</button></div>}
     {settingsWarn && <div className="shell-warning" role="alert">Couldn't load your account preferences (theme, zoom, …) — showing defaults. <button type="button" className="secondary" onClick={() => setSettingsWarn(false)}>Dismiss</button></div>}
     {/* Crumbs are keyed by position: links repeat (the timeline library crumb
         and its root folder share a URL), and duplicate keys left orphaned
@@ -7645,6 +7647,39 @@ function SavedServers({servers, onServersChanged, onPick}:{servers:SavedServer[]
 
 // Overridden only by unit tests to exercise the picker without a device.
 let nativeOverrideForTests:boolean|null = null;
+// A tab left open across a deploy keeps running the old bundle, and its saves
+// can write stale data back (e.g. an old library editor). Compare the bundle
+// this page runs with the one the server now serves, on focus and every few
+// minutes, and offer a reload when they differ.
+const BUNDLE_SCRIPT = /\/assets\/index-[^"']+\.js/;
+export function servedBundleChanged(currentSrc:string, html:string) {
+  const served = html.match(BUNDLE_SCRIPT)?.[0];
+  return Boolean(served && !currentSrc.endsWith(served));
+}
+function useNewBuildAvailable() {
+  const [changed, setChanged] = useState(false);
+  useEffect(() => {
+    if (isNativeApp()) return;
+    const current = Array.from(document.querySelectorAll<HTMLScriptElement>("script[src]"))
+      .map(script => script.src).find(src => BUNDLE_SCRIPT.test(src));
+    if (!current) return;
+    let last = 0;
+    const check = () => {
+      if (document.visibilityState === "hidden" || Date.now() - last < 30_000) return;
+      last = Date.now();
+      fetch("/", {cache:"no-store", credentials:"same-origin"})
+        .then(response => response.ok ? response.text() : "")
+        .then(html => { if (servedBundleChanged(current, html)) setChanged(true); })
+        .catch(() => { /* offline: try again later */ });
+    };
+    const timer = window.setInterval(check, 5 * 60_000);
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", check); };
+  }, []);
+  return changed;
+}
+
 export function setNativePlatformForTests(value:boolean|null) { nativeOverrideForTests = value; }
 
 const isNativeApp = () => nativeOverrideForTests ?? Capacitor.isNativePlatform();

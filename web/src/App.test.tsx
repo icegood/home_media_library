@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -344,6 +344,13 @@ test("folder picker opens a pasted path and adds checked subfolders as roots", a
   await waitFor(() => expect(screen.queryByRole("dialog", {name:"Choose root folder"})).not.toBeInTheDocument());
   const paths = within(dialog).getAllByLabelText("Root path").map(input => (input as HTMLInputElement).value);
   expect(paths).toEqual(["/media/data1/0ira/a", "/media/data1/0ira/c"]);
+});
+
+test("a deploy that serves a different bundle is detected for the reload banner", () => {
+  const html = '<script type="module" crossorigin src="/assets/index-NEW123.js"></script>';
+  expect(servedBundleChanged("http://nas:8099/assets/index-OLD999.js", html)).toBe(true);
+  expect(servedBundleChanged("http://nas:8099/assets/index-NEW123.js", html)).toBe(false);
+  expect(servedBundleChanged("http://nas:8099/assets/index-OLD999.js", "<html>offline</html>")).toBe(false);
 });
 
 test("authenticated header renders user menu and clicking logout logs out", async () => {
