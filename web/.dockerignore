@@ -7,3 +7,4 @@ android/app/build
 coverage
 test-output
 src/generated-version.ts
+**/CLAUDE.md

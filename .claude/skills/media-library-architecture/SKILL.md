@@ -28,7 +28,12 @@ metadata and grants. The web app also packages as an Android app via Capacitor.
   - `internal/transcode` — FFmpeg transcode to h264/h265/vp9
   - `internal/gatewayconfig` — generates the Caddyfile + reloads via cksum
   - `internal/embyimport` — reads Emby SQLite DBs, builds `ImportSnapshot`
+  - `internal/watcher` — fsnotify → debounced incremental rescan
+  - `internal/jobpool` — single app-wide worker pool for all media jobs
+  - `internal/scheduler` — cron-style scheduled tasks reusing the job system
+  - `internal/poi` — map POI lookup (Overpass)
   - `internal/applog` — leveled, rotating file log
+  - Two store handles on one DB: interactive (HTTP) and job (all background work)
 - `web/` — React 19 + TypeScript + Vite SPA (Vitest). `src/api.ts` wraps all
   REST calls; `src/App.tsx` is a single-file SPA with routes: `/` (libraries),
   `/library/:id` (browser), `/library/:id/timeline`, `/library/:id/view/:folderId`
@@ -70,8 +75,8 @@ metadata and grants. The web app also packages as an Android app via Capacitor.
 - **Scanner pipeline**: admin creates library -> background job walks folder
   (progress + pause/cancel via in-memory `JobStatus` map), upserts folders +
   media, extracts metadata/GPS, then a thumbnail-create job runs.
-- **Folder watcher**: per-root `watch` flag (off by default) on `library_roots`.
-  `backend/internal/watcher` fsnotify-watches opted-in roots recursively,
+- **Folder watcher**: per-library `watch` flag (off by default) on `libraries`.
+  `backend/internal/watcher` fsnotify-watches every root of opted-in libraries recursively,
   debounces change bursts into one incremental library rescan via the scanner.
 - **Playback**: `/play` probes source; if browser-advertised codecs match and
   container/audio are direct-play safe, serves original bytes; otherwise FFmpeg
@@ -82,29 +87,12 @@ metadata and grants. The web app also packages as an Android app via Capacitor.
 
 ## Runtime layout (single bind mount, back it up)
 
-- `/runtime/app-data` — SQLite DB (`media-library.db`)
+- `/runtime/app-data` — SQLite DB (`media-library.db`, WAL: back up `-wal`/`-shm` too)
 - `/runtime/app-config` — generated Caddyfile + app.log
 - `/runtime/caddy-data`, `/runtime/caddy-config` — Caddy/ACME state
 - `/runtime/thumbnails` — generated thumbnails
 
-## Repository hygiene
+## Rules
 
-Commit (source): `backend/` (`cmd/ internal/ migrations/ go.mod go.sum Dockerfile`),
-`web/` (`src/ package.json package-lock.json Dockerfile nginx.conf.template index.html
-vite.config.ts tsconfig*.json capacitor.config.ts`, plus `web/android/` shell if
-present), `deploy/` (including `compose.local.yaml`), `docs/`, `.github/`.
-
-Ignore (generated/output): `deploy/.env` (secrets), `.github-token`, `runtime/`,
-`web/android/.gradle/`, `web/android/app/build/`, `.idea/`, `.vscode/`.
-
-GitHub API/CI tooling on the dev host reads its token from `~/.git-credentials`
-(primary, `https://user:<ghp_...|github_pat_...>@github.com`) or the gitignored
-repo-root `.github-token` — never guess or pull tokens from stray temp files.
-
-## Verification
-
-All compile/tests run in containers and are driven only by the official script
-`deploy/start.sh` — never run `docker build`, `docker compose up --build`, `npm test`, or
-`npm run build` directly. `sh deploy/start.sh local-build` builds backend + web (running
-`go test ./...` and `npm test && npm run build` inside the image builds) and deploys the
-stack. After frontend changes use the `update-ui-after-build` skill to verify the running UI.
+Per-area rules live in the nearest `CLAUDE.md` (root `CLAUDE.md` indexes them);
+repository hygiene and verification rules are in the root `CLAUDE.md`.
