@@ -383,6 +383,25 @@ test("user menu opens About dialog with version information", async () => {
   await waitFor(() => expect(mockApi.about).toHaveBeenCalledTimes(1));
 });
 
+test("dialog stays open when a text selection drag ends on the backdrop", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:true});
+  render(<MemoryRouter><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("User menu"));
+  fireEvent.click(await screen.findByRole("menuitem", {name:"About"}));
+  const dialog = await screen.findByRole("dialog", {name:"About"}, {timeout:3000});
+  // Press inside the panel (start of a text selection), release over the backdrop.
+  fireEvent.mouseDown(within(dialog).getByText("0.1.0"));
+  fireEvent.mouseUp(dialog);
+  fireEvent.click(dialog);
+  expect(screen.getByRole("dialog", {name:"About"})).toBeInTheDocument();
+  // A press that starts and ends on the backdrop still closes it.
+  fireEvent.mouseDown(dialog);
+  fireEvent.mouseUp(dialog);
+  fireEvent.click(dialog);
+  await waitFor(() => expect(screen.queryByRole("dialog", {name:"About"})).not.toBeInTheDocument());
+});
+
 test("About dialog omits the gateway entry in an HTTP-only deployment", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.about.mockResolvedValue({product:"Media Library", version:"0.1.0", revision:"abc123", buildDate:"2026-01-02T03:04:05Z", goVersion:"go1.23.4", gatewayEnabled:false});

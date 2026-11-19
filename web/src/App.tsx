@@ -551,8 +551,19 @@ function closeParentDetails(event:MouseEvent<HTMLElement>) {
   event.currentTarget.closest("details")?.removeAttribute("open");
 }
 
+// Where the last mouse press started. Selecting text in a dialog field and
+// releasing the button outside the panel fires `click` on the backdrop (the
+// common ancestor), which must not close the dialog: only a press that both
+// starts and ends on the backdrop does.
+let lastPressTarget:EventTarget|null = null;
+if (typeof document !== "undefined") document.addEventListener("mousedown", event => { lastPressTarget = event.target; }, true);
+
 function closeOnBackdropClick(event:MouseEvent<HTMLElement>, close:()=>void) {
-  if (event.target === event.currentTarget) close();
+  const pressed = lastPressTarget;
+  lastPressTarget = null;
+  if (event.target !== event.currentTarget) return;
+  if (pressed && pressed !== event.currentTarget) return;
+  close();
 }
 
 export const POPUP_TIMEOUT_MS = 10_000;
