@@ -35,6 +35,7 @@ via `sh deploy/start.sh e2e`.
 ## Browsing
 
 - Views per library: Folders tree, Timeline (date groups), List/Tile layouts, content-visibility + virtual scrolling for large sets.
+- Coming back from the viewer to a folder grid or Timeline (browser Back or a breadcrumb) focuses the item that was open and centres its row, even in a large timeline whose cards mount over several seconds: the reveal waits up to 20 s for the card to appear, then keeps it centred for up to 3 s, and stops as soon as the user scrolls, clicks or presses a key.
 - Timeline groups by date along a vertical ruler; its filter bar scopes the view by kind (All / Images / Videos / Documents) and by GPS presence (All / Geotagged / No GPS). Opening an item keeps the current folder/kind/GPS scope in the viewer (`root=`, `kind=`, `gps=` URL params), so prev/next paging stays inside the active filter.
 - Folders view kind scope (All / Images / Videos / Documents) filters the entry cards client-side and keeps the scope when opening the viewer (`kind=` URL param, no `root`).
 - Fixed filters bar auto-hides under the header (`VV` handle); its height publishes `--filters-h` on every page that has one, including Map.

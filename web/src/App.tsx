@@ -3268,7 +3268,10 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
       findCard()?.scrollIntoView?.({block:"nearest", inline:"nearest"});
       return;
     }
+    // A big timeline mounts its cards over many frames, so the card can appear
+    // seconds after arrival: wait up to 20 s for it, then let it settle for 3 s.
     const started = performance.now();
+    let foundAt = 0;
     let steady = 0;
     let frame = 0;
     let centred = false;
@@ -3281,11 +3284,13 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
     const tick = () => {
       const card = findCard();
       if (card) {
+        if (!foundAt) foundAt = performance.now();
         const rect = card.getBoundingClientRect();
         if (!centred || rect.top < 0 || rect.bottom > window.innerHeight) { card.scrollIntoView?.({block:"center", inline:"nearest"}); centred = true; steady = 0; }
         else steady++;
       }
-      if (steady >= 15 || performance.now() - started > 3000) { stop(); return; }
+      const now = performance.now();
+      if (steady >= 15 || (foundAt ? now - foundAt > 3000 : now - started > 20_000)) { stop(); return; }
       frame = requestAnimationFrame(tick);
     };
     userEvents.forEach(type => window.addEventListener(type, stop, {passive:true}));
