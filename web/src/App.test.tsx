@@ -2096,35 +2096,32 @@ test("returning from the viewer to the timeline focuses the item that was open",
   expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
 });
 
-test("returning to a big timeline reveals the open item even when its card appears late", async () => {
+test("returning to a big timeline draws the open item's date group first and focuses it", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
   mockApi.folderEntries.mockResolvedValue({entries:[], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
-  // 600 date groups are revealed 120 per frame, so the last item's card only
-  // mounts after several frames; each frame advances the clock by a second.
+  // 600 one-item date groups are normally revealed 120 per frame; the item
+  // that was open sits in group 301, far past the first batch.
   const day = (i:number) => new Date(Date.UTC(2020, 0, 1) + i * 86_400_000).toISOString();
   const media = Array.from({length:600}, (_, i) => ({id:1000 + i, folderId:20, relativePath:`Photos/${i}.jpg`, name:`${i}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:day(i)}));
-  const target = media[599];
+  const target = media[300];
   mockApi.folderMedia.mockResolvedValue(media);
   mockApi.media.mockResolvedValue(target);
-  const centred:string[] = [];
+  // Cards on screen at the moment the item is first centred.
+  let cardsWhenCentred = -1;
   (HTMLElement.prototype as unknown as {scrollIntoView:unknown}).scrollIntoView = function(this:HTMLElement, options:ScrollIntoViewOptions) {
-    if (options?.block === "center" && this.dataset.kbId) centred.push(this.dataset.kbId);
+    if (options?.block === "center" && this.dataset.kbId === `m${target.id}` && cardsWhenCentred < 0) cardsWhenCentred = document.querySelectorAll("[data-kb-card]").length;
   };
-  let clock = 0;
-  const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
-  const realRaf = window.requestAnimationFrame;
-  window.requestAnimationFrame = (callback:FrameRequestCallback) => realRaf(time => { clock += 1000; callback(time); });
   try {
     render(<MemoryRouter initialEntries={[`/library/1/view/20?item=${target.id}&root=20`]}><App/></MemoryRouter>);
     const breadcrumb = await screen.findByLabelText("Breadcrumb");
     await waitFor(() => expect(breadcrumb).toHaveTextContent(target.name));
     fireEvent.click(screen.getByRole("link", {name:"Family"}));
-    await waitFor(() => expect(centred).toContain(`m${target.id}`), {timeout:4000});
+    await waitFor(() => expect(cardsWhenCentred).toBeGreaterThan(0));
+    // Drawn straight through the target's group, not after later batches.
+    expect(cardsWhenCentred).toBe(301);
     expect(document.querySelector(`[data-kb-id="m${target.id}"]`)).toHaveClass("kb-focus");
   } finally {
-    window.requestAnimationFrame = realRaf;
-    now.mockRestore();
     delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
   }
 });

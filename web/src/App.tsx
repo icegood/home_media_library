@@ -2648,7 +2648,10 @@ function LibraryTimeline() {
   // scrolling never has to lay out every tile up front; offscreen groups are
   // additionally skipped by the compositor via content-visibility.
   const groups = useMemo(() => groupByDate(sorted), [sorted]);
-  const visibleGroups = useProgressiveReveal(groups, 120);
+  // Coming back from the viewer, the date group holding the item that was
+  // open is drawn in the first frame instead of after every group above it.
+  const returnTarget = useReturnTarget();
+  const visibleGroups = useProgressiveReveal(groups, 120, useMemo(() => groupsThrough(groups, returnTarget), [groups, returnTarget]));
   const [selected, setSelected] = useState<ID[]>([]);
   const gridRef = useRef<HTMLDivElement|null>(null);
   const [favItem, setFavItem] = useState<Media|null>(null);
@@ -2658,18 +2661,16 @@ function LibraryTimeline() {
     onToggle: id => { if (id.startsWith("m")) toggleSelected(setSelected)(Number(id.slice(1))); },
     onFavorite: id => { if (id.startsWith("m")) { const found = items.find(m => `m${m.id}` === id); if (found) setFavItem(found); } }
   });
-  // Leaving the viewer via the breadcrumb hands back the item that was open, so
-  // the timeline reopens focused on it. Progressive group rendering can delay
-  // the card, so this retries as more date groups are revealed.
-  const returnToMediaId = useReturnMediaId();
+  // Leaving the viewer (breadcrumb or Back) hands back the item that was open,
+  // so the timeline reopens focused on it — as soon as its date group is drawn.
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
-    if (returnToMediaId == null || consumedReturnKey.current === location.key) return;
-    if (!items.some(item => item.id === returnToMediaId)) return;
+    if (returnTarget == null || consumedReturnKey.current === location.key) return;
+    if (!visibleGroups.some(group => group.items.some(item => item.id === returnTarget))) return;
     consumedReturnKey.current = location.key;
-    consumeReturnMediaId(returnToMediaId);
-    kb.focus(`m${returnToMediaId}`, true);
-  }, [items, visibleGroups, returnToMediaId, location.key, kb.focus]);
+    consumeReturnMediaId(returnTarget);
+    kb.focus(`m${returnTarget}`, true);
+  }, [visibleGroups, returnTarget, location.key, kb.focus]);
   function applyBulkGPS(patches:BulkPatch[]) {
     setItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -2985,18 +2986,7 @@ function FavoriteViewPage() {
     onToggle: id => { const num = Number(id.slice(1)); if (id.startsWith("f")) toggleSelected(setSelectedFolders)(num); else toggleSelected(setSelected)(num); },
     onFavorite: id => void keyboardFavorite(id)
   });
-  // Returning from the viewer focuses the item that was open in this view. It
-  // lives in `items` in folders mode and in `mediaItems` in timeline mode.
-  const returnToMediaId = useReturnMediaId();
-  const consumedReturnKey = useRef<string|null>(null);
-  useEffect(() => {
-    if (returnToMediaId == null || consumedReturnKey.current === location.key) return;
-    const present = mediaItems.some(item => item.id === returnToMediaId) || items.some(item => !item.isFolder && item.id === returnToMediaId);
-    if (!present) return;
-    consumedReturnKey.current = location.key;
-    consumeReturnMediaId(returnToMediaId);
-    kb.focus(`m${returnToMediaId}`, true);
-  }, [items, mediaItems, returnToMediaId, location.key, kb.focus]);
+  const returnTarget = useReturnTarget();
   async function keyboardFavorite(raw:string) {
     if (!Number.isFinite(favoriteViewId)) return;
     const num = Number(raw.slice(1));
@@ -3042,7 +3032,21 @@ function FavoriteViewPage() {
   ), [filteredItems]);
   const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => kinds.includes(m.kind as MediaKind));
   const sortedMedia = useMemo(() => sortMedia(filteredMedia, sort), [filteredMedia, sort]);
-  const visibleMediaGroups = useProgressiveReveal(useMemo(() => groupByDate(sortedMedia), [sortedMedia]), 120);
+  const mediaGroups = useMemo(() => groupByDate(sortedMedia), [sortedMedia]);
+  const visibleMediaGroups = useProgressiveReveal(mediaGroups, 120, useMemo(() => groupsThrough(mediaGroups, returnTarget), [mediaGroups, returnTarget]));
+  // Returning from the viewer focuses the item that was open in this view. It
+  // lives in `items` in folders mode and in `mediaItems` in timeline mode.
+  // In timeline mode it waits until the item's date group is drawn (that group
+  // is revealed first, see visibleMediaGroups).
+  const consumedReturnKey = useRef<string|null>(null);
+  useEffect(() => {
+    if (returnTarget == null || consumedReturnKey.current === location.key) return;
+    const present = visibleMediaGroups.some(group => group.items.some(item => item.id === returnTarget)) || items.some(item => !item.isFolder && item.id === returnTarget);
+    if (!present) return;
+    consumedReturnKey.current = location.key;
+    consumeReturnMediaId(returnTarget);
+    kb.focus(`m${returnTarget}`, true);
+  }, [items, visibleMediaGroups, returnTarget, location.key, kb.focus]);
   function applyBulkGPS(patches:BulkPatch[]) {
     setMediaItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -3268,10 +3272,7 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
       findCard()?.scrollIntoView?.({block:"nearest", inline:"nearest"});
       return;
     }
-    // A big timeline mounts its cards over many frames, so the card can appear
-    // seconds after arrival: wait up to 20 s for it, then let it settle for 3 s.
     const started = performance.now();
-    let foundAt = 0;
     let steady = 0;
     let frame = 0;
     let centred = false;
@@ -3284,13 +3285,11 @@ function useGridKeyboard(options:{enabled:boolean; containerRef:React.RefObject<
     const tick = () => {
       const card = findCard();
       if (card) {
-        if (!foundAt) foundAt = performance.now();
         const rect = card.getBoundingClientRect();
         if (!centred || rect.top < 0 || rect.bottom > window.innerHeight) { card.scrollIntoView?.({block:"center", inline:"nearest"}); centred = true; steady = 0; }
         else steady++;
       }
-      const now = performance.now();
-      if (steady >= 15 || (foundAt ? now - foundAt > 3000 : now - started > 20_000)) { stop(); return; }
+      if (steady >= 15 || performance.now() - started > 3000) { stop(); return; }
       frame = requestAnimationFrame(tick);
     };
     userEvents.forEach(type => window.addEventListener(type, stop, {passive:true}));
@@ -5886,7 +5885,9 @@ function loginErrorMessage(cause:unknown) {
   return message;
 }
 
-function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] {
+// `atLeast` reveals that many items at once (e.g. through the date group that
+// holds the item to return to), so the batches never delay it.
+function useProgressiveReveal<T>(items:readonly T[], batch = 200, atLeast = 0): readonly T[] {
   const [count, setCount] = useState(() => Math.min(batch, items.length));
   const currentRef = useRef(count);
   useEffect(() => {
@@ -5903,7 +5904,22 @@ function useProgressiveReveal<T>(items:readonly T[], batch = 200): readonly T[] 
     if (currentRef.current < items.length) frame = requestAnimationFrame(step);
     return () => { alive = false; cancelAnimationFrame(frame); };
   }, [items, batch]);
-  return items.slice(0, count);
+  return items.slice(0, Math.max(count, atLeast));
+}
+
+// The media to return to on this arrival, fixed per location so that
+// consuming it does not shrink an early reveal made for it.
+function useReturnTarget():ID|null {
+  const location = useLocation();
+  const returnToMediaId = useReturnMediaId();
+  const ref = useRef<{key:string; id:ID|null}|null>(null);
+  if (ref.current?.key !== location.key) ref.current = {key:location.key, id:returnToMediaId};
+  return ref.current.id;
+}
+
+// Number of date groups to reveal at once so the group holding `id` is drawn.
+function groupsThrough(groups:readonly {items:readonly {id:ID}[]}[], id:ID|null) {
+  return id == null ? 0 : groups.findIndex(group => group.items.some(item => item.id === id)) + 1;
 }
 
 // Mapy.com REST API tiles (api.mapy.com/v1/maptiles). Basic and Outdoor have
