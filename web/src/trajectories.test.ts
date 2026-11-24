@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildTrajectories, trajectoryArrows } from "./App";
+import { buildTrajectories, clusterMedia, trajectoryArrows } from "./App";
 import type { MapMedia } from "./types";
 
 function item(partial:Partial<MapMedia> & {id:number}):MapMedia {
@@ -129,5 +129,25 @@ describe("trajectoryArrows", () => {
     expect(trajectoryArrows([[50, 30], [50, 30]], 16, false)).toEqual([]);
     expect(trajectoryArrows([[50, 30], [50, 30.01]], 1, false)).toEqual([]);
     expect(trajectoryArrows([[50, 30], [50, 30.01]], 16, true)[0].position[1]).toBeCloseTo(30.0075, 9);
+  });
+});
+
+describe("clusterMedia", () => {
+  // A photo and a video ~2.6 m apart, taken an hour apart on one trajectory.
+  const photo = item({id: 1, gps: "50.456396,30.512244"});
+  const video = item({id: 2, gps: "50.456419,30.512238", name: "2.mp4", kind: "video"});
+  const twin = item({id: 3, gps: "50.456396,30.512244"});
+
+  test("groups nearby points while zoomed out", () => {
+    expect(clusterMedia([photo, video], 16)).toHaveLength(1);
+  });
+
+  test("separates nearby points close in, keeping identical coordinates together", () => {
+    const clusters = clusterMedia([photo, video, twin], 18);
+    expect(clusters.map(cluster => cluster.items.map(entry => entry.id).sort())).toEqual([[1, 3], [2]]);
+  });
+
+  test("separates nearby points at the map's maximum zoom", () => {
+    expect(clusterMedia([photo, video], 17, 17)).toHaveLength(2);
   });
 });

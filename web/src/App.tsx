@@ -2582,7 +2582,7 @@ function Browser() {
       kb.focus(`m${returnToMediaId}`, true);
     }
   }, [entries, returnToFolderId, returnToMediaId, location.key, kb.focus]);
-  function applyBulkGPS(patches:BulkPatch[]) {
+  function applyBulkPatch(patches:BulkPatch[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
       const p = patches.find(patch => patch.id === entry.media?.id);
@@ -2606,7 +2606,7 @@ function Browser() {
     <span className="bar-sep"/>
     <ThumbSizeBar/>
     <span className="bar-sep"/>
-    <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
+    <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkPatch}/></div></div>
     <VirtualEntries entries={visibleEntries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam, ...(kind !== "all" ? {kind} : {})} : kind !== "all" ? {kind} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone} kbFocusId={kb.focusId} kbBand={kb.bandIds} kbFocus={kb.focus}/>
     {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
     {favFolder && createPortal(<FolderFavoriteViewChooser folderId={favFolder.id} folderName={favFolder.name} onChange={() => setFavFolder(null)} onClose={() => setFavFolder(null)}/>, document.body)}
@@ -2671,7 +2671,7 @@ function LibraryTimeline() {
     consumeReturnMediaId(returnTarget);
     kb.focus(`m${returnTarget}`, true);
   }, [visibleGroups, returnTarget, location.key, kb.focus]);
-  function applyBulkGPS(patches:BulkPatch[]) {
+  function applyBulkPatch(patches:BulkPatch[]) {
     setItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
       return p ? mergeBulkPatch(item, p) : item;
@@ -2694,7 +2694,7 @@ function LibraryTimeline() {
       <span className="bar-sep"/>
       <ThumbSizeBar/>
       <span className="bar-sep"/>
-    <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/></div></div>
+    <BulkGPSBar items={filtered} selectedIds={selected} onSelectedIds={setSelected} onUpdated={applyBulkPatch}/></div></div>
     {loading ? <div className="empty-state">
       <p>Loading this folder’s timeline…</p>
       <button type="button" className="button-like active" onClick={() => navigate(-1)}>Cancel and go back</button>
@@ -3047,7 +3047,7 @@ function FavoriteViewPage() {
     consumeReturnMediaId(returnTarget);
     kb.focus(`m${returnTarget}`, true);
   }, [items, visibleMediaGroups, returnTarget, location.key, kb.focus]);
-  function applyBulkGPS(patches:BulkPatch[]) {
+  function applyBulkPatch(patches:BulkPatch[]) {
     setMediaItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
       return p ? mergeBulkPatch(item, p) : item;
@@ -3069,7 +3069,7 @@ function FavoriteViewPage() {
       <span className="bar-sep"/>
       <ThumbSizeBar/>
       <span className="bar-sep"/>
-      <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkGPS}/>
+      <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkPatch}/>
     </div></div>
     <ErrorPopup message={error} onClose={() => setError("")}/>
     {!loaded && <div className="empty-state"><p>Loading…</p></div>}
@@ -6893,7 +6893,7 @@ function MapItems({items,focused,returnFocus,pickedGPS,selectMode,onPick,onSelec
     const pt = parseGPS(gps);
     if (pt) map.setView(pt, Math.max(map.getZoom(), 15));
   }
-  const clusters = useMemo(() => clusterMedia(markerItems, zoom), [markerItems, zoom]);
+  const clusters = useMemo(() => clusterMedia(markerItems, zoom, map.getMaxZoom()), [markerItems, zoom, map]);
   const visibleClusters = useProgressiveReveal(clusters, 200);
   useEffect(() => {
     onRenderProgress(visibleClusters.length < clusters.length);
@@ -7281,13 +7281,18 @@ function toSegment(current:{points:[number,number][]; ids:number[]; start:MapMed
   return {points: current.points, ids: current.ids, start: current.start, name};
 }
 
-function clusterMedia(items:MapMedia[], zoom:number) {
+// Close in (zoom 18+ or the map's max zoom) only media at the very same
+// coordinates share a marker: nearby points metres apart (e.g. a photo and a
+// video taken at the same spot an hour later on a trajectory) stay separate.
+export const EXACT_CLUSTER_ZOOM = 18;
+export function clusterMedia(items:readonly MapMedia[], zoom:number, maxZoom = Infinity) {
+  const exact = zoom >= Math.min(EXACT_CLUSTER_ZOOM, maxZoom);
   const cell = clusterCellSize(zoom);
   const grouped = new Map<string,{items:MapMedia[];lat:number;lng:number}>();
   for (const item of items) {
     const gps = parseGPS(item.gps);
     if (!gps) continue;
-    const key = `${Math.round(gps[0]/cell)},${Math.round(gps[1]/cell)}`;
+    const key = exact ? `${gps[0]},${gps[1]}` : `${Math.round(gps[0]/cell)},${Math.round(gps[1]/cell)}`;
     const existing = grouped.get(key) ?? {items:[], lat:0, lng:0};
     existing.items.push(item); existing.lat += gps[0]; existing.lng += gps[1];
     grouped.set(key, existing);
