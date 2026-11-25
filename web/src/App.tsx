@@ -3867,6 +3867,9 @@ function MediaCard({item,view,libraryId,favoriteViewId,trajectoryFolderId,select
     <TrajectoryControls item={item} folderId={trajectoryFolderId ?? item.folderId}/>
     {item.notes?.trim() && <NotesButton className="card-notes-button" title={item.name} entries={[{id:item.id, name:item.name, notes:item.notes.trim()}]}/>}
   </article>;
+    {item.gps?.trim() && <Link to={`/map?item=${item.id}&${favoriteViewId != null ? `inFavorite=${encodeURIComponent(String(favoriteViewId))}` : libraryId != null ? mapContextOf(libraryId, item, null) : ""}`}
+      className={`card-gps-button${item.notes?.trim() ? " below-notes" : ""}`} aria-label="Open on map" title="Open on map"
+      onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>📍</Link>}
 }
 
 type NotesEntry = {id:ID; name:string; takenAt?:string; notes:string};

@@ -616,6 +616,12 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .card-notes-button { position: absolute; z-index: 6; left: 10px; top: calc(10px + 46px); width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 17px; line-height: 1; box-shadow: var(--shadow-md); cursor: pointer; }
 .card-notes-button:hover { background: var(--handle-bg); color: white; }
 .list-view .card-notes-button { left: auto; right: 56px; top: 50%; transform: translateY(-50%); }
+/* GPS: a card link to the item on the map, under the notes button (or in its place). */
+.card-gps-button { position: absolute; z-index: 6; left: 10px; top: calc(10px + 46px); width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 17px; line-height: 1; box-shadow: var(--shadow-md); cursor: pointer; text-decoration: none; }
+.card-gps-button.below-notes { top: calc(10px + 92px); }
+.card-gps-button:hover { background: var(--handle-bg); color: white; }
+.list-view .card-gps-button { left: auto; right: 56px; top: 50%; transform: translateY(-50%); }
+.list-view .card-gps-button.below-notes { right: 102px; }
 .notes-popover { position: fixed; z-index: 9000; max-height: min(60vh, 480px); display: flex; flex-direction: column; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-md); }
 .notes-popover-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .notes-popover-head strong { min-width: 0; overflow-wrap: anywhere; }
