@@ -9,6 +9,7 @@ import L from "leaflet";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { api, MAX_VIDEO_THUMBNAILS, type MediaAdjust, type MapTileSource, type POISource, type UserSettings as UserSettingsPayload } from "./api";
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
+import { medianTakenDate, nearestWaybackRelease, type WaybackRelease, waybackTileUrl } from "./wayback";
 import { bearingDegrees, compassPoint, distanceMeters, formatDistance, loadWalkRadius, type MyPosition, parseWalkRadius, saveWalkRadius, useMyPosition } from "./walking";
 import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapCluster, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
@@ -3866,10 +3867,10 @@ function MediaCard({item,view,libraryId,favoriteViewId,trajectoryFolderId,select
     <FavoriteButton item={item} viewId={favoriteViewId} onChange={onFavoriteChange}/>
     <TrajectoryControls item={item} folderId={trajectoryFolderId ?? item.folderId}/>
     {item.notes?.trim() && <NotesButton className="card-notes-button" title={item.name} entries={[{id:item.id, name:item.name, notes:item.notes.trim()}]}/>}
-  </article>;
     {item.gps?.trim() && <Link to={`/map?item=${item.id}&${favoriteViewId != null ? `inFavorite=${encodeURIComponent(String(favoriteViewId))}` : libraryId != null ? mapContextOf(libraryId, item, null) : ""}`}
       className={`card-gps-button${item.notes?.trim() ? " below-notes" : ""}`} aria-label="Open on map" title="Open on map"
       onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>📍</Link>}
+  </article>;
 }
 
 type NotesEntry = {id:ID; name:string; takenAt?:string; notes:string};
@@ -5966,7 +5967,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const [rendering, setRendering] = useState(false);
   const [mapError, setMapError] = useState("");
   const mapRef = useRef<L.Map|null>(null);
-  const [query] = useSearchParams();
+  const [query, setQuery] = useSearchParams();
   const libraryParam = query.get("library");
   const folderParam = query.get("folder");
   const favoriteParam = query.get("favorite");
@@ -6127,6 +6128,27 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const provider = source.split(":")[0];
   const subStyle = source.split(":")[1] ?? "";
   const isSatellite = source === "esri:satellite" || source === "mapy:aerial";
+  // Esri satellite can show a dated Wayback release instead of the latest
+  // imagery: the date lives in the URL (imagery=YYYY-MM-DD or "latest"); a
+  // folder map without one starts at the release nearest its photos' dates.
+  const esriSatellite = source === "esri:satellite";
+  const [waybackReleases, setWaybackReleases] = useState<WaybackRelease[]>([]);
+  const [waybackError, setWaybackError] = useState(false);
+  useEffect(() => {
+    if (!esriSatellite) return;
+    let cancelled = false;
+    api.waybackReleases().then(releases => { if (!cancelled) { setWaybackReleases(releases); setWaybackError(false); } })
+      .catch(() => { if (!cancelled) setWaybackError(true); });
+    return () => { cancelled = true; };
+  }, [esriSatellite]);
+  const imageryParam = query.get("imagery") ?? "";
+  const photosDate = useMemo(() => folderScoped ? medianTakenDate(items) : "", [folderScoped, items]);
+  const imageryRelease = !esriSatellite || imageryParam === "latest" ? undefined
+    : imageryParam ? waybackReleases.find(entry => entry.date === imageryParam) ?? nearestWaybackRelease(waybackReleases, imageryParam)
+    : photosDate ? nearestWaybackRelease(waybackReleases, photosDate) : undefined;
+  function setImagery(value:string) {
+    setQuery(current => { const next = new URLSearchParams(current); next.set("imagery", value); return next; }, {replace:true});
+  }
   // In dark mode treat a non-dark CARTO basemap as native dark so it does not
   // render as a light map with only a filter overlaid.
   const effectiveSubStyle = darkMode && provider === "carto" && subStyle !== "dark" && subStyle !== "light" ? "dark" : subStyle;
@@ -6142,12 +6164,12 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       ? mapyTileUrl(subStyle, mapyKey)
     : esriTiles
       ? isSatellite
-        ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        ? imageryRelease ? waybackTileUrl(imageryRelease.release) : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
         : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
       : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
   const tileAttribution = cartoTiles ? "&copy; OpenStreetMap contributors &copy; CARTO"
     : mapyTiles ? MAPY_ATTRIBUTION
-    : esriTiles ? "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics"
+    : esriTiles ? `Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics${imageryRelease ? ` — Wayback ${imageryRelease.date}` : ""}`
     : "&copy; OpenStreetMap contributors";
   // Mapy.com serves tiles up to zoom 20; deeper levels upscale them.
   const mapMaxZoom = Math.min(mapyTiles ? 20 : 24, Math.max(1, Math.round(tileSettings.maxZoom || 19)));
@@ -6214,6 +6236,13 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
           document.body
         )}
       </span>
+      {esriSatellite && waybackReleases.length > 0 && <span className="bar-group">
+        <BarSelect ariaLabel="Satellite imagery date" value={imageryRelease?.date ?? "latest"} options={[
+          {value:"latest", label:"Imagery · latest"},
+          ...waybackReleases.map(entry => ({value:entry.date, label:`Imagery · ${entry.date}`})),
+        ]} onChange={setImagery}/>
+      </span>}
+      {esriSatellite && waybackError && <span className="map-render-status poi-error" role="alert">Could not load satellite imagery dates.</span>}
       {(walkMode || showPOIs) && <span className="bar-group">
         {walkMode && <WalkRadiusInput radius={walkRadius} onChange={meters => { setWalkRadius(meters); saveWalkRadius(meters); }}/>}
         {showPOIs && <button ref={poiDropdownRef} type="button" className="secondary poi-cat-trigger" aria-haspopup="dialog" aria-expanded={poiDropdownOpen} title="Pick which places to show" onClick={() => setPoiDropdownOpen(value => !value)}>
@@ -6235,7 +6264,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
     <div className="map-stage">
       {(mapError) && <div className="map-notice" role="alert">{mapError}</div>}
       <MapContainer ref={mapRef} center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className={`map${filterDark ? " dark-tile-filter" : ""}`}>
-        <TileLayer key={`${theme}-${mapyTiles ? source : isSatellite ? "satellite" : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}
+        <TileLayer key={`${theme}-${mapyTiles ? source : isSatellite ? `satellite-${imageryRelease?.release ?? "latest"}` : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}
           maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>
         {source === "mapy:aerial" && <TileLayer key={`${theme}-mapy-names`} url={mapyTileUrl("names-overlay", mapyKey)} maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>}
         {mapyTiles && <MapyLogo/>}

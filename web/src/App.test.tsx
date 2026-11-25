@@ -583,6 +583,34 @@ test("map shows Mapy.com aerial imagery with its labels overlay, logo and copyri
   expect(document.querySelector(".leaflet-control-attribution")?.textContent).toContain("Seznam.cz");
 });
 
+test("Esri satellite map offers dated Wayback imagery, defaulting to the release nearest the folder's photos", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  mockApi.map.mockResolvedValue([
+    {id:1, libraryId:1, folderId:2, relativePath:"a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:1, metadata:{}, gps:"50.45,30.52", takenAt:"2020-08-02T10:00:00Z"},
+    {id:2, libraryId:1, folderId:2, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:1, metadata:{}, gps:"50.46,30.52", takenAt:"2020-08-02T11:00:00Z"},
+  ]);
+  mockApi.userSettings.mockResolvedValue({theme:"light", language:"auto", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:10000, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"esri:satellite", mapTileProviderDark:"osm", mapMaxZoom:19, mapTileProviders:{}});
+  render(<MemoryRouter initialEntries={["/map?library=1&folder=2"]}><App/></MemoryRouter>);
+  const tileSource = () => Array.from(document.querySelectorAll<HTMLImageElement>("img.leaflet-tile")).map(tile => tile.src);
+  const picker = await screen.findByRole("combobox", {name:"Satellite imagery date"});
+  expect(picker).toHaveTextContent("Imagery · 2020-07-29");
+  await waitFor(() => expect(tileSource().some(src => src.includes("wayback.maptiles.arcgis.com/") && src.includes("/MapServer/tile/4230/"))).toBe(true));
+  fireEvent.click(picker);
+  fireEvent.click(await screen.findByRole("option", {name:"Imagery · latest"}));
+  await waitFor(() => expect(tileSource().some(src => src.startsWith("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/"))).toBe(true));
+  expect(tileSource().some(src => src.includes("wayback.maptiles.arcgis.com/"))).toBe(false);
+  expect(screen.getByRole("combobox", {name:"Satellite imagery date"})).toHaveTextContent("Imagery · latest");
+});
+
+test("street maps show no satellite imagery date picker", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"ice", role:"regular"});
+  mockApi.map.mockResolvedValue([]);
+  render(<MemoryRouter initialEntries={["/map?library=1&folder=2"]}><App/></MemoryRouter>);
+  await screen.findByRole("button", {name:/Layers/});
+  expect(screen.queryByRole("combobox", {name:"Satellite imagery date"})).not.toBeInTheDocument();
+  expect(mockApi.waybackReleases).not.toHaveBeenCalled();
+});
+
 test("Mapy.com retina tiles only for the basic and outdoor map sets", () => {
   expect(mapyTileUrl("basic", "key", true)).toBe("https://api.mapy.com/v1/maptiles/basic/256@2x/{z}/{x}/{y}?apikey=key");
   expect(mapyTileUrl("outdoor", "key", true)).toContain("/outdoor/256@2x/");

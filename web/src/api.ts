@@ -1,6 +1,10 @@
+import { parseWaybackConfig, WAYBACK_CONFIG_URL, type WaybackRelease } from "./wayback";
 import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, KindStats, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, MapView, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
+
+// The Wayback release list changes a few times a year: fetch it once per page.
+let waybackReleasesPromise:Promise<WaybackRelease[]>|null = null;
 
 try {
   localStorage.removeItem("token");
@@ -186,6 +190,13 @@ export const api = {
   thumbnailUrl: (id:ID, index = 0) => authUrl(`/media/${id}/thumbnail?index=${index}`),
   folderThumbnailUrl: (id:ID) => authUrl(`/folders/${id}/thumbnail`),
   videoThumbnails: (id:ID) => call<VideoThumbnail[]>(`/media/${id}/thumbnails`),
+  waybackReleases():Promise<WaybackRelease[]> {
+    waybackReleasesPromise ??= fetch(WAYBACK_CONFIG_URL, {headers:{Accept:"application/json"}}).then(async response => {
+      if (!response.ok) throw new Error(`Imagery archive returned HTTP ${response.status}`);
+      return parseWaybackConfig(await response.json());
+    }).catch(cause => { waybackReleasesPromise = null; throw cause; });
+    return waybackReleasesPromise;
+  },
   async geocode(query:string) {
     const params = new URLSearchParams({q:query, format:"jsonv2", limit:"5", "accept-language":navigator.language ?? "en"});
     const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {headers:{Accept:"application/json"}});

@@ -370,6 +370,7 @@ function createMockApi() {
       return JSON.parse(JSON.stringify(filtered));
     }),
     geocode: vi.fn(async () => []),
+    waybackReleases: vi.fn(async () => [{release:64776, date:"2023-08-31"}, {release:5000, date:"2020-09-02"}, {release:4230, date:"2020-07-29"}]),
     updateGPS: vi.fn(async (id:number, gps:string|null) => {
       const row = state.media.get(Number(id));
       if (!row) throw new Error(`media ${id} not found`);

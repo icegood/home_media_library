@@ -250,6 +250,9 @@ test("%s templates translate the map title and nested error messages", () => {
   installDomTranslation();
   const de = translateSnippet(`<a>Map of Family</a>`);
   expect(de.querySelector("a")!.textContent).toBe("Karte von „Family“");
+  const imagery = translateSnippet(`<span>Imagery · latest</span><b>Imagery · 2020-07-29</b>`);
+  expect(imagery.querySelector("span")!.textContent).toBe("Bilder · neueste");
+  expect(imagery.querySelector("b")!.textContent).toBe("Bilder · 2020-07-29");
 });
 
 test("attribute templates win over generic verb composites and confirm texts translate", async () => {
