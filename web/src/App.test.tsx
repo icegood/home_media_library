@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -37,6 +37,7 @@ beforeEach(() => {
   // implementation, so per-test overrides cannot leak between tests.
   resetMockApi();
   resetFolderEntriesCache();
+  resetTimelineMediaCacheForTests();
   (window as any).matchMedia = undefined;
   localStorage.clear();
   sessionStorage.clear();
@@ -4099,6 +4100,41 @@ test("going up from a subfolder timeline focuses that subfolder's first item in 
   await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull());
   await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).toHaveClass("kb-focus"));
   delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
+});
+
+test("Back to a timeline seen a moment ago shows its cached media and focuses at once, then refreshes quietly", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockImplementation((_libraryId:number, folderId:number) => Promise.resolve({entries:[], chain:folderId === 21
+    ? [{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}, {id:21, parentId:20, relativePath:"Photos/Trip", name:"Trip"}]
+    : [{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]}));
+  const item = (id:number, folderId:number, day:number) => ({id, folderId, relativePath:`${id}.jpg`, name:`${id}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:`2020-01-${String(day).padStart(2, "0")}T10:00:00Z`});
+  const trip = [item(200, 21, 3)];
+  const parent = [item(100, 20, 1), ...trip];
+  let parentCalls = 0;
+  let releaseRefresh:(() => void)|null = null;
+  mockApi.folderMedia.mockImplementation((_libraryId:number, folderId:number) => {
+    if (folderId === 21) return Promise.resolve(trip);
+    parentCalls++;
+    if (parentCalls === 1) return Promise.resolve(parent);
+    return new Promise(resolve => { releaseRefresh = () => resolve(parent); });
+  });
+  function Nav() {
+    const navigate = useNavigate();
+    return <><button type="button" onClick={() => navigate("/library/1/timeline/21")}>To trip</button><button type="button" onClick={() => navigate(-1)}>History back</button></>;
+  }
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/><Nav/></MemoryRouter>);
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull());
+  fireEvent.click(screen.getByRole("button", {name:"To trip"}));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).toBeNull());
+  fireEvent.click(screen.getByRole("button", {name:"History back"}));
+  // Focused from the cached list while the refresh is still outstanding.
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).toHaveClass("kb-focus"));
+  expect(parentCalls).toBe(2);
+  expect(releaseRefresh).not.toBeNull();
+  await act(async () => { releaseRefresh!(); await Promise.resolve(); });
+  expect(document.querySelector('[data-kb-id="m200"]')).toHaveClass("kb-focus");
+  expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull();
 });
 
 test("timeline route renders the folder timeline with breadcrumb trail", async () => {

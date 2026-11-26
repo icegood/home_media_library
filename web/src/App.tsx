@@ -327,6 +327,17 @@ let lastBrowsedFolderId:ID|null = null;
 // in the ancestor's order, since a timeline has no folder card to focus.
 let lastTimelineItems:{folderId:ID|null; ids:Set<ID>}|null = null;
 
+// The media lists of the last few timelines (library/folder key), so going
+// back to one shows it at once instead of waiting seconds for a big list.
+const TIMELINE_MEDIA_CACHE_SIZE = 2;
+const timelineMediaCache = new Map<string, {media:Media[]; json:string}>();
+function rememberTimelineMedia(key:string, media:Media[], json:string) {
+  timelineMediaCache.delete(key);
+  timelineMediaCache.set(key, {media, json});
+  while (timelineMediaCache.size > TIMELINE_MEDIA_CACHE_SIZE) timelineMediaCache.delete(timelineMediaCache.keys().next().value!);
+}
+export function resetTimelineMediaCacheForTests() { timelineMediaCache.clear(); }
+
 // The subfolder timeline this timeline was left for, fixed per location (read
 // before this timeline records its own media as the last shown).
 function useReturnTimelineItems(folderId:ID|null) {
@@ -2683,13 +2694,23 @@ function LibraryTimeline() {
   useEffect(() => {
     if (!Number.isFinite(libraryId)) return;
     let cancelled = false;
-    setLoading(true);
-    setItems([]);
+    const key = `${libraryId}/${currentFolderId}`;
+    // A timeline seen a moment ago (e.g. Back from a subfolder's timeline)
+    // shows its cached media at once; the fresh list replaces it only if it
+    // differs, so the focus and drawn groups survive the refresh.
+    const cached = timelineMediaCache.get(key);
+    const show = (media:Media[]) => {
+      lastTimelineItems = {folderId:currentFolderId, ids:new Set(media.map(item => item.id))};
+      setItems(media); setLoadedFor(key); setLoading(false);
+    };
+    if (cached) show(cached.media);
+    else { setLoading(true); setItems([]); }
     const request = currentFolderId == null ? api.libraryMedia(libraryId) : api.folderMedia(libraryId, currentFolderId);
-    request.then(items => {
+    request.then(media => {
       if (cancelled) return;
-      lastTimelineItems = {folderId:currentFolderId, ids:new Set(items.map(item => item.id))};
-      setItems(items); setLoadedFor(`${libraryId}/${currentFolderId}`); setLoading(false);
+      const json = JSON.stringify(media);
+      rememberTimelineMedia(key, media, json);
+      if (!cached || cached.json !== json) show(media);
     })
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
