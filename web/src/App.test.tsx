@@ -4064,25 +4064,41 @@ test("going up from a subfolder timeline focuses that subfolder's first item in 
   const item = (id:number, folderId:number, day:number) => ({id, folderId, relativePath:`${id}.jpg`, name:`${id}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:`2020-01-${String(day).padStart(2, "0")}T10:00:00Z`});
   const parentOnly = [item(100, 20, 1), item(101, 20, 2)];
   const trip = [item(201, 21, 5), item(200, 21, 3)];
-  mockApi.folderMedia.mockImplementation((_libraryId:number, folderId:number) => Promise.resolve(folderId === 21 ? trip : [...parentOnly, ...trip]));
+  // The parent's list arrives late (a big folder), after the page already moved.
+  let parentLoaded = false;
+  mockApi.folderMedia.mockImplementation((_libraryId:number, folderId:number) => folderId === 21
+    ? Promise.resolve(trip)
+    : new Promise(resolve => setTimeout(() => { parentLoaded = true; resolve([...parentOnly, ...trip]); }, 300)));
+  // Centring must happen on the parent's card, once the parent's media are on screen.
+  const centred:string[] = [];
+  (HTMLElement.prototype as unknown as {scrollIntoView:unknown}).scrollIntoView = function(this:HTMLElement, options:ScrollIntoViewOptions) {
+    if (options?.block === "center") centred.push(`${this.dataset.kbId}:${parentLoaded ? "parent" : "child"}`);
+  };
   function HistoryBack() {
     const navigate = useNavigate();
     return <button type="button" onClick={() => navigate(-1)}>History back</button>;
   }
-  const first = render(<MemoryRouter initialEntries={["/library/1/timeline/20", "/library/1/timeline/21"]} initialIndex={1}><App/><HistoryBack/></MemoryRouter>);
+  const first = render(<MemoryRouter initialEntries={["/library/1/timeline/21"]}><App/><HistoryBack/></MemoryRouter>);
+  first.unmount();
+  centred.length = 0;
+  const second = render(<MemoryRouter initialEntries={["/library/1/timeline/20", "/library/1/timeline/21"]} initialIndex={1}><App/><HistoryBack/></MemoryRouter>);
   await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).not.toBeNull());
+  centred.length = 0;
+  parentLoaded = false;
   fireEvent.click(screen.getByRole("button", {name:"History back"}));
   // Oldest first: 200 (Jan 3) is the trip's first item in the parent's order.
   await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).toHaveClass("kb-focus"));
   await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull());
   expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
-  first.unmount();
+  expect(centred[0]).toBe("m200:parent");
+  second.unmount();
   // The breadcrumb up to the parent timeline does the same.
   render(<MemoryRouter initialEntries={["/library/1/timeline/21"]}><App/></MemoryRouter>);
   await waitFor(() => expect(document.querySelector('[data-kb-id="m201"]')).not.toBeNull());
   fireEvent.click(within(screen.getByLabelText("Breadcrumb")).getByRole("link", {name:"Photos"}));
   await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull());
   await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).toHaveClass("kb-focus"));
+  delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
 });
 
 test("timeline route renders the folder timeline with breadcrumb trail", async () => {

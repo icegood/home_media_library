@@ -2671,6 +2671,10 @@ function LibraryTimeline() {
   useSyncBrowserBarMetrics();
   const [items, setItems] = useState<Media[]>([]);
   const [loading, setLoading] = useState(true);
+  // Which folder `items` belong to: moving between folder timelines keeps
+  // this component, so for a moment `items` still hold the previous folder's.
+  const [loadedFor, setLoadedFor] = useState<string|null>(null);
+  const itemsCurrent = loadedFor === `${libraryId}/${currentFolderId}`;
   const [kinds, setKinds] = useState<MediaKind[]>(ALL_MEDIA_KINDS);
   const kind = kindsParam(kinds);
   const [sort, setSort] = useState<"desc"|"asc">("asc");
@@ -2685,7 +2689,7 @@ function LibraryTimeline() {
     request.then(items => {
       if (cancelled) return;
       lastTimelineItems = {folderId:currentFolderId, ids:new Set(items.map(item => item.id))};
-      setItems(items); setLoading(false);
+      setItems(items); setLoadedFor(`${libraryId}/${currentFolderId}`); setLoading(false);
     })
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -2727,11 +2731,11 @@ function LibraryTimeline() {
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
     if (returnTarget == null || consumedReturnKey.current === location.key) return;
-    if (returnGroup < 0 || !live.isLive(returnGroup)) return;
+    if (loading || !itemsCurrent || returnGroup < 0 || !live.isLive(returnGroup)) return;
     consumedReturnKey.current = location.key;
     consumeReturnMediaId(returnTarget);
     kb.focus(`m${returnTarget}`, true);
-  }, [live, returnGroup, returnTarget, location.key, kb.focus]);
+  }, [loading, itemsCurrent, live, returnGroup, returnTarget, location.key, kb.focus]);
   function applyBulkPatch(patches:BulkPatch[]) {
     setItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
