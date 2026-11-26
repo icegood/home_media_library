@@ -139,6 +139,34 @@ test("admin hidden folders: list with links, show again, hide from a pasted fold
   expect(mockApi.setFolderShowAsChild).toHaveBeenCalledTimes(2);
 });
 
+test("admins hide a folder from its parent right in the folder view; regular users have no such item", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:21, name:"Private", relativePath:"Photos/Private", type:"folder"},
+    {id:22, name:"Trip", relativePath:"Photos/Trip", type:"folder"}
+  ], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    const first = render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
+    await screen.findByText("Private");
+    fireEvent.click(screen.getByRole("button", {name:"Folder menu Private"}));
+    fireEvent.click(await screen.findByRole("menuitem", {name:"Hide from parent…"}));
+    expect(confirm.mock.calls[0][0]).toContain(`Hide folder "Private" from its parent?`);
+    await waitFor(() => expect(mockApi.setFolderShowAsChild).toHaveBeenCalledWith(21, false));
+    await waitFor(() => expect(screen.queryByText("Private")).not.toBeInTheDocument());
+    expect(screen.getByText("Trip")).toBeInTheDocument();
+    first.unmount();
+    mockApi.me.mockResolvedValue({id:2, login:"alice", role:"regular"});
+    render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
+    await screen.findByText("Private");
+    fireEvent.click(screen.getByRole("button", {name:"Folder menu Private"}));
+    await screen.findByRole("menuitem", {name:"Download as ZIP"});
+    expect(screen.queryByRole("menuitem", {name:"Hide from parent…"})).not.toBeInTheDocument();
+  } finally {
+    confirm.mockRestore();
+  }
+});
+
 test("folder references parse links, map links and ids", () => {
   expect(parseFolderReference("2397")).toBe(2397);
   expect(parseFolderReference(" /library/3/folder/2397 ")).toBe(2397);

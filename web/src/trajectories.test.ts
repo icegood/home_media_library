@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildTrajectories, clusterMedia, trajectoryArrows } from "./App";
+import { buildTrajectories, clusterMedia, trajectoryArrows, trajectorySpansDays, trajectoryStepLabel } from "./App";
 import type { MapMedia } from "./types";
 
 function item(partial:Partial<MapMedia> & {id:number}):MapMedia {
@@ -149,5 +149,26 @@ describe("clusterMedia", () => {
 
   test("separates nearby points at the map's maximum zoom", () => {
     expect(clusterMedia([photo, video], 17, 17)).toHaveLength(2);
+  });
+});
+
+describe("trajectory step labels", () => {
+  test("each point carries its photo time, in travel order", () => {
+    const segments = buildTrajectories([
+      item({id:2, gps:"10.1,10.1", takenAt:"2021-07-12T11:30:00"}),
+      item({id:1, gps:"10,10", takenAt:"2021-07-12T10:05:00", trajectoryStart:true}),
+      item({id:3, gps:"10.2,10.2", takenAt:"2021-07-12T14:05:00", trajectoryEnd:true}),
+    ]);
+    expect(segments[0].times).toEqual(["2021-07-12T10:05:00", "2021-07-12T11:30:00", "2021-07-12T14:05:00"]);
+  });
+
+  test("a step shows its number and the time of the latest photo it reaches; the date only over several days", () => {
+    expect(trajectoryStepLabel(3, "2021-07-12T14:05:00", false, "dmy")).toBe("3 · 14:05");
+    expect(trajectoryStepLabel(3, "2021-07-12T14:05:00", true, "dmy")).toBe("3 · 12.07 14:05");
+    expect(trajectoryStepLabel(3, "2021-07-12T14:05:00", true, "iso")).toBe("3 · 07-12 14:05");
+    expect(trajectoryStepLabel(3, "2021-07-12T14:05:00", true, "mdy")).toBe("3 · 07/12 2:05 PM");
+    expect(trajectoryStepLabel(4, "", false, "dmy")).toBe("4");
+    expect(trajectorySpansDays(["2021-07-12T10:00:00", "2021-07-12T23:00:00"])).toBe(false);
+    expect(trajectorySpansDays(["2021-07-12T10:00:00", "2021-07-13T09:00:00", ""])).toBe(true);
   });
 });

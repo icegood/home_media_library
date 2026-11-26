@@ -2721,7 +2721,7 @@ function Browser() {
     <ThumbSizeBar/>
     <span className="bar-sep"/>
     <BulkGPSBar items={mediaItems} selectedIds={selected} selectedFolders={selectedFolders} onSelectedIds={setSelected} onUpdated={applyBulkPatch}/></div></div>
-    <VirtualEntries entries={visibleEntries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam, ...(kind !== "all" ? {kind} : {})} : kind !== "all" ? {kind} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone} kbFocusId={kb.focusId} kbBand={kb.bandIds} kbFocus={kb.focus}/>
+    <VirtualEntries entries={visibleEntries} view={view} libraryId={libraryId} itemNav={favParam ? {fav:favParam, ...(kind !== "all" ? {kind} : {})} : kind !== "all" ? {kind} : undefined} selectedIds={selected} selectedFolderIds={selectedFolders} onToggleSelected={toggleSelected(setSelected)} onToggleFolderSelected={toggleSelected(setSelectedFolders)} onOpenFolder={entry => navigate(`/library/${libraryId}/folder/${entry.id}${favParam ? `?fav=${encodeURIComponent(favParam)}` : ""}`)} onFolderHidden={id => setEntries(current => current.filter(entry => entry.type !== "folder" || entry.id !== id))} onLoadMore={() => void loadMore()} moreLoading={entriesLoading} moreDone={entriesDone} kbFocusId={kb.focusId} kbBand={kb.bandIds} kbFocus={kb.focus}/>
     {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
     {favFolder && createPortal(<FolderFavoriteViewChooser folderId={favFolder.id} folderName={favFolder.name} onChange={() => setFavFolder(null)} onClose={() => setFavFolder(null)}/>, document.body)}
   </main>;
@@ -3796,7 +3796,7 @@ export function useBufferedFolderEntries(libraryId:number, folderId:number|null,
   return {entries, setEntries, done, loading, loadMore};
 }
 
-function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onLoadMore,moreLoading,moreDone,kbFocusId=null,kbBand=[],kbFocus}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; itemNav?:ItemNav; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean; kbFocusId?:string|null; kbBand?:string[]; kbFocus?:(id:string)=>void}) {
+function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFolderIds,onToggleSelected,onToggleFolderSelected,onOpenFolder,onFolderHidden,onLoadMore,moreLoading,moreDone,kbFocusId=null,kbBand=[],kbFocus}:{entries:Entry[]; view:"tile"|"list"; libraryId:ID; itemNav?:ItemNav; selectedIds:ID[]; selectedFolderIds?:ID[]; onToggleSelected:(id:ID)=>void; onToggleFolderSelected?:(id:ID)=>void; onOpenFolder:(entry:Entry)=>void; onFolderHidden?:(id:ID)=>void; onLoadMore?:()=>void; moreLoading?:boolean; moreDone?:boolean; kbFocusId?:string|null; kbBand?:string[]; kbFocus?:(id:string)=>void}) {
   const sentinelRef = useRef<HTMLDivElement|null>(null);
   const {size:thumbSize} = useContext(ThumbCtx);
   useEffect(() => {
@@ -3814,7 +3814,7 @@ function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFold
   return <div className={`cv-browser ${view === "tile" ? "virtual-tile" : "virtual-list"}`}>
     <div className={view === "tile" ? "grid" : "list-view"} style={view === "tile" ? {["--thumb-tile" as string]: `${thumbSize}px`} : undefined}>
       {entries.map(entry => entry.type === "folder" ?
-        <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected} kbFocused={kbFocusId === `f${entry.id}`} kbRange={kbBand.includes(`f${entry.id}`)} kbFocus={kbFocus ? () => kbFocus(`f${entry.id}`) : undefined}/> :
+        <FolderEntry key={`folder-${entry.id}`} entry={entry} view={view} libraryId={libraryId} onOpenFolder={onOpenFolder} onHidden={onFolderHidden} selectedFolderIds={selectedFolderIds} onToggleFolderSelected={onToggleFolderSelected} kbFocused={kbFocusId === `f${entry.id}`} kbRange={kbBand.includes(`f${entry.id}`)} kbFocus={kbFocus ? () => kbFocus(`f${entry.id}`) : undefined}/> :
         <MediaCard key={`media-${entry.media!.id}`} item={entry.media!} view={view} libraryId={libraryId} nav={itemNav} selected={selectedIds.includes(entry.media!.id)} onToggleSelected={onToggleSelected} caption="name-date" kbFocused={kbFocusId === `m${entry.media!.id}`} kbRange={kbBand.includes(`m${entry.media!.id}`)} kbFocus={kbFocus ? () => kbFocus(`m${entry.media!.id}`) : undefined}/>
       )}
     </div>
@@ -3822,8 +3822,20 @@ function VirtualEntries({entries,view,libraryId,itemNav,selectedIds,selectedFold
   </div>;
 }
 
-function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFolderIds, onToggleFolderSelected, kbFocused=false, kbRange=false, kbFocus}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void; selectedFolderIds?:ID[]; onToggleFolderSelected?:(id:ID)=>void; kbFocused?:boolean; kbRange?:boolean; kbFocus?:()=>void}) {
+function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFolderIds, onToggleFolderSelected, onHidden, kbFocused=false, kbRange=false, kbFocus}:{entry:Entry; view:"tile"|"list"; libraryId:ID; priority?:boolean; onOpenFolder:(entry:Entry)=>void; selectedFolderIds?:ID[]; onToggleFolderSelected?:(id:ID)=>void; onHidden?:(id:ID)=>void; kbFocused?:boolean; kbRange?:boolean; kbFocus?:()=>void}) {
   const location = useLocation();
+  const {canManage} = useContext(LibraryDialogContext);
+  // Admins hide a folder from its parent right here (Admin → Hidden folders
+  // lists it afterwards and can show it again).
+  async function hideFromParent() {
+    if (!window.confirm(translateMessage(`Hide folder "${entry.name}" from its parent? It and everything inside will be left out of folders, timelines and maps; only admins can open it, from Admin → Hidden folders.`))) return;
+    try {
+      await api.setFolderShowAsChild(entry.id, false);
+      onHidden?.(entry.id);
+    } catch (cause) {
+      setActionError((cause as Error).message);
+    }
+  }
   const favParam = new URLSearchParams(location.search).get("fav");
   const [refreshing, setRefreshing] = useState(false);
   const [thumbnailOptionsOpen, setThumbnailOptionsOpen] = useState(false);
@@ -3889,6 +3901,7 @@ function FolderEntry({entry, view, libraryId, priority, onOpenFolder, selectedFo
       <button type="button" role="menuitem" disabled={refreshing} onClick={() => setMetadataOptionsOpen(true)}>Refresh metadata…</button>
       <button type="button" role="menuitem" onClick={() => setFavoriteChooserOpen(true)}>Add to favorites…</button>
       <button type="button" role="menuitem" onClick={() => { void api.downloadArchive([], [entry.id]).catch(cause => setActionError(`ZIP download failed: ${(cause as Error).message}`)); }}>Download as ZIP</button>
+      {canManage && <button type="button" role="menuitem" onClick={() => void hideFromParent()}>Hide from parent…</button>}
       <InlineStatsLine load={() => api.folderStats(libraryId, entry.id)}/>
     </CardMenu>
     {favoriteChooserOpen && createPortal(<FolderFavoriteViewChooser folderId={entry.id} folderName={entry.name} onChange={() => {}} onClose={() => setFavoriteChooserOpen(false)}/>, document.body)}
@@ -7200,7 +7213,7 @@ function MapItems({items,focused,returnFocus,pickedGPS,selectMode,onPick,onSelec
         const a = segment.points[edgeIndex];
         const b = segment.points[edgeIndex + 1];
         const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        return <Marker key={`${key}-e${edgeIndex}`} position={mid} icon={trajectoryNumberIcon(edgeIndex + 1, color)} interactive={false} keyboard={false}/>;
+        return <Marker key={`${key}-e${edgeIndex}`} position={mid} icon={trajectoryNumberIcon(trajectoryStepLabel(edgeIndex + 1, segment.times[edgeIndex + 1], trajectorySpansDays(segment.times)), color)} interactive={false} keyboard={false}/>;
       })}
         {segment.points.length >= 2 && trajectoryArrows(segment.points, zoom, showTrajectoryNumbers).map(arrow =>
           <Marker key={`${key}-a${arrow.edge}`} position={arrow.position} icon={trajectoryArrowIcon(arrow.angle, color)} interactive={false} keyboard={false}/>)}
@@ -7527,6 +7540,8 @@ export function TrajectoryNameDialog({item,onClose,onSave,onRemove,initialName,r
 
 export interface TrajectorySegment {
   points: [number, number][];
+  // takenAt of the media at each point (same order as points).
+  times: string[];
   start: MapMedia;
   ids: number[];
   name: string;
@@ -7545,16 +7560,17 @@ export function buildTrajectories(items:readonly MapMedia[]): TrajectorySegment[
       return ta - tb || a.item.id - b.item.id;
     });
   const segments: TrajectorySegment[] = [];
-  let current: {points:[number,number][]; ids:number[]; start:MapMedia} | null = null;
+  let current: {points:[number,number][]; times:string[]; ids:number[]; start:MapMedia} | null = null;
   for (const {item, gps} of ordered) {
     if (item.trajectoryStart) {
       if (current !== null) segments.push(toSegment(current));
-      current = {points: [], ids: [], start: item};
+      current = {points: [], times: [], ids: [], start: item};
     }
     if (current === null) continue;
     if (gps !== null) {
       current.ids.push(item.id);
       current.points.push(gps);
+      current.times.push(item.takenAt ?? "");
     }
     if (item.trajectoryEnd) {
       segments.push(toSegment(current));
@@ -7565,10 +7581,10 @@ export function buildTrajectories(items:readonly MapMedia[]): TrajectorySegment[
   return segments;
 }
 
-function toSegment(current:{points:[number,number][]; ids:number[]; start:MapMedia}): TrajectorySegment {
+function toSegment(current:{points:[number,number][]; times:string[]; ids:number[]; start:MapMedia}): TrajectorySegment {
   const savedName = current.start.trajectoryName?.trim();
   const name = savedName || (current.start.takenAt ? formatDateTime(current.start.takenAt) : `Trajectory from ${current.start.name}`);
-  return {points: current.points, ids: current.ids, start: current.start, name};
+  return {points: current.points, times: current.times, ids: current.ids, start: current.start, name};
 }
 
 // Close in (zoom 18+ or the map's max zoom) only media at the very same
@@ -7659,12 +7675,35 @@ function trajectoryArrowIcon(angle:number, color:string) {
   });
 }
 
-function trajectoryNumberIcon(n:number, color:string) {
+// Travel-order step label: the step number and the time of the latest photo
+// reached by that step (the edge's later point), with the date too when the
+// trajectory spans several days, e.g. "3 · 14:05" or "3 · 12.07 14:05".
+export function trajectoryStepLabel(step:number, takenAt:string|undefined, withDate:boolean, format:DateFormat = userDateFormat) {
+  const date = takenAt ? new Date(takenAt) : null;
+  if (!date || Number.isNaN(date.getTime())) return String(step);
+  const twelveHour = format === "mdy" || format === "mdy-ss" || (format === "auto" && /[ap]\.?m/i.test(new Intl.DateTimeFormat(undefined, {timeStyle:"short"}).format(date)));
+  const hours = date.getHours();
+  const time = twelveHour ? `${hours % 12 || 12}:${pad2(date.getMinutes())} ${hours < 12 ? "AM" : "PM"}` : `${pad2(hours)}:${pad2(date.getMinutes())}`;
+  if (!withDate) return `${step} · ${time}`;
+  const day = format === "mdy" || format === "mdy-ss" ? `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}`
+    : format === "iso" ? `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+    : `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}`;
+  return `${step} · ${day} ${time}`;
+}
+
+// Whether a trajectory's photos were taken on more than one (local) day.
+export function trajectorySpansDays(times:readonly string[]) {
+  const days = new Set(times.map(value => { const date = value ? new Date(value) : null; return date && !Number.isNaN(date.getTime()) ? date.toDateString() : ""; }).filter(Boolean));
+  return days.size > 1;
+}
+
+function trajectoryNumberIcon(label:string, color:string) {
+  const width = Math.max(24, 10 + label.length * 7);
   return L.divIcon({
     className:"trajectory-number-marker",
-    html:`<span style="color:${color}">${n}</span>`,
-    iconSize:[24,24],
-    iconAnchor:[12,12],
+    html:`<span style="color:${color}">${label}</span>`,
+    iconSize:[width, 24],
+    iconAnchor:[width / 2, 12],
   });
 }
 
