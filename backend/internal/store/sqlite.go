@@ -2268,9 +2268,8 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
-		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
-		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
-			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
+		FROM media m JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
+		WHERE g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	case libraryID > 0:
@@ -2279,9 +2278,8 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
-		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
-		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
-			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
+		FROM media m JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
+		WHERE g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	default:
@@ -2290,9 +2288,8 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 			UNION ALL
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
-		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
-		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
-			OR (g.id IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
+		FROM media m JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
+		WHERE g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
 			AND (? = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = ?))
 		GROUP BY m.id`
 	}

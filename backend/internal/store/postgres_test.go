@@ -966,20 +966,10 @@ func TestPostgresMapIncludesTrajectoryMarkersWithoutGPS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(area) != 2 {
-		t.Fatalf("expected both the geotagged item and the GPS-less marker in area result, got %#v", area)
-	}
-	markerSeen := false
-	for _, item := range area {
-		if item.ID == marker.ID {
-			markerSeen = true
-			if !item.TrajectoryStart {
-				t.Fatalf("GPS-less marker in area result lost its trajectory start flag: %#v", item)
-			}
-		}
-	}
-	if !markerSeen {
-		t.Fatalf("area result is missing the GPS-less trajectory marker: %#v", area)
+	// A box selection lists only media whose point lies inside the box: a
+	// GPS-less trajectory marker has no point, so it is never selected.
+	if len(area) != 1 || area[0].ID != gpsMedia.ID {
+		t.Fatalf("expected only the geotagged item in the area result, got %#v", area)
 	}
 }
 

@@ -2042,8 +2042,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE (m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
-			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
+		WHERE m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
 			AND ($7 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $8))
 		GROUP BY m.id`
 	case libraryID > 0:
@@ -2053,8 +2052,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE (m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
-			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
+		WHERE m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
 			AND ($6 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $7))
 		GROUP BY m.id`
 	default:
@@ -2064,8 +2062,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
-		WHERE (m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
-			OR (m.geom IS NULL AND (EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))))
+		WHERE m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
 			AND ($5 = 1 OR EXISTS(SELECT 1 FROM library_access la WHERE la.library_id = covers.library_id AND la.user_id = $6))
 		GROUP BY m.id`
 	}
