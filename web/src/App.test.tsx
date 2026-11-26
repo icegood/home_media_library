@@ -2309,9 +2309,7 @@ test("media name and gps are saved only after explicit save", async () => {
   expect(mockApi.updateMediaDetails).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
   await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"renamed.jpg", gps:"50.45,30.52", takenAt:"", notes:""}));
-  const mapLinks = screen.getAllByRole("link", {name:"Open on map"});
-  expect(mapLinks).toHaveLength(2);
-  for (const link of mapLinks) expect(link).toHaveAttribute("href", "/map?item=100&inLibrary=1&inFolder=20");
+  expect(screen.getByRole("link", {name:"Open on map"})).toHaveAttribute("href", "/map?item=100&inLibrary=1&inFolder=20");
   fireEvent.click(screen.getByRole("button", {name:"Hide info panel"}));
   expect(screen.getByRole("button", {name:"Show info panel"})).toHaveTextContent("<<");
 });
@@ -2712,19 +2710,25 @@ test("media viewer offers a download link for the current item", async () => {
   expect(screen.getByRole("link", {name:"Download"})).toHaveAttribute("href", "/api/v1/media/100/content?download=1");
 });
 
-test("media viewer shows a 📍 map link only for an item with GPS", async () => {
+test("the info panel's map link next to the GPS field uses the 📍 pictogram, only for an item with GPS", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[
     {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""}},
     {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
   ], chain: []});
   const first = render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
   const link = await screen.findByRole("link", {name:"Open on map"});
   expect(link).toHaveTextContent("📍");
+  expect(link).toHaveClass("joined-action");
+  // Only the info panel's link: no extra map button over the media.
+  expect(screen.getAllByRole("link", {name:"Open on map"})).toHaveLength(1);
   expect(link).toHaveAttribute("href", "/map?item=100&inLibrary=1&inFolder=20");
   first.unmount();
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=101"]}><App/></MemoryRouter>);
   await screen.findByRole("img", {name:"two.jpg"});
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  await screen.findByLabelText("GPS");
   expect(screen.queryByRole("link", {name:"Open on map"})).not.toBeInTheDocument();
 });
 
@@ -4549,6 +4553,27 @@ test("bulk bar has one Apply that sends every filled field, notes included", asy
   fireEvent.change(screen.getByLabelText("Notes for all selected"), {target:{value:"  zoo  "}});
   fireEvent.click(screen.getByRole("button", {name:"Apply"}));
   await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith({selectedIds:[100, 101], gps:"50.45,30.52", shiftMinutes:15, notes:"zoo"}));
+});
+
+test("bulk notes are multi-line: Enter adds lines, the field grows, Ctrl+Enter applies them", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  mockApi.seed(state => {
+    state.entries.set(1, [
+      {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}},
+    ]);
+  });
+  render(<MemoryRouter initialEntries={["/library/1"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByLabelText("Select one.jpg"));
+  const field = screen.getByLabelText("Notes for all selected");
+  expect(field.tagName).toBe("TEXTAREA");
+  expect(field).toHaveAttribute("rows", "1");
+  fireEvent.change(field, {target:{value:"Day one\nLake walk\n"}});
+  expect(field).toHaveAttribute("rows", "3");
+  // Plain Enter is a new line, not Apply.
+  fireEvent.keyDown(field, {key:"Enter"});
+  expect(mockApi.bulkUpdateMedia).not.toHaveBeenCalled();
+  fireEvent.keyDown(field, {key:"Enter", ctrlKey:true});
+  await waitFor(() => expect(mockApi.bulkUpdateMedia).toHaveBeenCalledWith({selectedIds:[100], notes:"Day one\nLake walk"}));
 });
 
 test("folder card favorite chooser toggles membership and creates views inline", async () => {

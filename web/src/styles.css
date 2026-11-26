@@ -475,8 +475,10 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .bulk-toolbar button, .bulk-toolbar .secondary { background: var(--surface-interactive); color: var(--text); border: 1px solid var(--border-strong); border-radius: 999px; padding: 9px 12px; text-decoration: none; font-weight: 700; font-size: .9rem; cursor: pointer; }
 .bulk-toolbar button.active { background: var(--primary-text); color: var(--primary-contrast); }
 .shift-group { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 12px; }
-.notes-group { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 12px; }
-.bulk-notes-input { border: none; background: transparent; outline: none; font-size: .9rem; width: 200px; padding: 9px 0; color: var(--text); }
+.notes-group { display: inline-flex; align-items: flex-start; gap: 6px; border: 1px solid var(--border-strong); border-radius: 19px; padding: 0 12px; }
+.notes-group .shift-label { padding-top: 9px; }
+/* Multi-line notes for the selection: one line high until more are typed (max 6, then it scrolls). */
+.bulk-notes-input { border: none; background: transparent; outline: none; font: inherit; font-size: .9rem; line-height: 1.3; width: 220px; padding: 9px 0; color: var(--text); resize: none; overflow-y: auto; box-shadow: none; min-height: 0; display: block; }
 .gps-group { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 12px; }
 .shift-label { font-weight: 700; font-size: .9rem; white-space: nowrap; }
 .gps-label { font-weight: 700; font-size: .9rem; white-space: nowrap; }
@@ -690,9 +692,6 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .viewer-media > .favorite-button { top: calc(18px + var(--ml-safe-top, 0px)); left: 18px; right: auto; width: 46px; height: 46px; font-size: 28px; }
 .viewer-media > .viewer-download, .viewer-media > .viewer-fullscreen { position: absolute; z-index: 6; top: calc(76px + var(--ml-safe-top, 0px)); left: 18px; width: 46px; height: 46px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 22px; line-height: 1; text-decoration: none; box-shadow: var(--shadow-md); }
 .viewer-media > .viewer-fullscreen { top: calc(134px + var(--ml-safe-top, 0px)); }
-.viewer-media > .viewer-gps { position: absolute; z-index: 6; top: calc(134px + var(--ml-safe-top, 0px)); left: 18px; width: 46px; height: 46px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 22px; line-height: 1; text-decoration: none; box-shadow: var(--shadow-md); }
-.viewer-media > .viewer-gps.below-fullscreen { top: calc(192px + var(--ml-safe-top, 0px)); }
-.viewer-media > .viewer-gps:hover { background: var(--handle-hover); color: white; }
 .viewer-media > .viewer-download:hover, .viewer-media > .viewer-fullscreen:hover { background: var(--handle-hover); color: white; }
 .viewer-media > img { display: block; max-width: 100%; max-height: calc(100vh - 86px); object-fit: contain; background: var(--surface); transition: transform .12s ease; transform-origin: center; user-select: none; touch-action: none; }
 /* Letterboxed square thumbnail stretched to the stage while the full image loads. */
@@ -729,8 +728,8 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 /* Fullscreen video sized by the player (see fitTurned): the stack is placed at its computed box, the clip fills it, and the controls sit at the bottom over the picture. */
 .viewer-media .video-box.video-fitted { justify-content: flex-end; }
 .viewer-media .video-box.video-fitted .video-stack video { width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; }
-.viewer-media:fullscreen.ml-controls-hidden .favorite-button, .viewer-media:fullscreen.ml-controls-hidden .viewer-download, .viewer-media:fullscreen.ml-controls-hidden .viewer-gps, .viewer-media:fullscreen.ml-controls-hidden .zoom-controls, .viewer-media:fullscreen.ml-controls-hidden .video-badge-wrap, .viewer-media:fullscreen.ml-controls-hidden .viewer-arrow, .viewer-media:fullscreen.ml-controls-hidden .timeline-preview, .viewer-media:fullscreen.ml-controls-hidden .video-controls, .viewer-media:fullscreen.ml-controls-hidden .viewer-fullscreen,
-  .viewer-media.ml-fullscreen.ml-controls-hidden .favorite-button, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-download, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-gps, .viewer-media.ml-fullscreen.ml-controls-hidden .zoom-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .video-badge-wrap, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-arrow, .viewer-media.ml-fullscreen.ml-controls-hidden .timeline-preview, .viewer-media.ml-fullscreen.ml-controls-hidden .video-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-fullscreen { display: none; }
+.viewer-media:fullscreen.ml-controls-hidden .favorite-button, .viewer-media:fullscreen.ml-controls-hidden .viewer-download, .viewer-media:fullscreen.ml-controls-hidden .zoom-controls, .viewer-media:fullscreen.ml-controls-hidden .video-badge-wrap, .viewer-media:fullscreen.ml-controls-hidden .viewer-arrow, .viewer-media:fullscreen.ml-controls-hidden .timeline-preview, .viewer-media:fullscreen.ml-controls-hidden .video-controls, .viewer-media:fullscreen.ml-controls-hidden .viewer-fullscreen,
+  .viewer-media.ml-fullscreen.ml-controls-hidden .favorite-button, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-download, .viewer-media.ml-fullscreen.ml-controls-hidden .zoom-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .video-badge-wrap, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-arrow, .viewer-media.ml-fullscreen.ml-controls-hidden .timeline-preview, .viewer-media.ml-fullscreen.ml-controls-hidden .video-controls, .viewer-media.ml-fullscreen.ml-controls-hidden .viewer-fullscreen { display: none; }
 /* Exiting fullscreen: Android system back (popstate) or Esc in the browser;
    the "f" key still toggles. */
 body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fullscreen) .info-handle { display: none; }

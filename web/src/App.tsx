@@ -3384,7 +3384,10 @@ function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdate
         <input className="shift-input" aria-label="Shift minutes" value={shiftMinutes} onChange={event => setShiftMinutes(event.target.value)} placeholder="m" type="number" step="any" max="59"/>
       </div>
       <div className="notes-group"><span className="shift-label">Notes</span>
-        <input className="bulk-notes-input" aria-label="Notes for all selected" value={notes} onChange={event => setNotes(event.target.value)} placeholder="Same notes for all selected"/>
+        {/* Multi-line: Enter adds a line, Ctrl/⌘+Enter applies; grows up to 6 lines, then scrolls. */}
+        <textarea className="bulk-notes-input" aria-label="Notes for all selected" value={notes} rows={Math.min(6, Math.max(1, notes.split("\n").length))}
+          onChange={event => setNotes(event.target.value)} placeholder="Same notes for all selected"
+          onKeyDown={event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}/>
       </div>
       <button type="submit" disabled={busy || !hasSelection}>{busy ? "Saving…" : "Apply"}</button>
       <span className="bar-sep"/>
@@ -5158,7 +5161,6 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
       }}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
-      {item.gps?.trim() && <Link className={`viewer-gps${item.kind === "image" || item.kind === "video" ? " below-fullscreen" : ""}`} to={`/map?item=${item.id}${mapContext ? `&${mapContext}` : ""}`} aria-label="Open on map" title="Open on map">📍</Link>}
       {(item.kind === "image" || item.kind === "video") && <button type="button" className="viewer-fullscreen" aria-label={isFullscreen || nativeFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen || nativeFullscreen ? "⤡" : "⛶"}</button>}
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
       {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} adjust={adjust} ready={adjustReady} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
@@ -5613,7 +5615,7 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
     {activeTab === "details" && <div className="media-edit" role="tabpanel" aria-label="Details" aria-labelledby="media-tab-details">
       <label className="media-edit-row"><span>Name</span><input value={name} onChange={event => setName(event.target.value)} required/></label>
       <label className="media-edit-row"><span>Date</span><span className="media-date-editor joined-field"><input value={takenAt} onChange={event => setTakenAt(event.target.value)} placeholder={formatDateTime(new Date().toISOString(), dateFormat)}/>{currentDate && <button type="button" className="joined-action" aria-label="Copy date" data-hint="Copy date" onClick={() => void copyDate()}>{copied ? "✓" : "⧉"}</button>}<button ref={pickerAnchorRef} type="button" className="joined-action" aria-label="Pick date and time" data-hint="Pick date and time" aria-expanded={calendarOpen} onClick={() => setCalendarOpen(value => !value)}><span className="calendar-glyph" aria-hidden="true">📅</span></button>{calendarOpen && pickerAnchorRef.current && createPortal(<DateCalendar anchor={pickerAnchorRef.current} initialDate={pickerInitialDate()} onSelect={pickDate} onClose={() => setCalendarOpen(false)}/>, document.body)}</span></label>
-      <div className="media-edit-row"><span><label htmlFor={`media-gps-${current.id}`}>GPS</label></span><span className="joined-field"><input id={`media-gps-${current.id}`} value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/>{gps && <Link to={`/map?item=${current.id}${mapContext ? `&${mapContext}` : ""}`} className="joined-action" aria-label="Open on map" data-hint="Open on map">🗺️</Link>}</span></div>
+      <div className="media-edit-row"><span><label htmlFor={`media-gps-${current.id}`}>GPS</label></span><span className="joined-field"><input id={`media-gps-${current.id}`} value={gpsValue} onChange={event => setGPSValue(event.target.value)} placeholder="50.45,30.52"/>{gps && <Link to={`/map?item=${current.id}${mapContext ? `&${mapContext}` : ""}`} className="joined-action" aria-label="Open on map" data-hint="Open on map">📍</Link>}</span></div>
       {(item.kind === "image" || item.kind === "video") && adjust && onAdjustChange && <div className="media-adjust" role="group" aria-label="Media adjustments">
         <span className="media-adjust-title">Media adjustments</span>
         {([
