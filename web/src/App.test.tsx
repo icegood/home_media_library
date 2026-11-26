@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, placeCardMenu, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -165,6 +165,18 @@ test("admins hide a folder from its parent right in the folder view; regular use
   } finally {
     confirm.mockRestore();
   }
+});
+
+test("card menus open below, flip above near the bottom, and scroll when taller than the screen", () => {
+  const anchor = (top:number) => ({top, bottom:top + 38, left:300, right:338});
+  // Fits below.
+  expect(placeCardMenu(anchor(100), 180, 200, 1200, 800)).toEqual({top:142, left:300});
+  // A card at the bottom: opens above the ⋮ button instead of running off screen.
+  expect(placeCardMenu(anchor(700), 180, 200, 1200, 800)).toEqual({top:496, left:300});
+  // Taller than the space both ways: pinned inside the viewport with a max height.
+  expect(placeCardMenu(anchor(300), 180, 900, 1200, 800)).toEqual({top:8, left:300, maxHeight:784});
+  // Kept on screen horizontally near the right edge.
+  expect(placeCardMenu({top:100, bottom:138, left:1150, right:1188}, 180, 200, 1200, 800).left).toBe(1012);
 });
 
 test("folder references parse links, map links and ids", () => {

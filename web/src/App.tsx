@@ -2407,20 +2407,30 @@ function InlineStatsLine({load}:{load:()=>Promise<{images:number; videos:number;
 // dialog instead of a dropdown, so the dots never carry menu actions.
 function CardMenu({ariaLabel, children, onOpen}:{ariaLabel:string; children?:ReactNode; onOpen?:()=>void}) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({top:0, left:20, maxWidth:220});
+  const [menuPos, setMenuPos] = useState<{top:number; left:number; maxHeight?:number}|null>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const menuPopupRef = useRef<HTMLDivElement|null>(null);
+  // The menu is placed from its measured size: below the ⋮ button when it
+  // fits, otherwise above it (cards at the bottom of the screen), otherwise
+  // pinned inside the viewport with its own scroll. It is re-placed when its
+  // size changes (the statistics line arrives) and on resize/scroll.
+  useLayoutEffect(() => {
+    if (!menuOpen) { setMenuPos(null); return; }
+    const place = () => {
+      const btn = menuRef.current;
+      const popup = menuPopupRef.current;
+      if (!btn || !popup) return;
+      setMenuPos(placeCardMenu(btn.getBoundingClientRect(), popup.scrollWidth, popup.scrollHeight, window.innerWidth, window.innerHeight));
+    };
+    place();
+    const observer = typeof ResizeObserver !== "undefined" && menuPopupRef.current ? new ResizeObserver(place) : null;
+    if (observer && menuPopupRef.current) observer.observe(menuPopupRef.current);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); };
+  }, [menuOpen]);
   useEffect(() => {
     if (!menuOpen) return;
-    const btn = menuRef.current;
-    if (btn) {
-      const r = btn.getBoundingClientRect();
-      // Constrain the dropdown to the width of the folder/library item it opens
-      // from, so a wide statistics line never pushes menu items off-screen.
-      const card = btn.closest<HTMLElement>(".card, .folder-entry, .library-tile, li, .item-menu");
-      const maxWidth = Math.max(160, card ? card.getBoundingClientRect().width : 220);
-      setMenuPos({top: r.bottom + 4, left: dropdownBelow(btn, maxWidth).left, maxWidth});
-    }
     function handle(e:Event) {
       if (menuPopupRef.current && !menuPopupRef.current.contains(e.target as Node) && menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
@@ -2431,11 +2441,23 @@ function CardMenu({ariaLabel, children, onOpen}:{ariaLabel:string; children?:Rea
   }, [menuOpen]);
   return <div className="item-menu folder-menu">
     <button type="button" className="menu-summary" aria-label={ariaLabel} ref={menuRef} aria-haspopup={onOpen ? undefined : "menu"} aria-expanded={onOpen ? undefined : menuOpen} onClick={() => onOpen ? onOpen() : setMenuOpen(open => !open)}><span className="menu-dots"/></button>
-    {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef} style={{top: menuPos.top, left: menuPos.left, maxWidth: menuPos.maxWidth}}
+    {menuOpen && createPortal(<div className="item-submenu portal-fixed" role="menu" ref={menuPopupRef}
+      style={menuPos ? {top:menuPos.top, left:menuPos.left, maxHeight:menuPos.maxHeight} : {top:0, left:0, visibility:"hidden"}}
       onClick={event => { if ((event.target as HTMLElement).closest('button[role="menuitem"]')) setMenuOpen(false); }}>
       {children}
     </div>, document.body)}
   </div>;
+}
+
+// Where a card's dropdown goes, from the ⋮ button's rect and the menu's
+// measured size: below if it fits, else above, else pinned to the viewport
+// edge with a max height (the menu scrolls); horizontally kept on screen.
+export function placeCardMenu(anchor:{top:number; bottom:number; left:number; right:number}, width:number, height:number, viewportWidth:number, viewportHeight:number, gap = 4, margin = 8) {
+  const left = Math.max(margin, Math.min(anchor.left, viewportWidth - width - margin));
+  if (anchor.bottom + gap + height <= viewportHeight - margin) return {top:anchor.bottom + gap, left};
+  if (anchor.top - gap - height >= margin) return {top:anchor.top - gap - height, left};
+  const maxHeight = viewportHeight - 2 * margin;
+  return {top:Math.max(margin, viewportHeight - margin - Math.min(height, maxHeight)), left, maxHeight};
 }
 
 function LibraryTile({item}:{item:Library}) {
