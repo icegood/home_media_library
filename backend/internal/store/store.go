@@ -42,6 +42,11 @@ type Store interface {
 	Folder(ctx context.Context, id int) (domain.MediaFolder, error)
 	FolderChain(ctx context.Context, libraryID, folderID int) ([]domain.MediaFolder, error)
 	FoldersByIDs(ctx context.Context, ids []int) (map[int]domain.MediaFolder, error)
+	// HiddenFolders lists folders hidden from their parent (show_as_child =
+	// false): left out of the parent's folder list, timelines, maps and stats,
+	// and unreadable for non-admins.
+	HiddenFolders(ctx context.Context) ([]domain.HiddenFolder, error)
+	SetFolderShowAsChild(ctx context.Context, folderID int, show bool) error
 	CanRead(ctx context.Context, userID, libraryID int, admin bool) (bool, error)
 	CanReadMedia(ctx context.Context, userID, mediaID int, admin bool) (bool, error)
 	CanReadFolder(ctx context.Context, userID, folderID int, admin bool) (bool, error)

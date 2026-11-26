@@ -203,6 +203,8 @@ function createMockApi() {
       Object.assign(user, input);
       return {...user};
     }),
+    hiddenFolders: vi.fn(async () => []),
+    setFolderShowAsChild: vi.fn(async () => undefined),
     libraryAccess: vi.fn(async (libraryId:number) =>
       JSON.parse(JSON.stringify(state.access.get(Number(libraryId)) ?? []))),
     setLibraryAccess: vi.fn(async (libraryId:number, userId:number, allowed:boolean) => {

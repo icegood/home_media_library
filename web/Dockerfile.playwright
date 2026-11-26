@@ -14,5 +14,6 @@ RUN npm ci --no-audit --no-fund
 COPY web/playwright.config.ts ./
 COPY web/e2e ./e2e
 
+LABEL org.opencontainers.image.source="https://github.com/icegood/home_media_library"
 ENTRYPOINT ["npx", "playwright", "test"]
 CMD ["--project=chromium"]

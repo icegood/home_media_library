@@ -31,3 +31,4 @@ ENV BUILD_DATE=$BUILD_DATE
 
 COPY . .
 RUN npm run lint && npm test && npm run build
+LABEL org.opencontainers.image.source="https://github.com/icegood/home_media_library"

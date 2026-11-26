@@ -11,7 +11,7 @@ import { api, MAX_VIDEO_THUMBNAILS, type MediaAdjust, type MapTileSource, type P
 import { appVersion, appRevision, appBuildDate, appStack } from "./generated-version";
 import { medianTakenDate, nearestWaybackRelease, type WaybackRelease, waybackTileUrl } from "./wayback";
 import { bearingDegrees, compassPoint, distanceMeters, formatDistance, loadWalkRadius, type MyPosition, parseWalkRadius, saveWalkRadius, useMyPosition } from "./walking";
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapCluster, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, HiddenFolder, ID, JobStatus, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapCluster, MapMedia, Media, MediaFolder, POI, POICategory, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 export const TopMenuCtx = createContext<{open:boolean; toggle:()=>void}>({open:false, toggle:()=>{}});
 export const StreamChunkSizeCtx = createContext(10000);
@@ -648,10 +648,11 @@ export function ErrorPopup({message, onClose}:{message:string; onClose?:()=>void
   </div>, popupStack());
 }
 
-type SettingsSection = "network" | "mail" | "thumbnails" | "libraries" | "users" | "jobs" | "logs" | "database" | "map";
+type SettingsSection = "network" | "mail" | "thumbnails" | "libraries" | "hidden" | "users" | "jobs" | "logs" | "database" | "map";
 
 const settingsSections: Record<SettingsSection, {label:string; description:string}> = {
   libraries: {label:"Libraries", description:"Add, rename, delete, scan, and refresh thumbnails"},
+  hidden: {label:"Hidden folders", description:"Folders left out of their parent, timelines and maps"},
   users: {label:"Users", description:"Create users, manage roles, and login timeout"},
   thumbnails: {label:"Thumbnails", description:"Image and video thumbnail settings"},
   mail: {label:"Mail", description:"Outbound email for password resets"},
@@ -663,7 +664,7 @@ const settingsSections: Record<SettingsSection, {label:string; description:strin
 };
 
 const settingsGroups: Array<{label:string; items:Array<{id:SettingsSection; label:string; description:string}>}> = [
-  {label:"Media", items:(["libraries", "thumbnails"] as SettingsSection[]).map(settingsItem)},
+  {label:"Media", items:(["libraries", "hidden", "thumbnails"] as SettingsSection[]).map(settingsItem)},
   {label:"Access", items:(["users"] as SettingsSection[]).map(settingsItem)},
   {label:"System", items:(["network", "map", "mail", "logs"] as SettingsSection[]).map(settingsItem)},
   {label:"Jobs", items:(["jobs"] as SettingsSection[]).map(settingsItem)},
@@ -705,6 +706,7 @@ function AdminPanel() {
     <section className="settings-content">
       <StopServerButton/>
       {section === "database" ? <DatabaseMaintenanceSection/>
+        : section === "hidden" ? <HiddenFoldersSection/>
         : section === "network" || section === "map" || section === "mail" || section === "thumbnails" || section === "jobs"
           ? <AdminSettings section={section}/>
           : <LibraryManagement activeSection={section}/>}
@@ -767,7 +769,7 @@ function DatabaseVacuumAction() {
 }
 
 function isSettingsSection(value:string|null): value is SettingsSection {
-  return value === "network" || value === "mail" || value === "thumbnails" || value === "libraries" || value === "users" || value === "jobs" || value === "logs" || value === "database" || value === "map";
+  return value === "network" || value === "mail" || value === "thumbnails" || value === "libraries" || value === "hidden" || value === "users" || value === "jobs" || value === "logs" || value === "database" || value === "map";
 }
 
 function LoginTimeoutField() {
@@ -1691,6 +1693,59 @@ function EmbyImportPanel({onImported}:{onImported:()=>Promise<void>}) {
     <button disabled={busy}>{busy ? "Importing…" : "Import from Emby"}</button>
     {picking && <DirectoryPickerModal title={picking === "configRoot" ? "Choose Emby config root" : "Choose Docker target folder"} filesystem={filesystem} error={filesystemError} onOpen={path => openPicker(picking, path)} onSelect={selectPickerPath} onClose={closePicker}/>}
   </form>;
+}
+
+// A folder link (…/folder/ID, …/timeline/ID, map ?folder=ID) or a bare id.
+export function parseFolderReference(value:string):ID|null {
+  const text = value.trim();
+  const match = /^\d+$/.test(text) ? text : (text.match(/\/(?:folder|timeline)\/(\d+)/)?.[1] ?? text.match(/[?&]folder=(\d+)/)?.[1]);
+  const id = Number(match);
+  return match && Number.isInteger(id) && id > 0 ? id : null;
+}
+
+// Folders hidden from their parent ("show as child" off): left out of the
+// parent's folder list, timelines, maps and stats, and admin-only. This list
+// is the only place that links to them.
+function HiddenFoldersSection() {
+  const [items, setItems] = useState<HiddenFolder[]|null>(null);
+  const [reference, setReference] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function load() {
+    try { setItems(await api.hiddenFolders()); } catch (cause) { setError((cause as Error).message); setItems([]); }
+  }
+  useEffect(() => { void load(); }, []);
+  async function setShown(folderId:ID, show:boolean) {
+    setBusy(true); setError("");
+    try { await api.setFolderShowAsChild(folderId, show); await load(); return true; }
+    catch (cause) { setError((cause as Error).message); return false; }
+    finally { setBusy(false); }
+  }
+  async function hide(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const folderId = parseFolderReference(reference);
+    if (folderId == null) { setError("Enter a folder link or id"); return; }
+    if (await setShown(folderId, false)) setReference("");
+  }
+  return <div className="card settings hidden-folders">
+    <div className="panel-title"><div><h2>Hidden folders</h2><p>A hidden folder and everything inside it is left out of its parent folder, timelines, maps and counts, and only admins can open it from here. Scans keep it hidden.</p></div></div>
+    <form className="hidden-folders-add" onSubmit={event => void hide(event)}>
+      <input aria-label="Folder link or id" placeholder="/library/3/folder/2397" value={reference} onChange={event => setReference(event.target.value)}/>
+      <button type="submit" disabled={busy || reference.trim() === ""}>Hide folder</button>
+    </form>
+    <ErrorPopup message={error} onClose={() => setError("")}/>
+    {items == null ? <p className="muted">Loading…</p>
+      : items.length === 0 ? <p className="muted">No hidden folders.</p>
+      : <ul className="hidden-folders-list">{items.map(item => <li key={item.id}>
+          <div><strong>{item.libraryName}</strong><span>{item.relativePath}</span></div>
+          <span className="hidden-folders-actions">
+            <Link to={`/library/${item.libraryId}/folder/${item.id}`}>Open</Link>
+            <Link to={`/library/${item.libraryId}/timeline/${item.id}`}>Timeline</Link>
+            <Link to={`/map?library=${item.libraryId}&folder=${item.id}`}>Map</Link>
+            <button type="button" className="secondary" disabled={busy} onClick={() => void setShown(item.id, true)}>Show in parent</button>
+          </span>
+        </li>)}</ul>}
+  </div>;
 }
 
 function DatabaseMaintenanceSection() {

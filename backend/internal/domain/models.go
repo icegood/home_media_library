@@ -318,6 +318,16 @@ type KindStats struct {
 	Documents int `json:"documents"`
 }
 
+// HiddenFolder is a folder hidden from its parent (show_as_child = false),
+// listed on the admin page with the library that contains it.
+type HiddenFolder struct {
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	LibraryID    int    `json:"libraryId"`
+	LibraryName  string `json:"libraryName"`
+	RelativePath string `json:"relativePath"`
+}
+
 type LibraryRoot struct {
 	// ID is the media_folders.id value selected as this library root.
 	ID   int    `json:"id"`

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -109,6 +109,44 @@ test("settings navigation exposes network mail and timeout subsections", async (
   fireEvent.click(screen.getByRole("button", {name:"Jobs"}));
   expect(await screen.findByRole("heading", {name:"Jobs", level:2})).toBeInTheDocument();
   expect(screen.getByLabelText("Remove inactive jobs after, minutes")).toHaveValue(10);
+});
+
+test("admin hidden folders: list with links, show again, hide from a pasted folder link", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  let hidden = [{id:2397, name:"private", libraryId:3, libraryName:"Family", relativePath:"family/2021/private"}];
+  mockApi.hiddenFolders.mockImplementation(async () => hidden.map(item => ({...item})));
+  mockApi.setFolderShowAsChild.mockImplementation(async (id:number, show:boolean) => {
+    if (show) hidden = hidden.filter(item => item.id !== id);
+    else hidden = [...hidden, {id, name:"trip", libraryId:3, libraryName:"Family", relativePath:"family/trip"}];
+  });
+  render(<MemoryRouter initialEntries={["/admin?section=hidden"]}><App/></MemoryRouter>);
+  expect(await screen.findByRole("heading", {name:"Hidden folders", level:2})).toBeInTheDocument();
+  expect(await screen.findByText("family/2021/private")).toBeInTheDocument();
+  expect(screen.getByRole("link", {name:"Open"})).toHaveAttribute("href", "/library/3/folder/2397");
+  expect(screen.getByRole("link", {name:"Timeline"})).toHaveAttribute("href", "/library/3/timeline/2397");
+  expect(screen.getByRole("link", {name:"Map"})).toHaveAttribute("href", "/map?library=3&folder=2397");
+  fireEvent.click(screen.getByRole("button", {name:"Show in parent"}));
+  await waitFor(() => expect(mockApi.setFolderShowAsChild).toHaveBeenCalledWith(2397, true));
+  expect(await screen.findByText("No hidden folders.")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Folder link or id"), {target:{value:"http://192.168.13.1:8099/library/3/timeline/2421?x=1"}});
+  fireEvent.click(screen.getByRole("button", {name:"Hide folder"}));
+  await waitFor(() => expect(mockApi.setFolderShowAsChild).toHaveBeenCalledWith(2421, false));
+  expect(await screen.findByText("family/trip")).toBeInTheDocument();
+  expect(screen.getByLabelText("Folder link or id")).toHaveValue("");
+  fireEvent.change(screen.getByLabelText("Folder link or id"), {target:{value:"not a folder"}});
+  fireEvent.click(screen.getByRole("button", {name:"Hide folder"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Enter a folder link or id");
+  expect(mockApi.setFolderShowAsChild).toHaveBeenCalledTimes(2);
+});
+
+test("folder references parse links, map links and ids", () => {
+  expect(parseFolderReference("2397")).toBe(2397);
+  expect(parseFolderReference(" /library/3/folder/2397 ")).toBe(2397);
+  expect(parseFolderReference("http://nas:8099/library/3/timeline/2421")).toBe(2421);
+  expect(parseFolderReference("/map?library=3&folder=77")).toBe(77);
+  expect(parseFolderReference("/library/3")).toBeNull();
+  expect(parseFolderReference("0")).toBeNull();
+  expect(parseFolderReference("")).toBeNull();
 });
 
 test("all backend settings have visible admin controls", async () => {
@@ -455,6 +493,7 @@ test("admin settings menu duplicates settings sections and opens selected sectio
   expect(within(sidebar).getAllByText("Database").length).toBeGreaterThanOrEqual(1);
   expect(within(sidebar).getAllByRole("button").map(button => button.getAttribute("aria-label"))).toEqual([
     "Libraries",
+    "Hidden folders",
     "Thumbnails",
     "Users",
     "Network",

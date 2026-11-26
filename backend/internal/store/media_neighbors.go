@@ -34,13 +34,14 @@ func mediaNeighborsSQL(driver string, scopeLibrary bool, scopeID int, userID int
 	b.Grow(720)
 	b.WriteString("WITH RECURSIVE covers(folder_id) AS (SELECT f.id FROM ")
 	if scopeLibrary {
-		b.WriteString("library_roots lr JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = ")
+		b.WriteString("library_roots lr JOIN media_folders f ON f.id = lr.folder_id WHERE f.show_as_child AND lr.library_id = ")
 	} else {
 		b.WriteString("media_folders f WHERE f.id = ")
 	}
 	args := []any{scopeID}
 	b.WriteString(next())
-	b.WriteString(" UNION ALL SELECT f.id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)")
+	// Hidden subfolders (show_as_child = false) are not walked into.
+	b.WriteString(" UNION ALL SELECT f.id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)")
 	b.WriteString(" SELECT " + mediaColumns + ", ")
 	args = append(args, userID)
 	if driver == "postgres" {

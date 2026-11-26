@@ -1,5 +1,5 @@
 import { parseWaybackConfig, WAYBACK_CONFIG_URL, type WaybackRelease } from "./wayback";
-import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, ID, JobStatus, KindStats, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, MapView, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
+import type { About, EmbyImportResult, Entry, FavoriteView, FavoriteViewMembership, FilesystemListing, FolderEntries, GeocodeResult, HiddenFolder, ID, JobStatus, KindStats, Library, LibraryPathMoveResult, LibraryUserAccess, LogTail, MapMedia, MapView, Media, MediaFolder, POI, Role, ScheduledTask, User, VideoThumbnail } from "./types";
 
 const base = import.meta.env.VITE_API_URL ?? "/api/v1";
 
@@ -97,6 +97,9 @@ export const api = {
   libraryAccess: (libraryId:ID) => call<LibraryUserAccess[]>(`/admin/libraries/${libraryId}/access`),
   setLibraryAccess: (libraryId:ID, userId:ID, allowed:boolean) =>
     call<void>(`/admin/libraries/${libraryId}/access/${userId}`, {method:"PUT", body:JSON.stringify({allowed})}),
+  hiddenFolders: () => call<HiddenFolder[]>("/admin/hidden-folders"),
+  setFolderShowAsChild: (folderId:ID, showAsChild:boolean) =>
+    call<void>(`/admin/folders/${folderId}/show-as-child`, {method:"PUT", body:JSON.stringify({showAsChild})}),
   scheduledTasks: () => call<ScheduledTask[]>("/admin/scheduled-tasks"),
   createScheduledTask: (input:{name:string; taskType:"scan"|"thumbnail-create"|"vacuum"; libraryId:ID; cron:string; enabled:boolean}) =>
     call<ScheduledTask>("/admin/scheduled-tasks", {method:"POST", body:JSON.stringify(input)}),

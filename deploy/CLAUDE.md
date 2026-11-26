@@ -3,14 +3,17 @@
 ## `start.sh` — the only entry point
 
 - `sh deploy/start.sh local-build` — build backend + web images (tests run inside:
-  `go test ./...`, `npm test && npm run build`) and bring the stack up.
+  `go test ./...`, `npm test && npm run build`), bring the stack up, then remove
+  this project's untagged images and its local images of other versions
+  (`remove_stale_local_images`; images only, never the build cache).
 - `sh deploy/start.sh prod` — pull `ghcr.io/icegood/home-media-library-{api,web}:$PROJECT_VERSION`,
   restart, drop images of other versions.
 - `sh deploy/start.sh e2e` — Playwright runner against the running stack.
 - `sh deploy/start.sh android` — signed APK.
 
 Never replace these with raw `docker build` / `docker compose up --build`.
-Never prune Docker caches unless asked.
+Never prune Docker build caches unless asked. Every project Dockerfile carries the
+`org.opencontainers.image.source` label so the stale-image cleanup can find its images.
 
 ## Files
 

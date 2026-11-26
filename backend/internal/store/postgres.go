@@ -30,7 +30,7 @@ var postgresMigrations embed.FS
 // gps, taken_at, metadata_error, thumbnail_error, notes, favorite.
 // Query arguments: parentID, userID, parentID.
 const folderEntriesPGSQL = `SELECT 'folder' AS entry_kind, f.id, f.parent_id, f.path, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false
-	FROM media_folders f WHERE f.parent_id = $1
+	FROM media_folders f WHERE f.parent_id = $1 AND f.show_as_child
 	UNION ALL
 	SELECT 'media' AS entry_kind, ` + mediaColumns + `, EXISTS(SELECT 1 FROM favorite_view_items fvi
 		JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
@@ -636,9 +636,9 @@ func (s *Postgres) WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, erro
 func (s *Postgres) LibraryStats(ctx context.Context, libraryID int) (domain.KindStats, error) {
 	var stats domain.KindStats
 	query := `WITH RECURSIVE sub(id) AS (
-		SELECT lr.folder_id FROM library_roots lr WHERE lr.library_id = $1
+		SELECT lr.folder_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = $1
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child
 	)
 	SELECT (SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'image'),
 		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'video'),
@@ -661,7 +661,7 @@ func (s *Postgres) FolderStats(ctx context.Context, userID, libraryID, folderID 
 	query := `WITH RECURSIVE sub(id) AS (
 		SELECT f.id FROM media_folders f WHERE f.id = $1
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child
 	)
 	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
@@ -689,9 +689,9 @@ func (s *Postgres) FavoriteViewStats(ctx context.Context, userID, viewID int, ad
 	flagPlaceholder := "$" + strconv.Itoa(len(args)+3)
 	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id),
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child),
 		fav_folders(id) AS (SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ` + favFolderPlaceholder + `),
-		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id),
+		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id AND f.show_as_child),
 		mentions(media_id) AS (
 			SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ` + viewPlaceholder + `
 			UNION ALL
@@ -798,9 +798,9 @@ func (s *Postgres) fillLibraryStats(ctx context.Context, libraries map[int]*doma
 		args = append(args, userID)
 	}
 	query := `WITH RECURSIVE tree(library_id, folder_id) AS (
-		SELECT lr.library_id, lr.folder_id FROM library_roots lr ` + accessFilter + `
+		SELECT lr.library_id, lr.folder_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child ` + accessFilter + `
 		UNION ALL
-		SELECT tree.library_id, f.id FROM media_folders f JOIN tree ON f.parent_id = tree.folder_id
+		SELECT tree.library_id, f.id FROM media_folders f JOIN tree ON f.parent_id = tree.folder_id AND f.show_as_child
 	)
 	SELECT tree.library_id,
 		COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
@@ -954,7 +954,7 @@ func (s *Postgres) CanReadMedia(ctx context.Context, userID, mediaID int, admin 
 	subPG, args := pgPlaceholders(subSQL, subArgs, 1)
 	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT EXISTS(SELECT 1 FROM sub WHERE id = ` + "$" + strconv.Itoa(len(args)+1) + `)`
 	args = append(args, folderID)
 	var ok bool
@@ -977,7 +977,7 @@ func (s *Postgres) CanReadFolder(ctx context.Context, userID, folderID int, admi
 	subPG, args := pgPlaceholders(subSQL, subArgs, 1)
 	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT EXISTS(SELECT 1 FROM sub WHERE id = ` + "$" + strconv.Itoa(len(args)+1) + `)`
 	args = append(args, folderID)
 	var ok bool
@@ -993,9 +993,17 @@ func (s *Postgres) Entries(ctx context.Context, userID, libraryID int, dir strin
 	}
 	out := []domain.Entry{}
 	showRootWrappers := true
+	hidden, err := hiddenFolderIDs(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
 	for _, mapping := range library.Roots {
 		mappingName := pathLabel(mapping.Path)
 		if showRootWrappers && dir == "" {
+			// A root hidden from its parent is not listed on the library page.
+			if hidden[mapping.ID] {
+				continue
+			}
 			out = append(out, domain.Entry{ID: mapping.ID, Name: mappingName,
 				RelativePath: mappingName, Type: "folder",
 				FolderThumbnail: mapping.ID})
@@ -1108,7 +1116,7 @@ func (s *Postgres) folderThumbnails(ctx context.Context, folderID int, limit int
 	query := `WITH RECURSIVE sub(id) AS (
 		SELECT $1::bigint
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT m.id FROM media m JOIN sub ON m.folder_id = sub.id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type
 	WHERE mmt.media_type <> 'document'
@@ -1359,7 +1367,7 @@ func (s *Postgres) FavoriteMedia(ctx context.Context, userID, viewID int, admin 
 	flagPlaceholder := "$" + strconv.Itoa(len(args)+2)
 	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT ` + mediaColumns + ` FROM favorite_view_items fvi
 	JOIN media m ON m.id = fvi.media_id
 	WHERE fvi.favorite_view_id = ` + viewPlaceholder + ` AND (` + flagPlaceholder + ` = 1 OR m.folder_id IN (SELECT id FROM sub))
@@ -1400,9 +1408,9 @@ func (s *Postgres) FavoriteMediaExpanded(ctx context.Context, userID, viewID int
 	flagPlaceholder := "$" + strconv.Itoa(len(args)+3)
 	query := `WITH RECURSIVE sub(id) AS (` + subPG + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id),
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child),
 		fav_folders(id) AS (SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ` + favFolderPlaceholder + `),
-		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id),
+		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id AND f.show_as_child),
 		mentions(media_id) AS (
 			SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ` + viewPlaceholder + `
 			UNION ALL
@@ -1675,7 +1683,7 @@ func (s *Postgres) bulkTargetSubPG(ids []int, folderIDs []int) (cte, targetSub s
 		cte = `WITH RECURSIVE descend(folder_id) AS (
 			SELECT id FROM media_folders WHERE id IN (` + strings.Join(folderPh, ",") + `)
 			UNION ALL
-			SELECT f.id FROM media_folders f JOIN descend d ON f.parent_id = d.folder_id) `
+			SELECT f.id FROM media_folders f JOIN descend d ON f.parent_id = d.folder_id AND f.show_as_child) `
 		targetSub = `SELECT m.id FROM media m JOIN descend d ON m.folder_id = d.folder_id`
 		args = append(args, folderArgs...)
 	}
@@ -1836,7 +1844,7 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
 			SELECT $1::int, $2::int
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
@@ -1844,9 +1852,9 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 		GROUP BY m.id`
 	case libraryID > 0:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = $1::int
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = $1::int
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
@@ -1854,9 +1862,9 @@ func (s *Postgres) GeotaggedMedia(ctx context.Context, userID int, admin bool, l
 		GROUP BY m.id`
 	default:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
@@ -1923,7 +1931,7 @@ func pgFavoriteMapCondition(n string) string {
 				OR m.folder_id IN (WITH RECURSIVE fav_sub(id) AS (
 					SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ` + n + `
 					UNION ALL
-					SELECT f.id FROM media_folders f JOIN fav_sub ON f.parent_id = fav_sub.id)
+					SELECT f.id FROM media_folders f JOIN fav_sub ON f.parent_id = fav_sub.id AND f.show_as_child)
 				SELECT id FROM fav_sub))`
 }
 
@@ -1959,17 +1967,17 @@ func (s *Postgres) MapView(ctx context.Context, userID int, admin bool, libraryI
 			covers = `WITH RECURSIVE covers(folder_id, library_id) AS (
 				SELECT ` + bind(folderID) + `::int, ` + bind(libraryID) + `::int
 				UNION ALL
-				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)`
 		case libraryID > 0:
 			covers = `WITH RECURSIVE covers(folder_id, library_id) AS (
-				SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ` + bind(libraryID) + `::int
+				SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = ` + bind(libraryID) + `::int
 				UNION ALL
-				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)`
 		default:
 			covers = `WITH RECURSIVE covers(folder_id, library_id) AS (
-				SELECT lr.folder_id, lr.library_id FROM library_roots lr
+				SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child
 				UNION ALL
-				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`
+				SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)`
 		}
 		points := `points AS (SELECT DISTINCT m.id, ST_Y(m.geom) AS lat, ST_X(m.geom) AS lng
 			FROM media m JOIN covers ON covers.folder_id = m.folder_id
@@ -2031,7 +2039,7 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
 			SELECT $1::int, $2::int
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)
@@ -2040,9 +2048,9 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 		GROUP BY m.id`
 	case libraryID > 0:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = $1::int
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = $1::int
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
@@ -2051,9 +2059,9 @@ func (s *Postgres) MediaInArea(ctx context.Context, userID int, admin bool, libr
 		GROUP BY m.id`
 	default:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
@@ -2266,19 +2274,25 @@ func (s *Postgres) scopedMedia(ctx context.Context, rows *sql.Rows, scopeFolderI
 // subtreeMediaPGSQL mirrors subtreeMediaSQL with $n placeholders: every media
 // row beneath a folder (first bind), relative paths anchored at that folder,
 // and the second bind feeding the favorite expression's user id.
-var subtreeMediaPGSQL = func() string {
+var subtreeMediaPGSQL = subtreeMediaPGSQLFor("")
+
+// visibleSubtreeMediaPGSQL mirrors visibleSubtreeMediaSQL: hidden subfolders
+// (show_as_child = false) are not descended into.
+var visibleSubtreeMediaPGSQL = subtreeMediaPGSQLFor(" AND f.show_as_child")
+
+func subtreeMediaPGSQLFor(childFilter string) string {
 	rel := relativePathExpr("m.path", "covers.root_path")
 	return `WITH RECURSIVE covers(folder_id, root_path) AS (
 		SELECT f.id, f.path FROM media_folders f WHERE f.id = $1
 		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id` + childFilter + `)
 	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path,
 		EXISTS(SELECT 1 FROM favorite_view_items fvi
 			JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
 			WHERE fv.user_id = $2 AND fvi.media_id = m.id)
 	FROM media m JOIN covers ON covers.folder_id = m.folder_id
 	ORDER BY relative_path`
-}()
+}
 
 func (s *Postgres) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]domain.Media, error) {
 	if _, err := s.loadLibrary(ctx, libraryID); err != nil {
@@ -2286,9 +2300,9 @@ func (s *Postgres) MediaForLibrary(ctx context.Context, userID, libraryID int) (
 	}
 	rel := relativePathExpr("m.path", "covers.root_path")
 	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
-		SELECT lr.folder_id, f.path FROM library_roots lr JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = $1
+		SELECT lr.folder_id, f.path FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = $1
 		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 	SELECT ` + mediaColumns + `, ` + rel + ` AS relative_path,
 		EXISTS(SELECT 1 FROM favorite_view_items fvi
 			JOIN favorite_views fv ON fv.id = fvi.favorite_view_id
@@ -2307,7 +2321,7 @@ func (s *Postgres) MediaForFolder(ctx context.Context, userID, libraryID, folder
 	if _, err := s.FolderChain(ctx, libraryID, folderID); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, subtreeMediaPGSQL, folderID, userID)
+	rows, err := s.db.QueryContext(ctx, visibleSubtreeMediaPGSQL, folderID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -3195,4 +3209,19 @@ func (s *Postgres) SetFavoriteFolder(ctx context.Context, userID, viewID, folder
 	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM favorite_folders WHERE favorite_view_id = $1 AND folder_id = $2`, viewID, folderID)
 	return err
+}
+
+func (s *Postgres) HiddenFolders(ctx context.Context) ([]domain.HiddenFolder, error) {
+	return hiddenFolders(ctx, s.db)
+}
+
+func (s *Postgres) SetFolderShowAsChild(ctx context.Context, folderID int, show bool) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE media_folders SET show_as_child = $1 WHERE id = $2`, show, folderID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

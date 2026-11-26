@@ -42,6 +42,27 @@ require_project_version() {
   fi
 }
 
+PROJECT_SOURCE_LABEL="org.opencontainers.image.source=https://github.com/icegood/home_media_library"
+
+# A local build re-tags media-library-{api,web,web-assets}:<VERSION>, leaving
+# the replaced images untagged (~0.6 GB per build), and older versions keep
+# their own tags. Once the new stack is up, drop both: this project's untagged
+# images (by its OCI source label) and its local images of other versions.
+# Only images are removed, never the build cache, so incremental builds stay
+# fast; an image a container still uses is skipped, never fatal.
+remove_stale_local_images() {
+  keep_version="$1"
+  for repo in media-library-api media-library-web media-library-web-assets; do
+    docker images --filter "reference=${repo}" --format '{{.Repository}}:{{.Tag}}' |
+      while read -r ref; do
+        if [ "$ref" != "${repo}:${keep_version}" ]; then
+          docker rmi "$ref" >/dev/null 2>&1 && echo "Removed old image $ref" || true
+        fi
+      done
+  done
+  docker image prune -f --filter "label=${PROJECT_SOURCE_LABEL}" >/dev/null 2>&1 || true
+}
+
 case "$mode" in
   prod | production | published | deploy)
     ensure_env .env .env.default
@@ -80,7 +101,7 @@ case "$mode" in
           fi
         done
     done
-    docker image prune -f --filter "label=org.opencontainers.image.source=https://github.com/icegood/home_media_library" >/dev/null 2>&1 || true
+    docker image prune -f --filter "label=${PROJECT_SOURCE_LABEL}" >/dev/null 2>&1 || true
     ;;
 
   local-build | local | build)
@@ -133,6 +154,7 @@ case "$mode" in
       --build-arg WEB_ASSETS_IMAGE="$WEB_ASSETS_IMAGE" \
       -f ../web/Dockerfile -t "$WEB_IMAGE" ../web
     docker compose --env-file .env -f compose.yaml -f compose.local.yaml up -d --force-recreate --remove-orphans
+    remove_stale_local_images "$PROJECT_VERSION"
     ;;
 
   e2e)
@@ -155,6 +177,8 @@ case "$mode" in
       -e BASE_URL="$base_url" \
       -v "$(cd .. && pwd)/web/test-output:/app/test-output" \
       media-library-playwright:local
+    # The rebuilt runner leaves its predecessor untagged.
+    docker image prune -f --filter "label=${PROJECT_SOURCE_LABEL}" >/dev/null 2>&1 || true
     ;;
 
   android)

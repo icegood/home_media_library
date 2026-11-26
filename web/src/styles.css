@@ -259,6 +259,14 @@ main.browser-page { position: relative; max-width: none; }
 .settings-save { padding: 12px 18px; font-size: 1rem; font-weight: 700; }
 .settings-save:last-child { margin-top: 2px; }
 .settings-label { display: block; font-weight: 700; }
+/* Admin: hidden folders */
+.hidden-folders-add { display: flex; gap: 10px; margin: 8px 0 14px; }
+.hidden-folders-add input { flex: 1; min-width: 0; }
+.hidden-folders-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.hidden-folders-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; }
+.hidden-folders-list li > div { display: grid; min-width: 0; }
+.hidden-folders-list li > div span { color: var(--crumbs-text); overflow-wrap: anywhere; }
+.hidden-folders-actions { display: inline-flex; align-items: center; gap: 12px; flex: none; }
 .settings-top-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; border: 1px solid var(--danger-border); border-radius: 16px; background: var(--danger-surface); box-shadow: 0 12px 28px rgba(127,29,29,.08); }
 .settings-top-actions div { display: grid; gap: 4px; }
 .settings-top-actions small { color: var(--text-muted); }

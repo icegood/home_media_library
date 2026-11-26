@@ -486,3 +486,64 @@ func TestScanImportsDocumentMediaWithoutMetadataAndAttachesKind(t *testing.T) {
 		}
 	}
 }
+
+// A folder hidden from its parent (show_as_child = false) keeps that flag and
+// all its media through full and folder rescans: scanning never drops it.
+func TestRescanKeepsHiddenFolderAndItsMedia(t *testing.T) {
+	root := t.TempDir()
+	private := filepath.Join(root, "family", "private")
+	if err := os.MkdirAll(filepath.Join(private, "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(private, "deep", "secret.jpg"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repository := openSQLite(t)
+	library, err := repository.CreateLibrary(context.Background(), scanner.NewLibrary("Family", []domain.LibraryRoot{{ID: domain.InvalidID, Path: filepath.Join(root, "family")}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := scanner.Scanner{Store: repository}
+	if err := subject.Scan(context.Background(), library); err != nil {
+		t.Fatal(err)
+	}
+	folders, err := repository.FoldersForLibrary(context.Background(), library.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateID := domain.InvalidID
+	for _, folder := range folders {
+		if folder.Path == private {
+			privateID = folder.ID
+		}
+	}
+	if privateID == domain.InvalidID {
+		t.Fatalf("private folder not scanned: %#v", folders)
+	}
+	if err := repository.SetFolderShowAsChild(context.Background(), privateID, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, rescan := range []func() error{
+		func() error { return subject.Scan(context.Background(), library) },
+		func() error { return subject.ScanFolder(context.Background(), library, library.Roots[0].ID) },
+		func() error { return subject.ScanFolder(context.Background(), library, privateID) },
+	} {
+		if err := rescan(); err != nil {
+			t.Fatal(err)
+		}
+		hidden, err := repository.HiddenFolders(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(hidden) != 1 || hidden[0].ID != privateID {
+			t.Fatalf("hidden folders after rescan = %#v, want only %d", hidden, privateID)
+		}
+		items, err := repository.MediaForSubtree(context.Background(), privateID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].Name != "secret.jpg" {
+			t.Fatalf("hidden folder media after rescan = %#v", items)
+		}
+	}
+}

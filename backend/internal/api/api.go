@@ -185,6 +185,8 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/import/emby", a.auth(a.admin(http.HandlerFunc(a.importEmby))))
 	mux.Handle("GET /api/v1/admin/filesystem", a.auth(a.admin(http.HandlerFunc(a.filesystem))))
 	mux.Handle("GET /api/v1/admin/settings", a.auth(a.admin(http.HandlerFunc(a.getSettings))))
+	mux.Handle("GET /api/v1/admin/hidden-folders", a.auth(a.admin(http.HandlerFunc(a.hiddenFolders))))
+	mux.Handle("PUT /api/v1/admin/folders/{id}/show-as-child", a.auth(a.admin(http.HandlerFunc(a.setFolderShowAsChild))))
 	mux.Handle("PUT /api/v1/admin/settings", a.auth(a.admin(http.HandlerFunc(a.updateSettings))))
 	mux.HandleFunc("GET /swagger", a.swaggerRedirect)
 	mux.HandleFunc("GET /swagger/", a.swaggerUI)
@@ -821,7 +823,7 @@ func (a *API) folderMedia(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !a.requireRead(w, r, p, id) {
+	if !a.requireRead(w, r, p, id) || !a.requireFolderVisible(w, r, p, folderID) {
 		return
 	}
 	items, err := a.Store.MediaForFolder(r.Context(), p.ID, id, folderID)
@@ -864,6 +866,18 @@ func (a *API) mediaNeighbors(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		folderID = parsed
+		// A folder of another library is "not found"; a hidden one is denied.
+		if _, err := a.Store.FolderChain(r.Context(), id, folderID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				problem(w, http.StatusNotFound, "folder not found in library")
+				return
+			}
+			problem(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !a.requireFolderVisible(w, r, p, folderID) {
+			return
+		}
 	}
 	sort := query.Get("sort")
 	switch sort {
@@ -961,7 +975,7 @@ func (a *API) folderStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !a.requireRead(w, r, p, id) {
+	if !a.requireRead(w, r, p, id) || !a.requireFolderVisible(w, r, p, folderID) {
 		return
 	}
 	stats, err := a.Store.FolderStats(r.Context(), p.ID, id, folderID)
@@ -1045,7 +1059,7 @@ func (a *API) folderEntries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !a.requireRead(w, r, p, id) {
+	if !a.requireRead(w, r, p, id) || !a.requireFolderVisible(w, r, p, folderID) {
 		return
 	}
 	result, err := a.Store.EntriesForFolder(r.Context(), p.ID, id, folderID)
@@ -1071,7 +1085,7 @@ func (a *API) folder(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !a.requireRead(w, r, p, id) {
+	if !a.requireRead(w, r, p, id) || !a.requireFolderVisible(w, r, p, folderID) {
 		return
 	}
 	if _, err := a.Store.FolderChain(r.Context(), id, folderID); err != nil {
@@ -2281,6 +2295,9 @@ func (a *API) folderThumbnail(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.requireFolderVisible(w, r, current(r), id) {
+		return
+	}
 	folder, err := a.Store.Folder(r.Context(), id)
 	if err != nil {
 		problem(w, http.StatusNotFound, "folder not found")
@@ -2520,6 +2537,9 @@ func (a *API) mapScope(w http.ResponseWriter, r *http.Request, p principal) (lib
 		}
 		if libraryID <= 0 {
 			problem(w, http.StatusBadRequest, "folder requires library")
+			return 0, 0, 0, false
+		}
+		if !a.requireFolderVisible(w, r, p, fid) {
 			return 0, 0, 0, false
 		}
 		if _, err := a.Store.EntriesForFolder(r.Context(), p.ID, libraryID, fid); err != nil {
@@ -4221,6 +4241,42 @@ func (a *API) setAccess(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// hiddenFolders lists the folders hidden from their parent, for the admin
+// page (the only place that links to them).
+func (a *API) hiddenFolders(w http.ResponseWriter, r *http.Request) {
+	items, err := a.Store.HiddenFolders(r.Context())
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "could not read hidden folders")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// setFolderShowAsChild hides a folder from its parent (false) or shows it
+// again (true).
+func (a *API) setFolderShowAsChild(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		ShowAsChild *bool `json:"showAsChild"`
+	}
+	if json.NewDecoder(r.Body).Decode(&input) != nil || input.ShowAsChild == nil {
+		problem(w, 400, "invalid JSON")
+		return
+	}
+	folderID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.Store.SetFolderShowAsChild(r.Context(), folderID, *input.ShowAsChild); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			problem(w, http.StatusNotFound, "folder not found")
+			return
+		}
+		problem(w, http.StatusInternalServerError, "could not update folder")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *API) users(w http.ResponseWriter, r *http.Request) {
 	users, err := a.Store.Users(r.Context())
 	if err != nil {
@@ -4657,6 +4713,17 @@ func (a *API) requireMediaRead(w http.ResponseWriter, r *http.Request, p princip
 		return false
 	}
 	return true
+}
+
+// requireFolderVisible guards folder-scoped routes: admins may open any
+// folder (hidden ones included, from the admin page); regular users only
+// folders inside a library they can read and not inside a folder hidden from
+// its parent (show_as_child = false).
+func (a *API) requireFolderVisible(w http.ResponseWriter, r *http.Request, p principal, folderID int) bool {
+	if p.Role == domain.RoleAdmin {
+		return true
+	}
+	return a.requireFolderRead(w, r, p, folderID)
 }
 
 func (a *API) requireFolderRead(w http.ResponseWriter, r *http.Request, p principal, folderID int) bool {

@@ -44,15 +44,23 @@ const favoriteExpr = `EXISTS(SELECT 1 FROM favorite_view_items fvi
 // subtreeMediaSQL lists every media row beneath a folder (first bind), with
 // relative paths anchored at that folder; the second bind feeds favoriteExpr's
 // user id (job paths bind 0 = no user, so every media is returned).
-var subtreeMediaSQL = func() string {
+var subtreeMediaSQL = subtreeMediaSQLFor("")
+
+// visibleSubtreeMediaSQL is subtreeMediaSQL for users: it does not descend
+// into subfolders hidden from their parent (show_as_child = false). The
+// folder itself is always included, so opening a hidden folder directly
+// still lists its own media.
+var visibleSubtreeMediaSQL = subtreeMediaSQLFor(" AND f.show_as_child")
+
+func subtreeMediaSQLFor(childFilter string) string {
 	rel := relativePathExpr("m.path", "covers.root_path")
 	return `WITH RECURSIVE covers(folder_id, root_path) AS (
 		SELECT f.id, f.path FROM media_folders f WHERE f.id = ?
 		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id` + childFilter + `)
 	SELECT ` + mediaColumns + `, ` + rel + `, ` + favoriteExpr + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
 	ORDER BY ` + rel
-}()
+}
 
 // folderEntriesSQL returns child folders and media rows of a folder in a single
 // result set, discriminated by a leading entry_kind column ('folder'/'media').
@@ -60,7 +68,7 @@ var subtreeMediaSQL = func() string {
 // metadata_json, gps, taken_at, metadata_error, thumbnail_error, favorite.
 // Query arguments: parentID, userID, parentID.
 const folderEntriesSQL = `SELECT 'folder' AS entry_kind, f.id, f.parent_id, f.path, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0
-	FROM media_folders f WHERE f.parent_id = ?
+	FROM media_folders f WHERE f.parent_id = ? AND f.show_as_child
 	UNION ALL
 	SELECT 'media' AS entry_kind, ` + mediaColumns + `, ` + favoriteExpr + `
 	FROM media m WHERE m.folder_id = ?`
@@ -341,9 +349,9 @@ func (s *SQLite) attachRelativePaths(ctx context.Context, items []domain.Media) 
 // `WITH RECURSIVE sub(id) AS (` ... ` UNION ALL ...)`.
 func accessibleSubtree(userID int, admin bool) (string, []any) {
 	if admin {
-		return `SELECT lr.folder_id FROM library_roots lr`, nil
+		return `SELECT lr.folder_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child`, nil
 	}
-	return `SELECT lr.folder_id FROM library_access la JOIN library_roots lr ON lr.library_id = la.library_id WHERE la.user_id = ?`,
+	return `SELECT lr.folder_id FROM library_access la JOIN library_roots lr ON lr.library_id = la.library_id JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE la.user_id = ?`,
 		[]any{userID}
 }
 
@@ -838,9 +846,9 @@ func (s *SQLite) WatchedRoots(ctx context.Context) ([]domain.WatchedRoot, error)
 func (s *SQLite) LibraryStats(ctx context.Context, libraryID int) (domain.KindStats, error) {
 	var stats domain.KindStats
 	query := `WITH RECURSIVE sub(id) AS (
-		SELECT lr.folder_id FROM library_roots lr WHERE lr.library_id = ?
+		SELECT lr.folder_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = ?
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child
 	)
 	SELECT (SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'image'),
 		(SELECT COUNT(*) FROM media m JOIN media_mime_types mmt ON mmt.value = m.mime_type JOIN sub ON m.folder_id = sub.id WHERE mmt.media_type = 'video'),
@@ -863,7 +871,7 @@ func (s *SQLite) FolderStats(ctx context.Context, userID, libraryID, folderID in
 	query := `WITH RECURSIVE sub(id) AS (
 		SELECT f.id FROM media_folders f WHERE f.id = ?
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child
 	)
 	SELECT COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN mmt.media_type = 'video' THEN 1 ELSE 0 END), 0),
@@ -887,9 +895,9 @@ func (s *SQLite) FavoriteViewStats(ctx context.Context, userID, viewID int, admi
 	sub, subArgs := accessibleSubtree(userID, admin)
 	query := `WITH RECURSIVE sub(id) AS (` + sub + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id),
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child),
 		fav_folders(id) AS (SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ?),
-		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id),
+		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id AND f.show_as_child),
 		mentions(media_id) AS (
 			SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ?
 			UNION ALL
@@ -996,9 +1004,9 @@ func (s *SQLite) fillLibraryStats(ctx context.Context, libraries map[int]*domain
 		args = append(args, userID)
 	}
 	query := `WITH RECURSIVE tree(library_id, folder_id) AS (
-		SELECT lr.library_id, lr.folder_id FROM library_roots lr ` + accessFilter + `
+		SELECT lr.library_id, lr.folder_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child ` + accessFilter + `
 		UNION ALL
-		SELECT tree.library_id, f.id FROM media_folders f JOIN tree ON f.parent_id = tree.folder_id
+		SELECT tree.library_id, f.id FROM media_folders f JOIN tree ON f.parent_id = tree.folder_id AND f.show_as_child
 	)
 	SELECT tree.library_id,
 		COALESCE(SUM(CASE WHEN mmt.media_type = 'image' THEN 1 ELSE 0 END), 0),
@@ -1150,7 +1158,7 @@ func (s *SQLite) CanReadMedia(ctx context.Context, userID, mediaID int, admin bo
 	sub, args := accessibleSubtree(userID, false)
 	query := `WITH RECURSIVE sub(id) AS (` + sub + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT EXISTS(SELECT 1 FROM sub WHERE id = ?)`
 	args = append(args, folderID)
 	var ok bool
@@ -1172,7 +1180,7 @@ func (s *SQLite) CanReadFolder(ctx context.Context, userID, folderID int, admin 
 	sub, args := accessibleSubtree(userID, false)
 	query := `WITH RECURSIVE sub(id) AS (` + sub + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT EXISTS(SELECT 1 FROM sub WHERE id = ?)`
 	args = append(args, folderID)
 	var ok bool
@@ -1188,9 +1196,17 @@ func (s *SQLite) Entries(ctx context.Context, userID, libraryID int, dir string)
 	}
 	out := []domain.Entry{}
 	showRootWrappers := true
+	hidden, err := hiddenFolderIDs(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
 	for _, mapping := range library.Roots {
 		mappingName := pathLabel(mapping.Path)
 		if showRootWrappers && dir == "" {
+			// A root hidden from its parent is not listed on the library page.
+			if hidden[mapping.ID] {
+				continue
+			}
 			out = append(out, domain.Entry{ID: mapping.ID, Name: mappingName,
 				RelativePath: mappingName, Type: "folder", FolderThumbnail: mapping.ID})
 			continue
@@ -1303,7 +1319,7 @@ func (s *SQLite) folderThumbnails(ctx context.Context, folderID int, limit int) 
 	query := `WITH RECURSIVE sub(id) AS (
 		SELECT ?
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT m.id FROM media m JOIN sub ON m.folder_id = sub.id
 	JOIN media_mime_types mmt ON mmt.value = m.mime_type
 	WHERE mmt.media_type <> 'document'
@@ -1557,7 +1573,7 @@ func (s *SQLite) FavoriteMedia(ctx context.Context, userID, viewID int, admin bo
 	sub, subArgs := accessibleSubtree(userID, admin)
 	query := `WITH RECURSIVE sub(id) AS (` + sub + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id)
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child)
 	SELECT ` + mediaColumns + ` FROM favorite_view_items fvi
 	JOIN media m ON m.id = fvi.media_id
 	WHERE fvi.favorite_view_id = ? AND (? = 1 OR m.folder_id IN (SELECT id FROM sub))
@@ -1600,9 +1616,9 @@ func (s *SQLite) FavoriteMediaExpanded(ctx context.Context, userID, viewID int, 
 	sub, subArgs := accessibleSubtree(userID, admin)
 	query := `WITH RECURSIVE sub(id) AS (` + sub + `
 		UNION ALL
-		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id),
+		SELECT f.id FROM media_folders f JOIN sub ON f.parent_id = sub.id AND f.show_as_child),
 		fav_folders(id) AS (SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ?),
-		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id),
+		folder_sub(id) AS (SELECT id FROM fav_folders UNION ALL SELECT f.id FROM media_folders f JOIN folder_sub ON f.parent_id = folder_sub.id AND f.show_as_child),
 		mentions(media_id) AS (
 			SELECT fvi.media_id FROM favorite_view_items fvi WHERE fvi.favorite_view_id = ?
 			UNION ALL
@@ -1871,7 +1887,7 @@ func (s *SQLite) bulkTargetSub(ctx context.Context, ids []int, folderIDs []int) 
 		cte = `WITH RECURSIVE descend(folder_id) AS (
 			SELECT id FROM media_folders WHERE id IN (` + strings.Join(folderPh, ",") + `)
 			UNION ALL
-			SELECT f.id FROM media_folders f JOIN descend d ON f.parent_id = d.folder_id) `
+			SELECT f.id FROM media_folders f JOIN descend d ON f.parent_id = d.folder_id AND f.show_as_child) `
 		targetSub = `SELECT m.id FROM media m JOIN descend d ON m.folder_id = d.folder_id`
 		args = append(args, folderArgs...)
 	}
@@ -2043,7 +2059,7 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
 			SELECT ?, ?
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
@@ -2051,9 +2067,9 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 		GROUP BY m.id`
 	case libraryID > 0:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ?
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = ?
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
@@ -2061,9 +2077,9 @@ func (s *SQLite) GeotaggedMedia(ctx context.Context, userID int, admin bool, lib
 		GROUP BY m.id`
 	default:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (m.gps <> '' OR EXISTS(SELECT 1 FROM trajectory_starts WHERE media_id = m.id) OR EXISTS(SELECT 1 FROM trajectory_ends WHERE media_id = m.id))
@@ -2143,17 +2159,17 @@ func mapScopeCovers(libraryID, folderID int) (string, []any) {
 		return `WITH RECURSIVE covers(folder_id, library_id) AS (
 			SELECT ?, ?
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`, []any{folderID, libraryID}
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)`, []any{folderID, libraryID}
 	case libraryID > 0:
 		return `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ?
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = ?
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`, []any{libraryID}
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)`, []any{libraryID}
 	default:
 		return `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)`, nil
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)`, nil
 	}
 }
 
@@ -2225,7 +2241,7 @@ const favoriteMapCondition = `
 				OR m.folder_id IN (WITH RECURSIVE fav_sub(id) AS (
 					SELECT ff.folder_id FROM favorite_folders ff WHERE ff.favorite_view_id = ?
 					UNION ALL
-					SELECT f.id FROM media_folders f JOIN fav_sub ON f.parent_id = fav_sub.id)
+					SELECT f.id FROM media_folders f JOIN fav_sub ON f.parent_id = fav_sub.id AND f.show_as_child)
 				SELECT id FROM fav_sub))`
 
 // withFavoriteMapFilter appends the favorite view condition to a map query
@@ -2250,7 +2266,7 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
 			SELECT ?, ?
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
@@ -2259,9 +2275,9 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 		GROUP BY m.id`
 	case libraryID > 0:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr WHERE lr.library_id = ?
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child WHERE lr.library_id = ?
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
@@ -2270,9 +2286,9 @@ func (s *SQLite) MediaInArea(ctx context.Context, userID int, admin bool, librar
 		GROUP BY m.id`
 	default:
 		query = `WITH RECURSIVE covers(folder_id, library_id) AS (
-			SELECT lr.folder_id, lr.library_id FROM library_roots lr
+			SELECT lr.folder_id, lr.library_id FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child
 			UNION ALL
-			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+			SELECT f.id, covers.library_id FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 		SELECT ` + mapMediaColumns + `, MIN(covers.library_id)
 		FROM media m LEFT JOIN media_geo g ON g.id = m.id JOIN covers ON covers.folder_id = m.folder_id
 		WHERE (g.minLat <= ? AND g.maxLat >= ? AND g.minLng <= ? AND g.maxLng >= ?
@@ -2500,9 +2516,9 @@ func (s *SQLite) MediaForLibrary(ctx context.Context, userID, libraryID int) ([]
 	}
 	rel := relativePathExpr("m.path", "covers.root_path")
 	query := `WITH RECURSIVE covers(folder_id, root_path) AS (
-		SELECT lr.folder_id, f.path FROM library_roots lr JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = ?
+		SELECT lr.folder_id, f.path FROM library_roots lr JOIN media_folders hr ON hr.id = lr.folder_id AND hr.show_as_child JOIN media_folders f ON f.id = lr.folder_id WHERE lr.library_id = ?
 		UNION ALL
-		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id)
+		SELECT f.id, covers.root_path FROM media_folders f JOIN covers ON f.parent_id = covers.folder_id AND f.show_as_child)
 	SELECT ` + mediaColumns + `, ` + rel + `, ` + favoriteExpr + ` FROM media m JOIN covers ON covers.folder_id = m.folder_id
 	ORDER BY ` + rel
 	rows, err := s.db.QueryContext(ctx, query, libraryID, userID)
@@ -2517,7 +2533,7 @@ func (s *SQLite) MediaForFolder(ctx context.Context, userID, libraryID, folderID
 	if _, err := s.FolderChain(ctx, libraryID, folderID); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, subtreeMediaSQL, folderID, userID)
+	rows, err := s.db.QueryContext(ctx, visibleSubtreeMediaSQL, folderID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -3519,4 +3535,19 @@ func (s *SQLite) SetFavoriteFolder(ctx context.Context, userID, viewID, folderID
 	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM favorite_folders WHERE favorite_view_id = ? AND folder_id = ?`, viewID, folderID)
 	return err
+}
+
+func (s *SQLite) HiddenFolders(ctx context.Context) ([]domain.HiddenFolder, error) {
+	return hiddenFolders(ctx, s.db)
+}
+
+func (s *SQLite) SetFolderShowAsChild(ctx context.Context, folderID int, show bool) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE media_folders SET show_as_child = ? WHERE id = ?`, show, folderID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

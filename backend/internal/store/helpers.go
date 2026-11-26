@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
+	"database/sql"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -58,4 +60,57 @@ func dedupeInts(ids []int) []int {
 		out = append(out, id)
 	}
 	return out
+}
+
+// hiddenFoldersSQL lists folders hidden from their parent (show_as_child =
+// false) with the library whose root contains them; plain SQL valid for both
+// SQLite and Postgres.
+const hiddenFoldersSQL = `SELECT h.id, h.path, lr.library_id, l.name, r.path
+	FROM media_folders h
+	JOIN library_roots lr ON 1 = 1
+	JOIN media_folders r ON r.id = lr.folder_id
+	JOIN libraries l ON l.id = lr.library_id
+	WHERE NOT h.show_as_child AND (h.path = r.path OR h.path LIKE r.path || '/%')
+	ORDER BY l.name, h.path`
+
+func hiddenFolders(ctx context.Context, db *sql.DB) ([]domain.HiddenFolder, error) {
+	rows, err := db.QueryContext(ctx, hiddenFoldersSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.HiddenFolder{}
+	for rows.Next() {
+		var item domain.HiddenFolder
+		var folderPath, rootPath string
+		if err := rows.Scan(&item.ID, &folderPath, &item.LibraryID, &item.LibraryName, &rootPath); err != nil {
+			return nil, err
+		}
+		rel := strings.TrimPrefix(strings.TrimPrefix(folderPath, rootPath), "/")
+		item.RelativePath = pathLabel(rootPath)
+		if rel != "" {
+			item.RelativePath += "/" + rel
+		}
+		item.Name = pathLabel(folderPath)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// hiddenFolderIDs is the set of folders hidden from their parent.
+func hiddenFolderIDs(ctx context.Context, db *sql.DB) (map[int]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id FROM media_folders WHERE NOT show_as_child`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }

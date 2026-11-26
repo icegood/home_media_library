@@ -3,6 +3,8 @@ export type ID = number;
 export interface User { id:ID; login:string; role:Role; email?:string }
 export interface LibraryUserAccess { user:User; allowed:boolean }
 export interface LibraryRoot { id:ID; path?:string }
+// A folder hidden from its parent (show as child = off), listed for admins.
+export interface HiddenFolder { id:ID; name:string; libraryId:ID; libraryName:string; relativePath:string }
 export interface KindStats { images:number; videos:number; documents:number }
 // watch opts every root of the library into filesystem watching (off by default).
 export interface Library { id:ID; name:string; watch?:boolean; roots?:LibraryRoot[]; stats?:KindStats }

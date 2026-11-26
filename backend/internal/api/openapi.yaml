@@ -1687,6 +1687,63 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/hidden-folders:
+    get:
+      tags: [Admin]
+      summary: List folders hidden from their parent
+      description: >-
+        Folders whose "show as child" flag is off. They are left out of their
+        parent's folder list, timelines, maps and stats for everyone, and only
+        admins can open them; this list is where admins find them.
+      responses:
+        "200":
+          description: Hidden folders, by library name then path
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HiddenFolder"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/folders/{id}/show-as-child:
+    put:
+      tags: [Admin]
+      summary: Show a folder in its parent or hide it
+      description: >-
+        false hides the folder (and everything below it) from its parent's
+        folder list, timelines, maps and stats and makes it admin-only; true
+        shows it again. Every folder is shown by default. Scans keep the flag.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Folder id.
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [showAsChild]
+              properties:
+                showAsChild:
+                  type: boolean
+      responses:
+        "204":
+          description: Flag updated
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Error"
   /api/v1/admin/libraries/{id}/access/{userId}:
     put:
       tags: [Admin]
@@ -2278,6 +2335,21 @@ components:
           type: integer
         documents:
           type: integer
+    HiddenFolder:
+      type: object
+      required: [id, name, libraryId, libraryName, relativePath]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        libraryId:
+          type: integer
+        libraryName:
+          type: string
+        relativePath:
+          type: string
+          description: Path from the library root's name, e.g. "photos/2021/private".
     LibraryRoot:
       type: object
       required: [id]

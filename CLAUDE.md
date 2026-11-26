@@ -42,6 +42,8 @@ nearest one before editing.
    and `npm test && npm run build` inside the image builds.
 2. **Never prune Docker caches** (`docker builder prune`, `system prune`, image
    removal) to "force" a rebuild unless the user asks. Incremental builds must work.
+   After a deploy, `start.sh` itself removes this project's stale *images*
+   (untagged ones and other versions); keep that cleanup working.
 3. **Browser/Playwright verification is opt-in** — only when explicitly requested.
 4. **Both DB stores move together.** Any schema or query change lands in SQLite
    *and* Postgres (`backend/internal/store/`), with paired migrations.
