@@ -4055,6 +4055,36 @@ test("library editor supports adding and browsing root folders", async () => {
   expect(within(dialog).getAllByLabelText("Root path")[1]).toHaveValue("/media/photos");
 });
 
+test("going up from a subfolder timeline focuses that subfolder's first item in the parent timeline", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderEntries.mockImplementation((_libraryId:number, folderId:number) => Promise.resolve({entries:[], chain:folderId === 21
+    ? [{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}, {id:21, parentId:20, relativePath:"Photos/Trip", name:"Trip"}]
+    : [{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]}));
+  const item = (id:number, folderId:number, day:number) => ({id, folderId, relativePath:`${id}.jpg`, name:`${id}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:`2020-01-${String(day).padStart(2, "0")}T10:00:00Z`});
+  const parentOnly = [item(100, 20, 1), item(101, 20, 2)];
+  const trip = [item(201, 21, 5), item(200, 21, 3)];
+  mockApi.folderMedia.mockImplementation((_libraryId:number, folderId:number) => Promise.resolve(folderId === 21 ? trip : [...parentOnly, ...trip]));
+  function HistoryBack() {
+    const navigate = useNavigate();
+    return <button type="button" onClick={() => navigate(-1)}>History back</button>;
+  }
+  const first = render(<MemoryRouter initialEntries={["/library/1/timeline/20", "/library/1/timeline/21"]} initialIndex={1}><App/><HistoryBack/></MemoryRouter>);
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).not.toBeNull());
+  fireEvent.click(screen.getByRole("button", {name:"History back"}));
+  // Oldest first: 200 (Jan 3) is the trip's first item in the parent's order.
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).toHaveClass("kb-focus"));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull());
+  expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
+  first.unmount();
+  // The breadcrumb up to the parent timeline does the same.
+  render(<MemoryRouter initialEntries={["/library/1/timeline/21"]}><App/></MemoryRouter>);
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m201"]')).not.toBeNull());
+  fireEvent.click(within(screen.getByLabelText("Breadcrumb")).getByRole("link", {name:"Photos"}));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull());
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m200"]')).toHaveClass("kb-focus"));
+});
+
 test("timeline route renders the folder timeline with breadcrumb trail", async () => {
   mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
   render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);

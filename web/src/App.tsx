@@ -322,6 +322,24 @@ let lastViewerItemId:ID|null = null;
 // Going Back from a subfolder to its parent carries no navigation state, so
 // the parent focuses this subfolder instead.
 let lastBrowsedFolderId:ID|null = null;
+// The media of the folder timeline shown last. Going up from a subfolder's
+// timeline to an ancestor's (Back or a breadcrumb) focuses the first of them
+// in the ancestor's order, since a timeline has no folder card to focus.
+let lastTimelineItems:{folderId:ID|null; ids:Set<ID>}|null = null;
+
+// The subfolder timeline this timeline was left for, fixed per location (read
+// before this timeline records its own media as the last shown).
+function useReturnTimelineItems(folderId:ID|null) {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const ref = useRef<{key:string; ids:Set<ID>|null}|null>(null);
+  if (ref.current?.key !== location.key) {
+    const handed = (location.state as {returnToFolderId?:ID} | null)?.returnToFolderId != null;
+    const last = lastTimelineItems;
+    ref.current = {key:location.key, ids:(handed || navigationType === "POP") && last && last.folderId !== folderId ? last.ids : null};
+  }
+  return ref.current.ids;
+}
 
 // The subfolder a folder grid should focus on arrival: the one handed over by
 // a breadcrumb link, else on Back the folder shown last. Fixed per location,
@@ -546,10 +564,10 @@ function useBreadcrumb(): Crumb[] | null {
     const favSuffix = favParam ? `?fav=${encodeURIComponent(favParam)}` : "";
     const base: Crumb[] = [{label: timeline ? "Timeline of Libraries" : "Libraries", to:"/"}];
     if (favParam) base.push({label:"Favorites", to:"/favorites"}, {label:favViewName ?? "Favorite view", to:`/favorites/${favParam}`});
-    if (library) base.push({label:library.name, to:(timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`) + favSuffix, ...(!timeline && folderID != null && folderData?.chain?.length ? {returnToFolderId: folderData.chain[0].id} : {})});
+    if (library) base.push({label:library.name, to:(timeline ? `/library/${libraryID}/timeline` : `/library/${libraryID}`) + favSuffix, ...(folderID != null && folderData?.chain?.length ? {returnToFolderId: folderData.chain[0].id} : {})});
     if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
       const chain = folderData.chain;
-      base.push(...chain.map((folder, index) => ({label:folderCrumbName(folder), to:(timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`) + favSuffix, ...(!timeline && chain[index + 1] ? {returnToFolderId: chain[index + 1].id} : {})})));
+      base.push(...chain.map((folder, index) => ({label:folderCrumbName(folder), to:(timeline ? `/library/${libraryID}/timeline/${folder.id}` : `/library/${libraryID}/folder/${folder.id}`) + favSuffix, ...(chain[index + 1] ? {returnToFolderId: chain[index + 1].id} : {})})));
     }
     // The viewer keeps the item it is showing in the navigation state, so a
     // breadcrumb click back into the folder list focuses that same item
@@ -2664,7 +2682,11 @@ function LibraryTimeline() {
     setLoading(true);
     setItems([]);
     const request = currentFolderId == null ? api.libraryMedia(libraryId) : api.folderMedia(libraryId, currentFolderId);
-    request.then(items => { if (cancelled) return; setItems(items); setLoading(false); })
+    request.then(items => {
+      if (cancelled) return;
+      lastTimelineItems = {folderId:currentFolderId, ids:new Set(items.map(item => item.id))};
+      setItems(items); setLoading(false);
+    })
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [libraryId, currentFolderId]);
@@ -2680,7 +2702,13 @@ function LibraryTimeline() {
   const groups = useMemo(() => groupByDate(sorted), [sorted]);
   // Coming back from the viewer, the date group holding the item that was
   // open is drawn in the first frame instead of after every group above it.
-  const returnTarget = useReturnTarget();
+  const viewerTarget = useReturnTarget();
+  // Coming up from a subfolder's timeline, the first of its media here.
+  const subfolderItems = useReturnTimelineItems(currentFolderId);
+  const returnTarget = useMemo(() => {
+    if (viewerTarget != null && sorted.some(item => item.id === viewerTarget)) return viewerTarget;
+    return subfolderItems ? sorted.find(item => subfolderItems.has(item.id))?.id ?? viewerTarget : viewerTarget;
+  }, [viewerTarget, subfolderItems, sorted]);
   const [selected, setSelected] = useState<ID[]>([]);
   const gridRef = useRef<HTMLDivElement|null>(null);
   const returnGroup = useMemo(() => groupIndexOf(groups, returnTarget), [groups, returnTarget]);
