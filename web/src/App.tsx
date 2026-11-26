@@ -1,4 +1,4 @@
-import { createContext, FormEvent, Fragment, MouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, Fragment, memo, MouseEvent, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent, WheelEvent, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
@@ -318,6 +318,24 @@ const viewerItemNames = new Map<ID, string>();
 // The item the viewer showed last. Going Back (a history pop) from the viewer
 // to a grid carries no navigation state, so the grid focuses this one instead.
 let lastViewerItemId:ID|null = null;
+// The folder the folder grid showed last (null for a library's top level).
+// Going Back from a subfolder to its parent carries no navigation state, so
+// the parent focuses this subfolder instead.
+let lastBrowsedFolderId:ID|null = null;
+
+// The subfolder a folder grid should focus on arrival: the one handed over by
+// a breadcrumb link, else on Back the folder shown last. Fixed per location,
+// read before this grid records itself as the folder shown last.
+function useReturnFolderId():ID|null {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const ref = useRef<{key:string; id:ID|null}|null>(null);
+  if (ref.current?.key !== location.key) {
+    const handed = (location.state as {returnToFolderId?:ID} | null)?.returnToFolderId;
+    ref.current = {key:location.key, id:handed ?? (navigationType === "POP" ? lastBrowsedFolderId : null)};
+  }
+  return ref.current.id;
+}
 
 function publishViewerItem(id:ID, name:string) {
   lastViewerItemId = id;
@@ -2567,12 +2585,16 @@ function Browser() {
   // so the user sees where they came back from without scrolling themselves.
   // Leaving the viewer does the same for the media item that was open, so the
   // grid comes back positioned on it rather than at the top.
-  const returnToFolderId = (location.state as {returnToFolderId?:ID} | null)?.returnToFolderId;
+  // Browser Back from a subfolder focuses it here too (useReturnFolderId).
+  // A target beyond the loaded pages of a big folder pulls more pages until
+  // it arrives or the folder is exhausted.
+  const returnToFolderId = useReturnFolderId();
   const returnToMediaId = useReturnMediaId();
+  useEffect(() => { lastBrowsedFolderId = currentFolderId; }, [currentFolderId, location.key]);
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
     if (consumedReturnKey.current === location.key) return;
-    if (returnToFolderId != null && entries.some(entry => entry.type === "folder" && entry.id === returnToFolderId)) {
+    if (returnToFolderId != null && returnToFolderId !== currentFolderId && entries.some(entry => entry.type === "folder" && entry.id === returnToFolderId)) {
       consumedReturnKey.current = location.key;
       kb.focus(`f${returnToFolderId}`, true);
       return;
@@ -2581,8 +2603,15 @@ function Browser() {
       consumedReturnKey.current = location.key;
       consumeReturnMediaId(returnToMediaId);
       kb.focus(`m${returnToMediaId}`, true);
+      return;
     }
-  }, [entries, returnToFolderId, returnToMediaId, location.key, kb.focus]);
+    // Only a target a breadcrumb handed over is worth paging for; a Back guess
+    // (the last folder or item shown) may belong elsewhere.
+    const handed = location.state as {returnToFolderId?:ID; returnToMediaId?:ID} | null;
+    const waiting = (handed?.returnToFolderId != null && handed.returnToFolderId !== currentFolderId) || handed?.returnToMediaId != null;
+    if (!waiting) return;
+    if (!entriesDone && !entriesLoading) void loadMore();
+  }, [entries, entriesDone, entriesLoading, loadMore, currentFolderId, returnToFolderId, returnToMediaId, location.key, location.state, kb.focus]);
   function applyBulkPatch(patches:BulkPatch[]) {
     setEntries(currentEntries => currentEntries.map(entry => {
       if (entry.type !== "media" || !entry.media) return entry;
@@ -2652,9 +2681,12 @@ function LibraryTimeline() {
   // Coming back from the viewer, the date group holding the item that was
   // open is drawn in the first frame instead of after every group above it.
   const returnTarget = useReturnTarget();
-  const visibleGroups = useProgressiveReveal(groups, 120, useMemo(() => groupsThrough(groups, returnTarget), [groups, returnTarget]));
   const [selected, setSelected] = useState<ID[]>([]);
   const gridRef = useRef<HTMLDivElement|null>(null);
+  const returnGroup = useMemo(() => groupIndexOf(groups, returnTarget), [groups, returnTarget]);
+  const live = useLiveGroups(groups, returnGroup, gridRef, thumbSize);
+  const onToggleSelected = useMemo(() => toggleSelected(setSelected), []);
+  const cardNav = useMemo<ItemNav>(() => ({root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(gpsFilter !== "all" ? {gps:gpsFilter} : {}), ...(favParam ? {fav:favParam} : {})}), [currentFolderId, kind, gpsFilter, favParam]);
   const [favItem, setFavItem] = useState<Media|null>(null);
   const kb = useGridKeyboard({
     enabled: favItem == null && !loading,
@@ -2667,11 +2699,11 @@ function LibraryTimeline() {
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
     if (returnTarget == null || consumedReturnKey.current === location.key) return;
-    if (!visibleGroups.some(group => group.items.some(item => item.id === returnTarget))) return;
+    if (returnGroup < 0 || !live.isLive(returnGroup)) return;
     consumedReturnKey.current = location.key;
     consumeReturnMediaId(returnTarget);
     kb.focus(`m${returnTarget}`, true);
-  }, [visibleGroups, returnTarget, location.key, kb.focus]);
+  }, [live, returnGroup, returnTarget, location.key, kb.focus]);
   function applyBulkPatch(patches:BulkPatch[]) {
     setItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -2701,13 +2733,9 @@ function LibraryTimeline() {
       <button type="button" className="button-like active" onClick={() => navigate(-1)}>Cancel and go back</button>
     </div> :
     sorted.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
-      <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{visibleGroups.map(group =>
-        <div className="timeline-group" key={group.label}>
-          <div className="timeline-group-caption">{group.label}</div>
-          <div className="timeline-group-grid">{group.items.map(item =>
-            <MediaCard key={item.id} item={item} view="tile" libraryId={libraryId} trajectoryFolderId={currentFolderId ?? undefined} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "date-asc" : "date"} nav={{root: currentFolderId != null ? String(currentFolderId) : "all", kind, ...(gpsFilter !== "all" ? {gps:gpsFilter} : {}), ...(favParam ? {fav:favParam} : {})}} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
-          )}</div>
-        </div>
+      <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{groups.map((group, index) =>
+        <TimelineGroupView key={group.label} group={group} index={index} live={live.isLive(index)} placeholderHeight={live.placeholderHeight(group.items.length)} libraryId={libraryId} trajectoryFolderId={currentFolderId ?? undefined} sort={sort === "asc" ? "date-asc" : "date"} nav={cardNav}
+          selected={selected} onToggleSelected={onToggleSelected} focusId={kb.focusId} bandIds={kb.bandIds} focus={kb.focus}/>
       )}</div>}
     {!loading && sorted.length > 0 && <TimelineDateRail containerRef={gridRef}/>}
     {favItem && createPortal(<FavoriteViewChooser item={favItem} onChange={() => setFavItem(null)} onClose={() => setFavItem(null)}/>, document.body)}
@@ -3034,20 +3062,23 @@ function FavoriteViewPage() {
   const filteredMedia = kind === "all" ? mediaItems : mediaItems.filter(m => kinds.includes(m.kind as MediaKind));
   const sortedMedia = useMemo(() => sortMedia(filteredMedia, sort), [filteredMedia, sort]);
   const mediaGroups = useMemo(() => groupByDate(sortedMedia), [sortedMedia]);
-  const visibleMediaGroups = useProgressiveReveal(mediaGroups, 120, useMemo(() => groupsThrough(mediaGroups, returnTarget), [mediaGroups, returnTarget]));
+  const returnMediaGroup = useMemo(() => groupIndexOf(mediaGroups, returnTarget), [mediaGroups, returnTarget]);
+  const timelineRef = useRef<HTMLDivElement|null>(null);
+  const liveMedia = useLiveGroups(mediaGroups, returnMediaGroup, timelineRef, thumbSize);
+  const onToggleMediaSelected = useMemo(() => toggleSelected(setSelected), []);
   // Returning from the viewer focuses the item that was open in this view. It
   // lives in `items` in folders mode and in `mediaItems` in timeline mode.
   // In timeline mode it waits until the item's date group is drawn (that group
-  // is revealed first, see visibleMediaGroups).
+  // is drawn first, see useLiveGroups).
   const consumedReturnKey = useRef<string|null>(null);
   useEffect(() => {
     if (returnTarget == null || consumedReturnKey.current === location.key) return;
-    const present = visibleMediaGroups.some(group => group.items.some(item => item.id === returnTarget)) || items.some(item => !item.isFolder && item.id === returnTarget);
+    const present = (returnMediaGroup >= 0 && liveMedia.isLive(returnMediaGroup)) || items.some(item => !item.isFolder && item.id === returnTarget);
     if (!present) return;
     consumedReturnKey.current = location.key;
     consumeReturnMediaId(returnTarget);
     kb.focus(`m${returnTarget}`, true);
-  }, [items, visibleMediaGroups, returnTarget, location.key, kb.focus]);
+  }, [items, liveMedia, returnMediaGroup, returnTarget, location.key, kb.focus]);
   function applyBulkPatch(patches:BulkPatch[]) {
     setMediaItems(current => current.map(item => {
       const p = patches.find(patch => patch.id === item.id);
@@ -3085,13 +3116,9 @@ function FavoriteViewPage() {
     {loaded && displayMode === "timeline" && <>
       {!mediaLoaded ? <div className="empty-state"><p>Loading…</p></div> :
         sortedMedia.length === 0 ? <div className="empty-state"><p>No dated items here yet.</p></div> :
-        <div className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{visibleMediaGroups.map(group =>
-          <div className="timeline-group" key={group.label}>
-            <div className="timeline-group-caption">{group.label}</div>
-            <div className="timeline-group-grid">{group.items.map((item, itemIndex) =>
-              <MediaCard key={`${item.id}-${itemIndex}`} item={item} view="tile" favoriteViewId={favoriteViewId} selected={selected.includes(item.id)} onToggleSelected={toggleSelected(setSelected)} caption="date-name" sort={sort === "asc" ? "asc" : "desc"} kbFocused={kb.focusId === `m${item.id}`} kbRange={kb.bandIds.includes(`m${item.id}`)} kbFocus={() => kb.focus(`m${item.id}`)}/>
-            )}</div>
-          </div>
+        <div ref={timelineRef} className="timeline-grid" style={{"--thumb-tile": `${thumbSize}px`} as CSSProperties}>{mediaGroups.map((group, index) =>
+          <TimelineGroupView key={group.label} group={group} index={index} live={liveMedia.isLive(index)} placeholderHeight={liveMedia.placeholderHeight(group.items.length)} favoriteViewId={favoriteViewId} sort={sort === "asc" ? "asc" : "desc"} keyByIndex
+            selected={selected} onToggleSelected={onToggleMediaSelected} focusId={kb.focusId} bandIds={kb.bandIds} focus={kb.focus}/>
         )}</div>}
     </>}
   </main>;
@@ -4988,6 +5015,7 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
       }}>
       <FavoriteButton key={`favorite-${item.id}`} item={item} viewId={favoriteViewId}/>
       <a className="viewer-download" href={api.contentUrl(item.id, true)} aria-label="Download">⬇</a>
+      {item.gps?.trim() && <Link className={`viewer-gps${item.kind === "image" || item.kind === "video" ? " below-fullscreen" : ""}`} to={`/map?item=${item.id}${mapContext ? `&${mapContext}` : ""}`} aria-label="Open on map" title="Open on map">📍</Link>}
       {(item.kind === "image" || item.kind === "video") && <button type="button" className="viewer-fullscreen" aria-label={isFullscreen || nativeFullscreen ? "Exit full screen" : "Full screen"} onClick={() => void toggleFullscreen()}>{isFullscreen || nativeFullscreen ? "⤡" : "⛶"}</button>}
       <button type="button" className="viewer-arrow viewer-arrow-left" aria-label="Previous media" disabled={!previous} onClick={() => onGo(previous)}>{"<"}</button>
       {item.kind === "video" ? <VideoPlayer key={`video-${item.id}`} item={item} supported={supported} isFullscreen={isFullscreen || nativeFullscreen} onToggleFullscreen={toggleFullscreen} imageZoom={imageZoom} imageRotation={imageRotation} imagePan={imagePan} drag={drag} adjust={adjust} ready={adjustReady} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={stopImagePan} onPointerCancel={stopImagePan}/> :
@@ -5921,10 +5949,132 @@ function useReturnTarget():ID|null {
   return ref.current.id;
 }
 
-// Number of date groups to reveal at once so the group holding `id` is drawn.
-function groupsThrough(groups:readonly {items:readonly {id:ID}[]}[], id:ID|null) {
-  return id == null ? 0 : groups.findIndex(group => group.items.some(item => item.id === id)) + 1;
+// Index of the date group holding `id` (-1 when none or not found).
+function groupIndexOf(groups:readonly {items:readonly {id:ID}[]}[], id:ID|null) {
+  return id == null ? -1 : groups.findIndex(group => group.items.some(item => item.id === id));
 }
+
+// Timeline date groups render their cards only near the screen: every group
+// is on the page (caption + a placeholder of its estimated height, so the
+// date rail and scroll length stay right), and a group gets its real cards
+// once it comes within a margin of the viewport, then keeps them. Coming back
+// from the viewer, the anchor group (the item that was open) is the only one
+// drawn at first, so it is focused at once; the groups around it follow as
+// they fall inside the margin. Without IntersectionObserver (tests) every
+// group is drawn progressively, outward from the anchor.
+const LIVE_MARGIN_PX = 1600;
+const LIVE_BUDGET_CARDS = 600;
+function useLiveGroups(groups:readonly {items:readonly unknown[]}[], anchor:number, containerRef:React.RefObject<HTMLElement|null>, thumbSize:number) {
+  const initial = () => {
+    const next = new Set<number>();
+    if (anchor >= 0 && anchor < groups.length) { next.add(anchor); return next; }
+    let cards = 0;
+    for (let index = 0; index < groups.length && (index === 0 || cards < LIVE_BUDGET_CARDS); index++) { next.add(index); cards += groups[index].items.length; }
+    return next;
+  };
+  const [live, setLive] = useState<Set<number>>(initial);
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  const [grid, setGrid] = useState<{cols:number; rowH:number}|null>(null);
+  useEffect(() => {
+    const fresh = initial();
+    liveRef.current = fresh;
+    setLive(fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, anchor]);
+  // Grows the live set by up to a card budget per frame from `queue`.
+  const queue = useRef<number[]>([]);
+  const frame = useRef(0);
+  const flush = useCallback(() => {
+    frame.current = 0;
+    const next = new Set(liveRef.current);
+    let cards = 0;
+    while (queue.current.length > 0 && (cards === 0 || cards < LIVE_BUDGET_CARDS)) {
+      const index = queue.current.shift()!;
+      if (next.has(index) || index < 0 || index >= groups.length) continue;
+      next.add(index);
+      cards += groups[index].items.length;
+    }
+    if (next.size !== liveRef.current.size) { liveRef.current = next; setLive(next); }
+    if (queue.current.length > 0) frame.current = requestAnimationFrame(flush);
+  }, [groups]);
+  const enqueue = useCallback((indices:number[]) => {
+    queue.current.push(...indices);
+    if (!frame.current) frame.current = requestAnimationFrame(flush);
+  }, [flush]);
+  useEffect(() => () => { cancelAnimationFrame(frame.current); frame.current = 0; queue.current = []; }, [groups, anchor]);
+  // Placeholders entering the margin around the viewport get their cards.
+  const observer = useRef<IntersectionObserver|null>(null);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      // No observer: draw everything, the anchor's neighbours first.
+      const order:number[] = [];
+      const from = anchor >= 0 && anchor < groups.length ? anchor : 0;
+      for (let step = 1; from + step < groups.length || from - step >= 0; step++) {
+        if (from + step < groups.length) order.push(from + step);
+        if (from - step >= 0) order.push(from - step);
+      }
+      enqueue(order);
+      return;
+    }
+    const io = new IntersectionObserver(entries => {
+      const indices = entries.filter(entry => entry.isIntersecting).map(entry => Number((entry.target as HTMLElement).dataset.groupIndex));
+      // Nearest to the screen first, so the rows next to what is shown fill in before far ones.
+      indices.sort((a, b) => a - b);
+      if (indices.length > 0) enqueue(indices);
+    }, {rootMargin:`${LIVE_MARGIN_PX}px 0px`});
+    observer.current = io;
+    return () => { io.disconnect(); observer.current = null; };
+  }, [groups, anchor, enqueue]);
+  useEffect(() => {
+    const io = observer.current;
+    const container = containerRef.current;
+    if (!io || !container) return;
+    container.querySelectorAll<HTMLElement>(".timeline-group.placeholder").forEach(element => io.observe(element));
+    container.querySelectorAll<HTMLElement>(".timeline-group:not(.placeholder)").forEach(element => io.unobserve(element));
+  });
+  // Placeholder height: rows of the real grid (columns and row height measured
+  // from a drawn group, or estimated from the tile size until one exists).
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const measure = () => {
+      const drawn = container.querySelector<HTMLElement>(".timeline-group:not(.placeholder) .timeline-group-grid");
+      const card = drawn?.querySelector<HTMLElement>(".card");
+      const cols = drawn ? getComputedStyle(drawn).gridTemplateColumns.split(" ").filter(Boolean).length : 0;
+      const width = container.querySelector<HTMLElement>(".timeline-grid")?.clientWidth ?? container.clientWidth;
+      const next = {
+        cols: Math.max(1, cols || Math.floor((width + 14) / (thumbSize + 14)) || 1),
+        rowH: Math.max(40, card?.offsetHeight || thumbSize + 70),
+      };
+      setGrid(current => current && current.cols === next.cols && current.rowH === next.rowH ? current : next);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [containerRef, thumbSize, live]);
+  const cols = grid?.cols ?? 4;
+  const rowH = grid?.rowH ?? thumbSize + 70;
+  return useMemo(() => ({
+    isLive: (index:number) => live.has(index),
+    placeholderHeight: (count:number) => Math.ceil(count / cols) * (rowH + 14) - 14,
+  }), [live, cols, rowH]);
+}
+
+// One date group of a timeline. Memoized so drawing the next batch of groups
+// does not re-render the thousands of cards already on the page.
+const TimelineGroupView = memo(function TimelineGroupView({group, index, live, placeholderHeight, libraryId, favoriteViewId, trajectoryFolderId, sort, nav, keyByIndex = false, selected, onToggleSelected, focusId, bandIds, focus}:{group:{label:string; items:Media[]}; index:number; live:boolean; placeholderHeight:number; libraryId?:ID; favoriteViewId?:ID; trajectoryFolderId?:ID; sort:string; nav?:ItemNav; keyByIndex?:boolean; selected:ID[]; onToggleSelected:(id:ID)=>void; focusId:string|null; bandIds:string[]; focus:(id:string)=>void}) {
+  if (!live) return <div className="timeline-group placeholder" data-group-index={index}>
+    <div className="timeline-group-caption">{group.label}</div>
+    <div className="timeline-group-placeholder" style={{height:placeholderHeight}}/>
+  </div>;
+  return <div className="timeline-group" data-group-index={index}>
+    <div className="timeline-group-caption">{group.label}</div>
+    <div className="timeline-group-grid">{group.items.map((item, itemIndex) =>
+      <MediaCard key={keyByIndex ? `${item.id}-${itemIndex}` : item.id} item={item} view="tile" libraryId={libraryId} favoriteViewId={favoriteViewId} trajectoryFolderId={trajectoryFolderId} selected={selected.includes(item.id)} onToggleSelected={onToggleSelected} caption="date-name" sort={sort} nav={nav} kbFocused={focusId === `m${item.id}`} kbRange={bandIds.includes(`m${item.id}`)} kbFocus={() => focus(`m${item.id}`)}/>
+    )}</div>
+  </div>;
+});
 
 // Mapy.com REST API tiles (api.mapy.com/v1/maptiles). Basic and Outdoor have
 // 512px retina tiles; the terms require the Mapy.com logo and copyright link.

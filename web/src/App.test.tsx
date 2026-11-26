@@ -2100,7 +2100,7 @@ test("timeline play mode title keeps one library crumb while paging", async () =
   fireEvent.click(screen.getByRole("button", {name:"Previous media"}));
   await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("p102.jpg"));
   fireEvent.click(screen.getByRole("button", {name:"Show info panel"}));
-  fireEvent.click(await screen.findByRole("link", {name:"Open on map"}));
+  fireEvent.click((await screen.findAllByRole("link", {name:"Open on map"})).at(-1)!);
   await waitFor(() => expect(screen.getByLabelText("Breadcrumb")).toHaveTextContent("Map of Family"));
   await waitFor(() => expect(Array.from(screen.getByLabelText("Breadcrumb").querySelectorAll(".crumb")).map(crumb => crumb.textContent?.replace(/^ \/ /, ""))).toEqual(["Map of Family", "Photos", "p102.jpg"]));
 });
@@ -2124,12 +2124,12 @@ test("returning from the viewer to the timeline focuses the item that was open",
   expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
 });
 
-test("returning to a big timeline draws the open item's date group first and focuses it", async () => {
+test("returning to a big timeline draws the open item's date group first, focuses it, then prepends the groups above", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
   mockApi.folderEntries.mockResolvedValue({entries:[], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
-  // 600 one-item date groups are normally revealed 120 per frame; the item
-  // that was open sits in group 301, far past the first batch.
+  // 600 one-item date groups; the item that was open sits in group 301, so
+  // 300 cards precede it.
   const day = (i:number) => new Date(Date.UTC(2020, 0, 1) + i * 86_400_000).toISOString();
   const media = Array.from({length:600}, (_, i) => ({id:1000 + i, folderId:20, relativePath:`Photos/${i}.jpg`, name:`${i}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:day(i)}));
   const target = media[300];
@@ -2137,8 +2137,13 @@ test("returning to a big timeline draws the open item's date group first and foc
   mockApi.media.mockResolvedValue(target);
   // Cards on screen at the moment the item is first centred.
   let cardsWhenCentred = -1;
+  let firstCardWhenCentred:string|undefined;
   (HTMLElement.prototype as unknown as {scrollIntoView:unknown}).scrollIntoView = function(this:HTMLElement, options:ScrollIntoViewOptions) {
-    if (options?.block === "center" && this.dataset.kbId === `m${target.id}` && cardsWhenCentred < 0) cardsWhenCentred = document.querySelectorAll("[data-kb-card]").length;
+    if (options?.block === "center" && this.dataset.kbId === `m${target.id}` && cardsWhenCentred < 0) {
+      const cards = document.querySelectorAll<HTMLElement>("[data-kb-card]");
+      cardsWhenCentred = cards.length;
+      firstCardWhenCentred = cards[0]?.dataset.kbId;
+    }
   };
   try {
     render(<MemoryRouter initialEntries={[`/library/1/view/20?item=${target.id}&root=20`]}><App/></MemoryRouter>);
@@ -2146,8 +2151,12 @@ test("returning to a big timeline draws the open item's date group first and foc
     await waitFor(() => expect(breadcrumb).toHaveTextContent(target.name));
     fireEvent.click(screen.getByRole("link", {name:"Family"}));
     await waitFor(() => expect(cardsWhenCentred).toBeGreaterThan(0));
-    // Drawn straight through the target's group, not after later batches.
-    expect(cardsWhenCentred).toBe(301);
+    // The target's group is drawn first: none of the 300 cards above it yet.
+    expect(firstCardWhenCentred).toBe(`m${target.id}`);
+    expect(cardsWhenCentred).toBeLessThanOrEqual(300);
+    // The groups above arrive afterwards, in date order, and focus stays.
+    await waitFor(() => expect(document.querySelectorAll("[data-kb-card]")).toHaveLength(600));
+    expect((document.querySelector("[data-kb-card]") as HTMLElement).dataset.kbId).toBe(`m${media[0].id}`);
     expect(document.querySelector(`[data-kb-id="m${target.id}"]`)).toHaveClass("kb-focus");
   } finally {
     delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
@@ -2220,7 +2229,9 @@ test("media name and gps are saved only after explicit save", async () => {
   expect(mockApi.updateMediaDetails).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", {name:"Save"}));
   await waitFor(() => expect(mockApi.updateMediaDetails).toHaveBeenCalledWith(100, {name:"renamed.jpg", gps:"50.45,30.52", takenAt:"", notes:""}));
-  expect(screen.getByRole("link", {name:"Open on map"})).toHaveAttribute("href", "/map?item=100&inLibrary=1&inFolder=20");
+  const mapLinks = screen.getAllByRole("link", {name:"Open on map"});
+  expect(mapLinks).toHaveLength(2);
+  for (const link of mapLinks) expect(link).toHaveAttribute("href", "/map?item=100&inLibrary=1&inFolder=20");
   fireEvent.click(screen.getByRole("button", {name:"Hide info panel"}));
   expect(screen.getByRole("button", {name:"Show info panel"})).toHaveTextContent("<<");
 });
@@ -2621,6 +2632,22 @@ test("media viewer offers a download link for the current item", async () => {
   expect(screen.getByRole("link", {name:"Download"})).toHaveAttribute("href", "/api/v1/media/100/content?download=1");
 });
 
+test("media viewer shows a 📍 map link only for an item with GPS", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"50.45,30.52", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain: []});
+  const first = render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  const link = await screen.findByRole("link", {name:"Open on map"});
+  expect(link).toHaveTextContent("📍");
+  expect(link).toHaveAttribute("href", "/map?item=100&inLibrary=1&inFolder=20");
+  first.unmount();
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=101"]}><App/></MemoryRouter>);
+  await screen.findByRole("img", {name:"two.jpg"});
+  expect(screen.queryByRole("link", {name:"Open on map"})).not.toBeInTheDocument();
+});
+
 test("media viewer up link goes to containing folder", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[{id:100, name:"one.jpg", relativePath:"Trips/Day1/one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"Trips/Day1/one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
@@ -2667,6 +2694,54 @@ test("breadcrumb back to a parent folder selects and reveals the folder you came
   await waitFor(() => expect(card).toHaveClass("kb-focus"));
   expect(scrollIntoView).toHaveBeenCalledWith({block:"center", inline:"nearest"});
   delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
+});
+
+test("browser Back from a subfolder focuses that subfolder in the parent", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const scrollIntoView = vi.fn();
+  (HTMLElement.prototype as unknown as {scrollIntoView:unknown}).scrollIntoView = scrollIntoView;
+  mockApi.folderEntries.mockImplementation((_libraryId:number, folderId:number) => Promise.resolve(folderId === 21
+    ? {entries:[], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}, {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}]}
+    : {entries:[
+        {id:22, name:"Other", relativePath:"Photos/Other", type:"folder"},
+        {id:21, name:"Nested", relativePath:"Photos/Nested", type:"folder"}
+      ], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]}));
+  function HistoryBack() {
+    const navigate = useNavigate();
+    return <button type="button" onClick={() => navigate(-1)}>History back</button>;
+  }
+  try {
+    render(<MemoryRouter initialEntries={["/library/1/folder/20", "/library/1/folder/21"]} initialIndex={1}><App/><HistoryBack/></MemoryRouter>);
+    await waitFor(() => expect(mockApi.folderEntries).toHaveBeenCalledWith(1, 21, expect.anything()));
+    fireEvent.click(screen.getByRole("button", {name:"History back"}));
+    await waitFor(() => expect(document.querySelector('.folder-entry[data-kb-id="f21"]')).toHaveClass("kb-focus"));
+    expect(document.querySelector('.folder-entry[data-kb-id="f22"]')).not.toHaveClass("kb-focus");
+    expect(scrollIntoView).toHaveBeenCalledWith({block:"center", inline:"nearest"});
+  } finally {
+    delete (HTMLElement.prototype as unknown as {scrollIntoView?:unknown}).scrollIntoView;
+  }
+});
+
+test("a breadcrumb return target beyond the first loaded page is paged in and focused", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.userSettings.mockResolvedValue({theme:"light", language:"auto", codec:"h264-aac-mp4", zoom:100, dateFormat:"auto", streamChunkSize:2, defaultThumbImage:"mountains", defaultThumbVideo:"mountains", defaultThumbFolder:"mountains", mapTileProviderLight:"osm", mapTileProviderDark:"osm", mapMaxZoom:19, mapTileProviders:{}});
+  const media = Array.from({length:7}, (_, i) => ({id:100 + i, name:`${i}.jpg`, relativePath:`Photos/${i}.jpg`, type:"media", media:{id:100 + i, folderId:20, relativePath:`Photos/${i}.jpg`, name:`${i}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}));
+  mockApi.folderEntries.mockImplementation((_libraryId:number, _folderId:number, options?:{offset?:number; limit?:number}) => {
+    const offset = options?.offset ?? 0;
+    const limit = options?.limit ?? media.length;
+    return Promise.resolve({entries:media.slice(offset, offset + limit), chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  });
+  // As a viewer breadcrumb hands it over: the item sits on the 4th page of 2.
+  function GoWithTarget() {
+    const navigate = useNavigate();
+    return <button type="button" onClick={() => navigate("/library/1/folder/20", {state:{returnToMediaId:106}})}>Go with target</button>;
+  }
+  render(<MemoryRouter initialEntries={["/favorites"]}><App/><GoWithTarget/></MemoryRouter>);
+  await waitFor(() => expect(mockApi.userSettings).toHaveBeenCalled());
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByRole("button", {name:"Go with target"}));
+  await waitFor(() => expect(document.querySelector('[data-kb-id="m106"]')).toHaveClass("kb-focus"), {timeout:4000});
+  expect((mockApi.folderEntries.mock.calls as unknown[][]).filter(call => call[1] === 20 && (call[2] as {limit?:number}|undefined)?.limit === 2).length).toBeGreaterThanOrEqual(4);
 });
 
 test("breadcrumb uses the real folder name even when relativePath is empty", async () => {
@@ -2748,7 +2823,10 @@ test("any timeline crumb of the viewer returns focused on the item that was open
     // "Photos" is the timeline root, not the item's own folder.
     fireEvent.click(screen.getByRole("link", {name:"Photos"}));
     await waitFor(() => expect(document.querySelector('[data-kb-id="m101"]')).toHaveClass("kb-focus"));
+    // The earlier date group is prepended after the target's group.
+    await waitFor(() => expect(document.querySelector('[data-kb-id="m100"]')).not.toBeNull());
     expect(document.querySelector('[data-kb-id="m100"]')).not.toHaveClass("kb-focus");
+    expect(document.querySelector('[data-kb-id="m101"]')).toHaveClass("kb-focus");
     // The grid scrolls so the row of the focused item is centred on screen.
     await waitFor(() => expect(scrolled).toContain("m101"));
     expect(scrolled).not.toContain("m100");
