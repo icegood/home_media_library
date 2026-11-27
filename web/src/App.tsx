@@ -4352,10 +4352,19 @@ function MediaViewerPage() {
       try {
         const stored = sessionStorage.getItem(listParam);
         const cached = stored ? JSON.parse(stored) as Media[] : null;
-        if (cached && cached.length > 0) {
-          setScopedMedia(cached.length === listIds.length ? cached : null);
+        if (cached && cached.length > 0 && cached.length === listIds.length) {
+          setScopedMedia(cached);
         } else {
           setScopedMedia(null);
+          // No cache (a new tab opened by Ctrl/⌘-click or middle click gets
+          // an empty sessionStorage): the listed media can span several
+          // folders, so read each one by id instead of keeping only those in
+          // this folder. Ids the user may not read are skipped.
+          fetchListedMedia(listIds).then(found => {
+            if (cancelled || found.length === 0) return;
+            setScopedMedia(found);
+            try { sessionStorage.setItem(listParam, JSON.stringify(found)); } catch { /* quota: refetch next time */ }
+          });
         }
       } catch {
         setScopedMedia(null);
@@ -6585,6 +6594,21 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
 // several folders) are additionally cached in sessionStorage under that same
 // id-list key; when the cache is missing the viewer reconstructs the selection
 // from the folder's entries, so the URL alone always yields the right range.
+// Reads a viewer `list` selection by id, a few requests at a time, keeping the
+// list order and skipping ids that are gone or not readable.
+export async function fetchListedMedia(ids:number[], concurrency = 6):Promise<Media[]> {
+  const found:(Media|null)[] = new Array(ids.length).fill(null);
+  let next = 0;
+  async function worker() {
+    while (next < ids.length) {
+      const index = next++;
+      try { found[index] = await api.media(ids[index]); } catch { found[index] = null; }
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(concurrency, ids.length)}, worker));
+  return found.filter((media): media is Media => media !== null);
+}
+
 export const MAP_SELECTION_KEY = "media-library-map-selection";
 
 function storeMapSelection(items:MapMedia[]) {

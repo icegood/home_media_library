@@ -4629,6 +4629,27 @@ test("viewer opened on a map selection fetches the full row of the shown item", 
   sessionStorage.removeItem("100,101");
 });
 
+test("viewer opened in a new tab on a map selection reads items of other folders by id", async () => {
+  mockApi.me.mockResolvedValue({id:1, login:"alice", role:"regular"});
+  // A Ctrl/⌘-click tab has no sessionStorage cache: the three selected items
+  // live in three folders, yet the viewer must still page through all three.
+  const rows = [300, 301, 302].map((id, index) => ({id, libraryId:1, folderId:20 + index, relativePath:`p${id}.jpg`, name:`p${id}.jpg`, kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"10,20", takenAt:`2024-01-0${3 - index}T10:00:00Z`}));
+  sessionStorage.removeItem("300,301,302");
+  mockApi.media.mockImplementation(async (id:number) => JSON.parse(JSON.stringify(rows.find(row => row.id === id)!)));
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=300&list=300,301,302&sort=date"]}><App/></MemoryRouter>);
+  const shown = () => screen.getByRole("link", {name:"Download"}).getAttribute("href");
+  await waitFor(() => expect(shown()).toBe("/api/v1/media/300/content?download=1"));
+  for (const id of [301, 302]) {
+    await waitFor(() => expect(screen.getByRole("button", {name:"Next media"})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+    await waitFor(() => expect(shown()).toBe(`/api/v1/media/${id}/content?download=1`));
+  }
+  expect(screen.getByRole("button", {name:"Next media"})).toBeDisabled();
+  expect(mockApi.media).toHaveBeenCalledWith(301);
+  expect(mockApi.media).toHaveBeenCalledWith(302);
+  sessionStorage.removeItem("300,301,302");
+});
+
 test("admin settings sections accept edits across network mail thumbnails and logs", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   render(<MemoryRouter initialEntries={["/admin?section=network"]}><App/></MemoryRouter>);
