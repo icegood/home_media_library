@@ -1808,6 +1808,45 @@ test("folder timeline loads media for that folder and links back to it", async (
   expect(screen.getByRole("link", {name:"Family"})).toHaveAttribute("href", "/library/1/timeline");
 });
 
+test("switching a folder timeline to Folders focuses the subfolder holding the first item", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  // The first item (oldest first) lives two levels down, in 22 under 21.
+  mockApi.folderMedia.mockResolvedValue([
+    {id:300, folderId:22, relativePath:"Trip/Day/a.jpg", name:"a.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-01-01T10:00:00Z"},
+    {id:301, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2021-01-01T10:00:00Z"}
+  ]);
+  const parents:Record<number, number> = {22:21, 21:20, 25:20};
+  mockApi.folder.mockImplementation(async (_libraryId:number, folderId:number) => ({id:folderId, parentId:parents[folderId] ?? -1, relativePath:"", name:`f${folderId}`}));
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:25, name:"Other", relativePath:"Photos/Other", type:"folder"},
+    {id:21, name:"Trip", relativePath:"Photos/Trip", type:"folder"},
+    {id:301, name:"b.jpg", relativePath:"Photos/b.jpg", type:"media", media:{id:301, folderId:20, relativePath:"Photos/b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
+  expect(await screen.findByText("a.jpg")).toBeInTheDocument();
+  pickOption(screen.getAllByRole("combobox", {name:/^Timeline/})[0], "Folders");
+  await waitFor(() => expect(document.querySelector('.folder-entry[data-kb-id="f21"]')).toHaveClass("kb-focus"));
+  expect(document.querySelector('.folder-entry[data-kb-id="f25"]')).not.toHaveClass("kb-focus");
+});
+
+test("switching a folder timeline to Folders focuses the first item itself when it sits in that folder", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.libraries.mockResolvedValue([{id:1, name:"Family", roots:[]}]);
+  mockApi.folderMedia.mockResolvedValue([
+    {id:301, folderId:20, relativePath:"b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"2020-01-01T10:00:00Z"}
+  ]);
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:21, name:"Trip", relativePath:"Photos/Trip", type:"folder"},
+    {id:301, name:"b.jpg", relativePath:"Photos/b.jpg", type:"media", media:{id:301, folderId:20, relativePath:"Photos/b.jpg", name:"b.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:""}}
+  ], chain:[{id:20, parentId:-1, relativePath:"Photos", name:"Photos"}]});
+  render(<MemoryRouter initialEntries={["/library/1/timeline/20"]}><App/></MemoryRouter>);
+  expect(await screen.findByText("b.jpg")).toBeInTheDocument();
+  pickOption(screen.getAllByRole("combobox", {name:/^Timeline/})[0], "Folders");
+  await waitFor(() => expect(document.querySelector('.folder-view [data-kb-id="m301"], .browser-page [data-kb-id="m301"]')).toHaveClass("kb-focus"));
+  expect(document.querySelector('.folder-entry[data-kb-id="f21"]')).not.toHaveClass("kb-focus");
+});
+
 test("keyboard focus, space check, and shift-range selection work in the library timeline", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderMedia.mockResolvedValue([

@@ -2824,6 +2824,16 @@ function LibraryTimeline() {
     onToggle: id => { if (id.startsWith("m")) toggleSelected(setSelected)(Number(id.slice(1))); },
     onFavorite: id => { if (id.startsWith("m")) { const found = items.find(m => `m${m.id}` === id); if (found) setFavItem(found); } }
   });
+  // Timeline → Folders focuses where the first focused item lives: the
+  // subfolder of this folder that holds it, or the item itself when it sits
+  // directly here (the folder list pages in until the card arrives).
+  async function openFoldersAt(target:string) {
+    const anchorId = firstFocusedTimelineItem(gridRef.current, kb.focusId);
+    const anchor = anchorId == null ? undefined : items.find(item => item.id === anchorId);
+    if (!anchor) { navigate(target); return; }
+    const childId = await childFolderToward(libraryId, anchor.folderId, currentFolderId);
+    navigate(target, {state: childId == null ? {returnToMediaId: anchor.id} : {returnToFolderId: childId}});
+  }
   // Leaving the viewer (breadcrumb or Back) hands back the item that was open,
   // so the timeline reopens focused on it — as soon as its date group is drawn.
   const consumedReturnKey = useRef<string|null>(null);
@@ -2849,7 +2859,11 @@ function LibraryTimeline() {
           {value:`/library/${id}/timeline${currentFolderId != null ? `/${currentFolderId}` : ""}`, label:"Timeline"},
           {value:`/map?library=${id}${currentFolderId != null ? `&folder=${currentFolderId}` : ""}`, label:"Map"},
         ]}
-        onChange={v => { if (v) navigate(v); }}/>
+        onChange={v => {
+          if (!v) return;
+          if (v.startsWith(`/library/${id}/timeline`) || v.startsWith("/map")) { navigate(v); return; }
+          void openFoldersAt(v);
+        }}/>
       <span className="bar-sep"/>
       <KindFilter value={kinds} onChange={setKinds}/>
       <BarSelect value={sort} options={[{value:"desc", label:"Newest first"}, {value:"asc", label:"Oldest first"}]} onChange={v => setSort(v as "desc"|"asc")}/>
@@ -2876,6 +2890,51 @@ function LibraryTimeline() {
 // carries one tick per date group, so hovering anywhere on it reveals which
 // date that scroll position belongs to; clicking jumps there, dragging the
 // thumb scrubs the page.
+// The timeline item the user is on: the keyboard-focused card while it is on
+// screen, otherwise the first card visible below the browser bar.
+function firstFocusedTimelineItem(container:HTMLElement|null, focusId:string|null):ID|null {
+  if (!container) return null;
+  const barBottom = document.querySelector(".browser-bar")?.getBoundingClientRect().bottom ?? 0;
+  const onScreen = (card:Element) => {
+    const rect = card.getBoundingClientRect();
+    return rect.bottom > barBottom && rect.top < window.innerHeight;
+  };
+  if (focusId?.startsWith("m")) {
+    const card = container.querySelector(`[data-kb-id="${focusId}"]`);
+    if (card && onScreen(card)) return Number(focusId.slice(1));
+  }
+  const cards = Array.from(container.querySelectorAll('[data-kb-id^="m"]'));
+  const first = cards.find(onScreen) ?? cards[0];
+  return first ? Number(first.getAttribute("data-kb-id")!.slice(1)) : null;
+}
+
+// Parents of folders already looked up, so walking up again costs nothing.
+const folderParents = new Map<string, ID>();
+
+// The folder card a Folders view of `scopeId` (null: the library's top level)
+// shows for media of `folderId`: its ancestor directly below the scope. Null
+// when the media sits right in the scope or the walk fails.
+async function childFolderToward(libraryId:ID, folderId:ID, scopeId:ID|null):Promise<ID|null> {
+  let current = folderId;
+  let below:ID|null = null;
+  if (current === scopeId) return null;
+  for (let depth = 0; depth < 64; depth++) {
+    const key = `${libraryId}/${current}`;
+    let parent = folderParents.get(key);
+    if (parent === undefined) {
+      // A folder outside the library (above its root) is not readable: the
+      // folder walked up from is then the library's top-level card.
+      try { parent = (await api.folder(libraryId, current)).parentId; } catch { return scopeId == null ? below : null; }
+      folderParents.set(key, parent);
+    }
+    if (parent === scopeId) return current;
+    if (parent == null || parent <= 0) return scopeId == null ? current : null;
+    below = current;
+    current = parent;
+  }
+  return null;
+}
+
 function TimelineDateRail({containerRef}:{containerRef:React.RefObject<HTMLDivElement|null>}) {
   const railRef = useRef<HTMLDivElement|null>(null);
   const [layout, setLayout] = useState<{docH:number; viewH:number; scrollH:number; ticks:{absTop:number; label:string}[]}|null>(null);
@@ -5694,7 +5753,7 @@ const TRANSCODE_SCHEMAS: Record<UserSettingsPayload["codec"], {videoLabel:string
   "vp9-opus-webm":  {videoLabel:"VP9", audioLabel:"Opus", containerLabel:"WebM", supportLabel:"Excellent", compressionLabel:"Very good", probe:['video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp09.00.10.08,opus"']},
   "vp9-vorbis-webm":{videoLabel:"VP9", audioLabel:"Vorbis", containerLabel:"WebM", supportLabel:"Very good", compressionLabel:"Very good", probe:['video/webm; codecs="vp9,vorbis"']},
   "av1-opus-webm":  {videoLabel:"AV1", audioLabel:"Opus", containerLabel:"WebM", supportLabel:"Very good on modern devices", compressionLabel:"Excellent", probe:['video/webm; codecs="av01.0.04M.08,opus"']},
-  "hevc-aac-mp4":   {videoLabel:"HEVC", audioLabel:"AAC", containerLabel:"MP4", supportLabel:"Platform-dependent", compressionLabel:"Excellent", probe:['video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"']},
+  "hevc-aac-mp4":   {videoLabel:"HEVC", audioLabel:"AAC", containerLabel:"MP4", supportLabel:"Platform-dependent", compressionLabel:"Excellent", probe:['video/mp4; codecs="hvc1.1.6.L153.B0,mp4a.40.2"', 'video/mp4; codecs="hev1.1.6.L153.B0,mp4a.40.2"', 'video/mp4; codecs="hvc1.1.6.L93.B0,mp4a.40.2"', 'video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"']},
   "hevc-opus-mp4":  {videoLabel:"HEVC", audioLabel:"Opus", containerLabel:"MP4", supportLabel:"Poor / inconsistent", compressionLabel:"Excellent", probe:['video/mp4; codecs="hvc1,opus"', 'video/mp4; codecs="hev1,opus"']},
   "vp8-vorbis-webm":{videoLabel:"VP8", audioLabel:"Vorbis", containerLabel:"WebM", supportLabel:"Excellent", compressionLabel:"Fair", probe:['video/webm; codecs="vp8,vorbis"']},
   "vp8-opus-webm":  {videoLabel:"VP8", audioLabel:"Opus", containerLabel:"WebM", supportLabel:"Excellent", compressionLabel:"Fair", probe:['video/webm; codecs="vp8,opus"']}
@@ -6034,7 +6093,9 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
 
 const VIDEO_FORMAT_PROBES: Record<string,{label:string; probe:string[]}> = {
   h264: {label:"MP4 — H.264 + AAC", probe:['video/mp4; codecs="avc1.42E01E,mp4a.40.2"', 'video/mp4; codecs="avc1.42E01E,opus"']},
-  h265: {label:"MP4 — H.265 / HEVC + AAC", probe:['video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"', 'video/mp4; codecs="hvc1,opus"', 'video/mp4; codecs="hev1,opus"']},
+  // Chrome answers only for full HEVC codec strings (profile/level), never
+  // for a bare "hvc1"/"hev1", so both forms are probed.
+  h265: {label:"MP4 — H.265 / HEVC + AAC", probe:['video/mp4; codecs="hvc1.1.6.L153.B0,mp4a.40.2"', 'video/mp4; codecs="hev1.1.6.L153.B0,mp4a.40.2"', 'video/mp4; codecs="hvc1.1.6.L93.B0,mp4a.40.2"', 'video/mp4; codecs="hvc1,mp4a.40.2"', 'video/mp4; codecs="hev1,mp4a.40.2"', 'video/mp4; codecs="hvc1,opus"', 'video/mp4; codecs="hev1,opus"']},
   vp9: {label:"WebM — VP9 + Opus", probe:['video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp09.00.10.08,opus"', 'video/webm; codecs="vp9,vorbis"']},
   vp8: {label:"WebM — VP8 + Vorbis", probe:['video/webm; codecs="vp8,vorbis"', 'video/webm; codecs="vp8,opus"']},
   av1: {label:"WebM — AV1 + Opus", probe:['video/webm; codecs="av01.0.04M.08,opus"']}
