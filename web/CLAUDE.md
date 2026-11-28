@@ -21,6 +21,10 @@
   tooltip, `aria-label`, confirm dialog or error must get a row with all 14
   translations (order: ua, de, nl, fi, sv, pl, che, slo, hu, es, it, sl, no, pt).
   Use the `add-ui-text` skill.
+- Never write JSX text next to a value (`<p>Imported {n} items</p>`): it renders as
+  separate text nodes the translator can't match. Build one string
+  (``{`Imported ${n} items`}``) and add a `%s` template row.
+  `src/i18n-source.test.ts` fails the build on such labels.
 - `window.confirm` goes through `translateMessage`; form/dialog errors use the
   shared `ErrorPopup` toast stack (auto-close 10 s) — never `alert()`.
 - Filters that matter for navigation live in the URL (e.g. `kind=` comma list,

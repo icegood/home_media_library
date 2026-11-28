@@ -645,6 +645,15 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .notes-popover-body { overflow: auto; padding: 10px 12px; display: grid; gap: 10px; }
 .notes-entry small { color: var(--crumbs-text); overflow-wrap: anywhere; }
 .notes-text { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.notes-markdown p { margin: 0 0 .45em; }
+.notes-markdown p:last-child, .notes-markdown ul:last-child { margin-bottom: 0; }
+.notes-markdown ul { margin: 0 0 .45em; padding-left: 1.2em; }
+.notes-markdown .notes-heading { display: block; margin: .2em 0 .3em; }
+.notes-markdown .notes-h1 { font-size: 1.12em; }
+.notes-markdown .notes-h2 { font-size: 1.05em; }
+.notes-markdown code { font-size: .9em; padding: 0 .25em; border-radius: 4px; background: color-mix(in srgb, currentColor 12%, transparent); }
+.notes-markdown a { color: var(--text-link); text-decoration: underline; overflow-wrap: anywhere; }
+.media-notes-preview { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, currentColor 6%, transparent); }
 .trajectory-controls { position: absolute; z-index: 6; right: 10px; top: calc(10px + 46px); display: flex; flex-direction: column; gap: 8px; }
 .trajectory-controls button { width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 17px; line-height: 1; box-shadow: var(--shadow-md); cursor: pointer; }
 .trajectory-controls button:hover:not(:disabled) { background: var(--handle-bg); color: white; }

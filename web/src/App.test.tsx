@@ -2353,6 +2353,26 @@ test("media name and gps are saved only after explicit save", async () => {
   expect(screen.getByRole("button", {name:"Show info panel"})).toHaveTextContent("<<");
 });
 
+test("notes render Markdown with clickable links on cards and in the viewer Notes tab", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const note = "**Spot** near\nhttps://maps.app.goo.gl/abc (https://www.google.com/maps/@50.4,30.4,3a)";
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{}, gps:"", takenAt:"", notes:note}}
+  ], chain: []});
+  const {unmount} = render(<MemoryRouter initialEntries={["/library/1/folder/20"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show notes"}));
+  const popover = await screen.findByRole("dialog", {name:"Notes: one.jpg"});
+  expect(within(popover).getByText("Spot").tagName).toBe("STRONG");
+  expect(within(popover).getAllByRole("link").map(link => link.getAttribute("href"))).toEqual(["https://maps.app.goo.gl/abc", "https://www.google.com/maps/@50.4,30.4,3a"]);
+  unmount();
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  fireEvent.click(await screen.findByRole("tab", {name:"Notes"}));
+  const preview = await screen.findByLabelText("Notes preview");
+  expect(within(preview).getAllByRole("link")[1]).toHaveAttribute("href", "https://www.google.com/maps/@50.4,30.4,3a");
+  expect(within(preview).getAllByRole("link")[1]).toHaveAttribute("target", "_blank");
+});
+
 test("media notes are edited and saved from the Notes tab after metadata", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[

@@ -277,3 +277,11 @@ test("labels joined with a value into one text node translate through templates"
   expect(body.querySelector("strong")?.textContent).toBe("Без GPS: 4");
   expect(body.querySelectorAll("small")[1]?.textContent).not.toContain("compression");
 });
+
+test("nested templates translate a value that holds another template", () => {
+  applyLanguageSetting("ua");
+  const body = translateSnippet(`<span>selected: 3 (2 folders)</span><b>Trajectories · none</b><i>Trajectories · 2/5</i>`);
+  expect(body.querySelector("span")?.textContent).toBe("вибрано: 3 (тек: 2)");
+  expect(body.querySelector("b")?.textContent).toBe("Траєкторії · немає");
+  expect(body.querySelector("i")?.textContent).toBe("Траєкторії · 2/5");
+});

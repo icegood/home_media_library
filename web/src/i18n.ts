@@ -6564,6 +6564,7 @@ function walk(root:Node) {
       if (!text.trim()) continue;
       const parent = node.parentElement;
       if (parent && (parent.tagName === "CODE" || parent.tagName === "SCRIPT" || parent.tagName === "STYLE")) continue;
+      if (parent?.closest('[translate="no"]')) continue;
       const translated = translateText(text);
       if (translated !== text) node.nodeValue = translated;
     } else if (node.nodeType === Node.ELEMENT_NODE) {
@@ -6605,6 +6606,7 @@ export function installDomTranslation() {
           break;
         case "characterData":
           if (mutation.target.nodeType === Node.TEXT_NODE) {
+            if (mutation.target.parentElement?.closest('[translate="no"]')) break;
             const text = mutation.target.nodeValue ?? "";
             const translated = translateText(text);
             if (translated !== text) mutation.target.nodeValue = translated;

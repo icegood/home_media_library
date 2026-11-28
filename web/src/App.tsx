@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
 import { applyLanguageSetting, installDomTranslation, LANGUAGES, translateMessage, useLanguage } from "./i18n";
 import type { LanguageSetting } from "./api";
+import { NotesMarkdown } from "./notes-markdown";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
@@ -788,7 +789,7 @@ function LoginTimeoutField() {
   }, [allSettings, hours]);
   return <div className="card settings"><h2>Login timeout</h2>
     <label>Remember login, hours<input type="number" min="1" max="8760" value={hours} onChange={event => setHours(Number(event.target.value))} required/></label>
-    <small>Controls the HttpOnly login cookie and JWT expiration. Default is 720 hours, about 30 days. {saving && "Saving…"}</small>
+    <small><span>Controls the HttpOnly login cookie and JWT expiration. Default is 720 hours, about 30 days.</span> {saving && <span>Saving…</span>}</small>
   </div>;
 }
 
@@ -2334,8 +2335,8 @@ function AboutModal({onClose}:{onClose:()=>void}) {
         <div><dt>Git revision</dt><dd>{revision}</dd></div>
         <div><dt>Build date</dt><dd>{buildDate}</dd></div>
         <div><dt>Backend</dt><dd>{info ? info.goVersion : "…"}{info ? ` · v${info.version}` : ""}</dd></div>
-        <div><dt>Frontend</dt><dd>React {appStack.react} · TypeScript {appStack.typescript} · Vite {appStack.vite}</dd></div>
-        {info?.gatewayEnabled && <div><dt>Gateway</dt><dd>Caddy {appStack.caddy}</dd></div>}
+        <div><dt>Frontend</dt><dd>{`React ${appStack.react} · TypeScript ${appStack.typescript} · Vite ${appStack.vite}`}</dd></div>
+        {info?.gatewayEnabled && <div><dt>Gateway</dt><dd>{`Caddy ${appStack.caddy}`}</dd></div>}
       </dl>
       {error && <p className="error">{`Could not read backend version: ${error}`}</p>}
     </div>
@@ -3100,7 +3101,7 @@ function FavoriteViewRow({view,onChange}:{view:FavoriteView; onChange:()=>void})
   }
   return <div className="library-row">
     {renaming ? <form className="library-main inline-edit" onSubmit={saveRename}><label>View name<input value={name} onChange={event => setName(event.target.value)} required/></label><button disabled={busy}>Save</button><button type="button" className="secondary" onClick={() => setRenaming(false)}>Cancel</button></form> :
-      <Link className="library-main" to={`/favorites/${view.id}`}><span className="folder">★</span><span><strong>{view.name}</strong><small>{view.count} items</small></span></Link>}
+      <Link className="library-main" to={`/favorites/${view.id}`}><span className="folder">★</span><span><strong>{view.name}</strong><small>{`${view.count} items`}</small></span></Link>}
     <CardMenu ariaLabel={`Favorite view menu ${view.name}`}>
       <InlineStatsLine load={() => api.favoriteViewStats(view.id)}/>
       <button type="button" role="menuitem" disabled={busy} onClick={() => setRenaming(true)}>Rename</button>
@@ -3452,7 +3453,7 @@ function BulkGPSBar({items,selectedIds,selectedFolders=[],onSelectedIds,onUpdate
       <span className="bar-sep"/>
       <button type="button" className="secondary" disabled={downloadBusy || (selectedIds.length === 0 && selectedFolders.length === 0)} onClick={download}>{downloadBusy ? "Zipping…" : "Download"}</button>
       <span className="bar-sep"/>
-      <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>selected: {selectedIds.length}{selectedFolders.length ? ` (${selectedFolders.length} folders)` : ""}</span></div>
+      <div className="bulk-check"><label className="check"><input type="checkbox" checked={selected.length > 0 && selected.length === items.length} onChange={event => onSelectedIds(event.target.checked ? items.map(item => item.id) : [])}/> Select all</label><span>{`selected: ${selectedIds.length}${selectedFolders.length ? ` (${selectedFolders.length} folders)` : ""}`}</span></div>
     <ErrorPopup message={error} onClose={() => setError("")}/>
   </form>;
 }
@@ -4148,10 +4149,10 @@ function NotesPopover({anchor, title, entries, onClose}:{anchor:DOMRect; title:s
     onClick={event => event.stopPropagation()}>
     <div className="notes-popover-head"><strong>{title}</strong><button type="button" className="notes-popover-close" aria-label="Close" onClick={onClose}>×</button></div>
     <div className="notes-popover-body">{single
-      ? <p className="notes-text">{entries[0].notes}</p>
+      ? <NotesMarkdown text={entries[0].notes}/>
       : entries.map(entry => <section key={entry.id} className="notes-entry">
           <small>{entry.name}{entry.takenAt ? ` · ${formatDateTime(entry.takenAt)}` : ""}</small>
-          <p className="notes-text">{entry.notes}</p>
+          <NotesMarkdown text={entry.notes}/>
         </section>)}</div>
   </div>, document.body);
 }
@@ -4287,7 +4288,7 @@ function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item
           {views.map(view => (
             <label key={view.id} className="favorite-picker-item" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
               <input type="checkbox" checked={view.contains} disabled={busy} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onChange={() => toggle(view)}/>
-              <div className="favorite-picker-main"><span>{view.name}</span><small>{view.count} items</small></div>
+              <div className="favorite-picker-main"><span>{view.name}</span><small>{`${view.count} items`}</small></div>
             </label>
           ))}
         </div>}
@@ -4354,7 +4355,7 @@ function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{fo
         {views.map(view => (
           <label key={view.id} className="favorite-picker-item" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}>
             <input type="checkbox" checked={view.contains} disabled={busy} onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} onChange={() => toggle(view)}/>
-            <div className="favorite-picker-main"><span>{view.name}</span><small>{view.count} items</small></div>
+            <div className="favorite-picker-main"><span>{view.name}</span><small>{`${view.count} items`}</small></div>
           </label>
         ))}
       </div>}
@@ -5709,6 +5710,7 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
     {activeTab === "metadata" && <div role="tabpanel" aria-label="Metadata" aria-labelledby="media-tab-metadata"><MetadataSummary metadata={current.metadata}/></div>}
     {activeTab === "notes" && <div className="media-edit" role="tabpanel" aria-label="Notes" aria-labelledby="media-tab-notes">
       <label className="media-edit-row media-notes-row"><span>Notes</span><textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Add notes about this media"/></label>
+      {notes.trim() && <div className="media-notes-preview" aria-label="Notes preview"><NotesMarkdown text={notes}/></div>}
     </div>}
     <div className="action-row media-action-row">
       <button type="button" disabled={saving || !(dirty || adjustDirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
@@ -6631,7 +6633,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       {folderScoped && <span className="bar-group">
         {segments.length > 0 && <>
           <button ref={trajDropdownRef} type="button" className="trajectory-filter-trigger" aria-haspopup="dialog" aria-expanded={trajDropdownOpen} title="Pick which trajectories to show" onClick={() => setTrajDropdownOpen(value => !value)}>
-            Trajectories{selectedTrajectories.length > 0 ? ` · ${selectedTrajectories.length}/${segments.length}` : " · none"} <span className="caret" aria-hidden="true">▾</span>
+            {`Trajectories · ${selectedTrajectories.length > 0 ? `${selectedTrajectories.length}/${segments.length}` : "none"}`} <span className="caret" aria-hidden="true">▾</span>
           </button>
           {trajDropdownOpen && trajDropdownRef.current && createPortal(
             <TrajectoryFilterPanel
