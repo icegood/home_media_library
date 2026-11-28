@@ -6487,7 +6487,9 @@ function MapyLogo() {
 function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettings:{providerLight:MapTileSource; providerDark:MapTileSource; mapProviders:Record<string, Record<string, string>>; maxZoom:number}}) {
   const navigate = useNavigate();
   useSyncBrowserBarMetrics();
-  const [items, setItems] = useState<MapMedia[]>([]);
+  // Loaded points with the scope they belong to: while the next scope loads
+  // the previous one's points are not shown (nor used to focus or fit).
+  const [loadedItems, setLoadedItems] = useState<{scope:string; items:MapMedia[]}>({scope:"", items:[]});
   const [pickedGPS, setPickedGPS] = useState("");
   const [coordinateInput, setCoordinateInput] = useState("");
   const [coordinateError, setCoordinateError] = useState("");
@@ -6502,6 +6504,9 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const folderParam = query.get("folder");
   const favoriteParam = query.get("favorite");
   const folderScoped = !!folderParam;
+  const itemsScope = `${libraryParam}|${folderParam}|${favoriteParam}|${query.get("item")}|${query.get("inLibrary")}`;
+  const items = useMemo(() => loadedItems.scope === itemsScope ? loadedItems.items : [], [loadedItems, itemsScope]);
+  const setItems = (list:MapMedia[]) => setLoadedItems({scope:itemsScope, items:list});
   const [selectedTrajectories, setSelectedTrajectories] = useState<number[]>([]);
   const [trajDropdownOpen, setTrajDropdownOpen] = useState(false);
   const trajDropdownRef = useRef<HTMLButtonElement|null>(null);
@@ -6558,8 +6563,6 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       api.media(Number(itemParam)).then(item => setItems([{...item, libraryId:Number(inLibraryParam)}])).catch(cause => setMapError((cause as Error).message));
       return;
     }
-    // Drop the previous scope's points so they never stand in for this one's.
-    setItems([]);
     let cancelled = false;
     api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(loaded => {
       if (cancelled) return;
@@ -6617,8 +6620,10 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
     const last = lastFolderMap;
     returnFolderItem.current = {key:location.key, id:folderScoped && (handed || navigationType === "POP") && last && last.folderId !== Number(folderParam) ? last.firstId : null};
   }
-  const returnTarget = returnMediaId ?? returnFolderItem.current.id;
-  const returnFocus = folderScoped && itemParam == null && returnTarget != null ? {id:returnTarget, key:location.key} : undefined;
+  // On Back the last viewer item may come from anywhere (an older visit), so
+  // the first candidate that is on this map wins.
+  const returnIds = [returnMediaId, returnFolderItem.current.id].filter((id): id is ID => id != null);
+  const returnFocus = folderScoped && itemParam == null && returnIds.length > 0 ? {ids:returnIds, key:location.key} : undefined;
   // A refresh reopens the map where it was instead of fitting it to the
   // markers again; changing the trajectories still fits them.
   const savedView = useMemo(() => loadMapView(location.key), [location.key]);
@@ -7469,7 +7474,7 @@ function ServerClusters({scope, keepView, selectMode, hideMarkers, onSelectClust
 }
 
 
-function MapItems({items,keepView,focused,returnFocus,returnZoom,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; keepView?:{current:{keep:boolean}}; focused?:MapMedia; returnFocus?:{id:ID; key:string}; returnZoom:number; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
+function MapItems({items,keepView,focused,returnFocus,returnZoom,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; keepView?:{current:{keep:boolean}}; focused?:MapMedia; returnFocus?:{ids:ID[]; key:string}; returnZoom:number; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
@@ -7512,13 +7517,17 @@ function MapItems({items,keepView,focused,returnFocus,returnZoom,pickedGPS,selec
   const returnedKey = useRef<string|null>(null);
   useEffect(() => {
     if (!returnFocus || returnedKey.current === returnFocus.key) return;
-    const item = items.find(entry => entry.id === returnFocus.id);
-    if (!item) return;
+    if (items.length === 0) return;
     returnedKey.current = returnFocus.key;
-    consumeReturnMediaId(returnFocus.id);
-    const gps = parseGPS(item.gps);
-    if (gps) map.setView(gps, returnZoom);
-  }, [returnFocus?.id, returnFocus?.key, items, map]); // eslint-disable-line react-hooks/exhaustive-deps
+    for (const id of returnFocus.ids) {
+      const item = items.find(entry => entry.id === id);
+      const gps = item ? parseGPS(item.gps) : null;
+      if (!gps) continue;
+      consumeReturnMediaId(id);
+      map.setView(gps, returnZoom);
+      return;
+    }
+  }, [returnFocus?.ids.join(","), returnFocus?.key, items, map]); // eslint-disable-line react-hooks/exhaustive-deps
   // External "set point by coordinates" (from the map menu) recenters the map.
   const flyToRef = useRef<string | null>(null);
   useEffect(() => {
