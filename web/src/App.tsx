@@ -1415,13 +1415,13 @@ function JobMonitor() {
   const activeJobs = jobs.filter(isActiveJob);
   const completedJobs = jobs.filter(job => !isActiveJob(job)).slice(0, 10);
   return <section className="jobs-panel">
-    <div className="panel-title"><h2>Job instances</h2><small>{activeJobs.length} active instances</small></div>
+    <div className="panel-title"><h2>Job instances</h2><small>{`${activeJobs.length} active instances`}</small></div>
     <ErrorPopup message={error} onClose={() => setError("")}/>
     {jobs.length === 0 && <p className="muted">No jobs yet.</p>}
     {activeJobs.length === 0 && jobs.length > 0 && <p className="muted">No active jobs. Completed jobs are shown below for a short time.</p>}
     {activeJobs.length > 0 && <div className="jobs-list">{activeJobs.map(job => <JobInstanceRow job={job} key={job.id} onControl={control}/>)}</div>}
     {completedJobs.length > 0 && <details className="completed-jobs">
-      <summary>Recent completed jobs ({completedJobs.length})</summary>
+      <summary>{`Recent completed jobs (${completedJobs.length})`}</summary>
       <div className="jobs-list">{completedJobs.map(job => <JobInstanceRow job={job} key={job.id} onControl={control}/>)}</div>
     </details>}
   </section>;
@@ -1543,7 +1543,7 @@ function ScheduledTaskManager() {
     {tasks.length === 0 ? <div className="empty-state"><p>No scheduled tasks yet. Use the Add button to create one.</p></div> :
       <div className="library-table">{tasks.map(task =>
         <div className="library-row" key={task.id}>
-          <div className="library-main"><span className="folder">⏰</span><span><strong>{task.name}</strong><small>{task.taskType}{task.taskType !== "vacuum" ? ` · ${libraryName(task.libraryId)}` : ""} · {task.cron} · next {task.nextRunAt ? new Date(task.nextRunAt).toLocaleString() : "—"}</small></span></div>
+          <div className="library-main"><span className="folder">⏰</span><span><strong>{task.name}</strong><small>{task.taskType}{task.taskType !== "vacuum" ? ` · ${libraryName(task.libraryId)}` : ""} · {task.cron} · {`next ${task.nextRunAt ? new Date(task.nextRunAt).toLocaleString() : "—"}`}</small></span></div>
           <label className="check"><input type="checkbox" checked={task.enabled} disabled={busy} onChange={() => void toggleEnabled(task)}/> Enabled</label>
           <button type="button" className="secondary" disabled={busy} onClick={() => startEdit(task)}>Edit</button>
           <button type="button" className="secondary danger" disabled={busy} onClick={() => void remove(task)}>Delete</button>
@@ -1684,7 +1684,7 @@ function EmbyImportPanel({onImported}:{onImported:()=>Promise<void>}) {
     </fieldset>
     <ErrorPopup message={error} onClose={() => setError("")}/>
     {result && <div className="import-result">
-      <p className="success">Imported {result.libraries.length} libraries, {result.users.length} users, {result.access.length} access links.</p>
+      <p className="success">{`Imported ${result.libraries.length} libraries, ${result.users.length} users, ${result.access.length} access links.`}</p>
       {result.users.some(user => user.temporaryPassword) && <details open><summary>Temporary passwords for users without importable Emby passwords</summary>
         <ul>{result.users.filter(user => user.temporaryPassword).map(user =>
           <li key={user.user.id}><code>{user.user.login}</code>: <code>{user.temporaryPassword}</code></li>)}</ul>
@@ -2163,8 +2163,8 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
       <div className="panel-title"><h2>User settings</h2>
         <button type="button" className="secondary" onClick={close}>Close</button>
       </div>
-      <p className="muted">Preferences for {user.login}. These apply only to your account.</p>
-      {loadError && <p className="error" role="alert">Couldn't load your settings: {loadError}. Saving is disabled until they load.</p>}
+      <p className="muted">{`Preferences for ${user.login}. These apply only to your account.`}</p>
+      {loadError && <p className="error" role="alert">{`Couldn't load your settings: ${loadError}. Saving is disabled until they load.`}</p>}
       <div className="dialog-tabs" role="tablist" aria-label="Settings sections">
         {USER_SETTINGS_TABS.map(entry => <button type="button" role="tab" key={entry.id} id={`user-settings-tab-${entry.id}`} aria-selected={tab === entry.id} aria-controls="user-settings-panel" className={tab === entry.id ? "active" : ""} onClick={() => setTab(entry.id)}>{entry.label}</button>)}
       </div>
@@ -2241,13 +2241,13 @@ function UserSettingsModal({user, theme, zoom, streamChunkSize, resolvedTheme, o
                   const schema = TRANSCODE_SCHEMAS[id];
                   return <li key={id} role="option" aria-selected={codec === id} onClick={() => { setCodec(id); setCodecOpen(false); setSaved(false); }}>
                     <strong>{schema.videoLabel} + {schema.audioLabel} → {schema.containerLabel}</strong>
-                    <small>{schema.compressionLabel} compression — browser: {schema.supportLabel}</small>
+                    <small>{`${schema.compressionLabel} compression — browser: ${schema.supportLabel}`}</small>
                   </li>;
                 })}
               </ul>}
             </div>
             <small>Used when your browser cannot play the original video. Choose the profile your devices support best.</small>
-            <small>Your browser plays directly without transcoding: {supportedVideoFormats().join(", ") || "none"}.</small>
+            <small>{`Your browser plays directly without transcoding: ${supportedVideoFormats().join(", ") || "none"}.`}</small>
             <label className="check"><input type="checkbox" checked={showTranscodeReason} onChange={event => { setShowTranscodeReason(event.target.checked); setSaved(false); }}/> Show transcoded reason</label>
             <small>Shows a badge on videos in play mode: orange "Transcoded" with the reasons the original cannot play in your browser, or green "Direct play" when the original file plays as is.</small>
           </fieldset>
@@ -2337,7 +2337,7 @@ function AboutModal({onClose}:{onClose:()=>void}) {
         <div><dt>Frontend</dt><dd>React {appStack.react} · TypeScript {appStack.typescript} · Vite {appStack.vite}</dd></div>
         {info?.gatewayEnabled && <div><dt>Gateway</dt><dd>Caddy {appStack.caddy}</dd></div>}
       </dl>
-      {error && <p className="error">Could not read backend version: {error}</p>}
+      {error && <p className="error">{`Could not read backend version: ${error}`}</p>}
     </div>
   </div>;
 }
@@ -2396,7 +2396,7 @@ function InlineStatsLine({load}:{load:()=>Promise<{images:number; videos:number;
   }, []);
   if (error) return <span className="error">{error}</span>;
   if (!counts) return <span className="muted">Loading statistics…</span>;
-  return <span className="folder-stats-inline">Images: {counts.images} · Videos: {counts.videos} · Documents: {counts.documents}</span>;
+  return <span className="folder-stats-inline">{`Images: ${counts.images} · Videos: ${counts.videos} · Documents: ${counts.documents}`}</span>;
 }
 
 // Shared ⋮ dropdown used by library tiles, folder entries, admin library rows
@@ -2473,7 +2473,7 @@ function LibraryTile({item}:{item:Library}) {
 function ThumbnailRefreshModal({title,busy,error,onClose,onRefresh}:{title:string; busy:boolean; error:string; onClose:()=>void; onRefresh:(recreateExisting:boolean)=>void}) {
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Refresh thumbnails ${title}`} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal">
-      <div className="panel-title"><h2>Refresh thumbnails: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><h2>{`Refresh thumbnails: ${title}`}</h2><button type="button" onClick={onClose}>Close</button></div>
       <p className="muted">Choose whether existing thumbnails should be kept or regenerated.</p>
       <ErrorPopup message={error}/>
       <div className="action-row">
@@ -2490,7 +2490,7 @@ function MetadataRefreshModal({title,busy,error,onClose,onRefresh}:{title:string
   const [updateTakenAt, setUpdateTakenAt] = useState(false);
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Refresh metadata ${title}`} onClick={event => closeOnBackdropClick(event, onClose)}>
     <div className="card settings modal">
-      <div className="panel-title"><h2>Re-extract metadata: {title}</h2><button type="button" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><h2>{`Re-extract metadata: ${title}`}</h2><button type="button" onClick={onClose}>Close</button></div>
       <ErrorPopup message={error}/>
       <p className="muted">Every file is re-extracted; a checked option also overwrites values files already have, an unchecked one only fills what is still missing. This does not recreate thumbnail files; use Refresh thumbnails separately.</p>
       <label className="check"><input type="checkbox" checked={recreateExisting} onChange={event => setRecreateExisting(event.target.checked)}/> Re-extract metadata JSON for all files</label>
@@ -4280,7 +4280,7 @@ function FavoriteViewChooser({item,onChange,onClose}:{item:Media; onChange:(item
   }
   return <ModalBackdrop ariaLabel={`Favorite views for ${item.name}`} onClick={event => closeOnBackdropClick(event as any, onClose)}>
     <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
-      <div className="panel-title"><h2>Favorites: {item.name}</h2><button type="button" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><h2>{`Favorites: ${item.name}`}</h2><button type="button" onClick={onClose}>Close</button></div>
       <ErrorPopup message={error} onClose={() => setError("")}/>
       {views.length === 0 ? <p className="muted">No favorite views yet. Create one below.</p> :
         <div className="favorite-picker-list">
@@ -4348,7 +4348,7 @@ function FolderFavoriteViewChooser({folderId, folderName, onChange, onClose}:{fo
   }
   return <ModalBackdrop ariaLabel={`Favorite views for ${folderName}`} onClick={event => closeOnBackdropClick(event as any, onClose)}>
     <div className="card settings modal favorite-picker" onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
-      <div className="panel-title"><h2>Add to favorites: {folderName}</h2><button type="button" onClick={onClose}>Close</button></div>
+      <div className="panel-title"><h2>{`Add to favorites: ${folderName}`}</h2><button type="button" onClick={onClose}>Close</button></div>
       <ErrorPopup message={error} onClose={() => setError("")}/>
       {views.length > 0 && <div className="favorite-picker-list">
         {views.map(view => (
@@ -5244,7 +5244,7 @@ function Viewer({item,favoriteViewId,mapContext,infoOpen,previous,next,onGo,onTo
               <iframe key={`document-${item.id}`} className="viewer-document" hidden={!docUrl && !docError} title={item.name} src={docUrl}/>
               {!docUrl && !docError && <div className="map-notice" role="status">Opening document…</div>}
             </>}
-          {docError && <div className="map-notice" role="alert">Cannot open document: {docError}</div>}
+          {docError && <div className="map-notice" role="alert">{`Cannot open document: ${docError}`}</div>}
         </>}
       <button type="button" className="viewer-arrow viewer-arrow-right" aria-label="Next media" disabled={!next} onClick={() => onGo(next)}>{">"}</button>
       {(item.kind === "image" || item.kind === "video") && <div className="zoom-controls" aria-label="Zoom controls">
@@ -5805,6 +5805,60 @@ function videoPlaybackReport(item:Media, supported:string[]): {mode:"original"|"
   return {mode: reasons.length > 0 ? "transcoded" : "original", reasons};
 }
 
+// Formats the browser failed to play directly this session (container, codecs,
+// profile, pixel format): the next file of the same format is transcoded at once.
+const DIRECT_PLAY_FAILURES_KEY = "media-library-direct-play-failures";
+
+function directPlayFailures():Set<string> {
+  try { return new Set(JSON.parse(sessionStorage.getItem(DIRECT_PLAY_FAILURES_KEY) ?? "[]") as string[]); } catch { return new Set(); }
+}
+
+function rememberDirectPlayFailure(key:string) {
+  const failures = directPlayFailures();
+  failures.add(key);
+  try { sessionStorage.setItem(DIRECT_PLAY_FAILURES_KEY, JSON.stringify([...failures])); } catch { /* quota: retried next time */ }
+}
+
+type FFprobeStream = {codec_type?:string; codec_name?:string; profile?:string; pix_fmt?:string};
+
+function ffprobeStreams(item:Media):FFprobeStream[] {
+  return (item.metadata?.ffprobe as {streams?:FFprobeStream[]}|undefined)?.streams ?? [];
+}
+
+function videoFormatKey(item:Media) {
+  const streams = ffprobeStreams(item);
+  const video = streams.find(stream => stream.codec_type === "video");
+  const audio = streams.find(stream => stream.codec_type === "audio");
+  const mime = (item.mimeType || "").split(";")[0].trim().toLowerCase();
+  return [mime, video?.codec_name ?? "", video?.profile ?? "", video?.pix_fmt ?? "", audio?.codec_name ?? ""].join("|");
+}
+
+// The source video codec in the names the server's `codecs` list uses.
+function sourceCodecOf(item:Media) {
+  const name = ffprobeStreams(item).find(stream => stream.codec_type === "video")?.codec_name ?? "";
+  return name === "hevc" ? "h265" : name;
+}
+
+function hasVideoStream(item:Media) {
+  return ffprobeStreams(item).some(stream => stream.codec_type === "video");
+}
+
+// Containers worth trying as they are: whatever the browser claims it can
+// open, plus QuickTime and Matroska, which Chrome often plays while its
+// canPlayType denies them. Others (AVI, WMV, MPEG-PS…) no browser demuxes.
+function browserMayOpenContainer(mimeType:string) {
+  const mime = (mimeType || "").split(";")[0].trim().toLowerCase();
+  if (mime === "video/quicktime" || mime === "video/x-matroska") return true;
+  try { return mime !== "" && document.createElement("video").canPlayType(mime) !== ""; } catch { return false; }
+}
+
+// Playback that runs while the decoder produces no picture (an unsupported
+// video codec next to a supported audio track plays sound over black).
+function decodesNoFrames(video:HTMLVideoElement) {
+  if (video.currentTime < 1.5 || typeof video.getVideoPlaybackQuality !== "function") return false;
+  return video.getVideoPlaybackQuality().totalVideoFrames === 0;
+}
+
 function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,imageRotation,imagePan,drag,adjust,ready,onPointerDown,onPointerMove,onPointerUp,onPointerCancel}:{item:Media; supported:string[]; isFullscreen?:boolean; onToggleFullscreen?:()=>void; imageZoom?:number; imageRotation?:number; imagePan?:{x:number;y:number}; drag?:{pointerId:number}|null; adjust:{brightness:number; hue:number; saturation:number; gamma:number; contrast:number}; ready?:boolean; onPointerDown?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerMove?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerUp?:(e:React.PointerEvent<HTMLElement>)=>void; onPointerCancel?:(e:React.PointerEvent<HTMLElement>)=>void}) {
   const metadataDuration = videoMetadataDuration(item.metadata);
   // Fullscreen sizes the (rotatable) video stack from the screen box and the
@@ -5848,8 +5902,25 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
   const activeRef = useRef(0);
   const seekTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
   const seekPending = useRef(false);
-  const playback = videoPlaybackReport(item, supported);
-  const transcoded = playback.mode === "transcoded";
+  const report = videoPlaybackReport(item, supported);
+  // The original file is tried first whenever the browser can open its
+  // container, whatever the codec probes say; a decode error, or playback
+  // that shows no video frames, falls back to a transcode from the same
+  // position. A format that failed is remembered for this browser session.
+  const formatKey = videoFormatKey(item);
+  const [directFailed, setDirectFailed] = useState(() => directPlayFailures().has(formatKey));
+  const tryOriginal = !directFailed && (report.mode === "original" || browserMayOpenContainer(item.mimeType));
+  const transcoded = !tryOriginal;
+  const playback = directFailed ? {mode:"transcoded" as const, reasons:[...report.reasons, "Your browser could not play the original file."]} : report;
+  function fallBackToTranscode() {
+    if (transcoded) return;
+    rememberDirectPlayFailure(formatKey);
+    const resume = Math.floor(current);
+    setOffsets([resume, resume]);
+    setActive(0);
+    setPending(null);
+    setDirectFailed(true);
+  }
   const [reportOpen, setReportOpen] = useState(false);
   const [seekNotice, setSeekNotice] = useState<string|null>(null);
   const seekNoticeTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
@@ -6025,7 +6096,7 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
     const isActive = active === slot;
     const offset = offsets[slot];
     const filterStyle = { filter: applyAdjust(adjust) };
-    return <video key={`slot-${slot}-${offset}`} ref={slotRefs[slot]} src={api.playbackUrl(item.id, supported, offset)} poster={api.thumbnailUrl(item.id, 0)}
+    return <video key={`slot-${slot}-${offset}`} ref={slotRefs[slot]} src={transcoded ? api.playbackUrl(item.id, directFailed ? supported.filter(codec => codec !== sourceCodecOf(item)) : supported, offset) : api.playbackUrl(item.id, supported, 0, true)} poster={api.thumbnailUrl(item.id, 0)}
       style={isActive ? filterStyle : {...filterStyle, visibility:"hidden", position:"absolute", top:0, left:0, width:"100%"}}
       preload="auto" muted={!isActive || muted} autoPlay={isActive && playing} playsInline
       onCanPlay={() => {
@@ -6041,8 +6112,9 @@ function VideoPlayer({item,supported,isFullscreen,onToggleFullscreen,imageZoom,i
           try { void el.play(); } catch { /* ignore */ }
         } else el.pause();
       }}
-      onLoadedMetadata={event => { const clip = event.currentTarget; if (isActive && clip.videoWidth > 0 && clip.videoHeight > 0) setClipSize({width:clip.videoWidth, height:clip.videoHeight}); const reported = clip.duration; if (!(metadataDuration > 0) && Number.isFinite(reported) && reported > 0) setDuration(reported); }}
-      onTimeUpdate={event => { if (!isActive || seekPending.current) return; const position = offset + event.currentTarget.currentTime; setCurrent(duration > 0 ? Math.min(position, duration) : position); }}
+      onError={() => { if (isActive) fallBackToTranscode(); }}
+      onLoadedMetadata={event => { const clip = event.currentTarget; if (isActive && !transcoded && hasVideoStream(item) && clip.videoWidth === 0) { fallBackToTranscode(); return; } if (isActive && clip.videoWidth > 0 && clip.videoHeight > 0) setClipSize({width:clip.videoWidth, height:clip.videoHeight}); const reported = clip.duration; if (!(metadataDuration > 0) && Number.isFinite(reported) && reported > 0) setDuration(reported); }}
+      onTimeUpdate={event => { if (!isActive || seekPending.current) return; if (!transcoded && decodesNoFrames(event.currentTarget)) { fallBackToTranscode(); return; } const position = offset + event.currentTarget.currentTime; setCurrent(duration > 0 ? Math.min(position, duration) : position); }}
       onPlay={isActive ? () => setPlaying(true) : undefined}
       onPause={isActive ? () => setPlaying(false) : undefined}>
       Your browser cannot play this video.
@@ -6611,7 +6683,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       {(walkMode || showPOIs) && <span className="bar-group">
         {walkMode && <WalkRadiusInput radius={walkRadius} onChange={meters => { setWalkRadius(meters); saveWalkRadius(meters); }}/>}
         {showPOIs && <button ref={poiDropdownRef} type="button" className="secondary poi-cat-trigger" aria-haspopup="dialog" aria-expanded={poiDropdownOpen} title="Pick which places to show" onClick={() => setPoiDropdownOpen(value => !value)}>
-          Categories · {poiCategoriesLabel(poiCategories)} <span className="caret" aria-hidden="true">▾</span>
+          {`Categories · ${poiCategoriesLabel(poiCategories)}`} <span className="caret" aria-hidden="true">▾</span>
         </button>}
         {showPOIs && poiDropdownOpen && poiDropdownRef.current && createPortal(
           <POICategoryPanel anchor={poiDropdownRef.current} selected={poiCategories} onChange={setPoiCategories} onClose={() => setPoiDropdownOpen(false)}/>,
@@ -6619,7 +6691,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         )}
       </span>}
       {poiLoading && <span className="map-render-status" role="status">Loading POI…</span>}
-      {poiError && <span className="map-render-status poi-error" role="alert">POI error: {poiError}</span>}
+      {poiError && <span className="map-render-status poi-error" role="alert">{`POI error: ${poiError}`}</span>}
       {coordinateError && <span className="map-notice" role="alert">{coordinateError}</span>}
       {rendering && <span className="map-render-status" role="status">Rendering markers…</span>}
       {walkMode && !myPosition && !walkError && <span className="map-render-status" role="status">Locating you…</span>}
@@ -6871,7 +6943,7 @@ function MapAreaPanel({items,onClear}:{items:MapMedia[]; onClear:()=>void}) {
       <button className="secondary" onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
       <button className="secondary" onClick={onClear}>Clear</button>
     </div>
-    {visible.length < sorted.length && <p className="map-render-status inline">Loading {visible.length} of {sorted.length}…</p>}
+    {visible.length < sorted.length && <p className="map-render-status inline">{`Loading ${visible.length} of ${sorted.length}…`}</p>}
     {sorted.length === 0 ? <div className="empty-state"><p>No media with GPS inside the selected area.</p></div> :
       <div className="timeline-grid map-area-grid">{groups.map(group =>
         <div className="timeline-group" key={group.label}>
@@ -7001,7 +7073,7 @@ function NoGPSPanel({items,loading,libraryId,folderId,onClose}:{items:Media[]; l
   const groups = useMemo(() => groupByDate(visible), [visible]);
   return <aside className="map-timeline-panel nogps" aria-label="Media without GPS in this folder" style={style}>
     <div className="map-timeline-head">
-      <strong>{sorted.length} {sorted.length === 1 ? "item" : "items"} without GPS</strong>
+      <strong>{`${sorted.length} ${sorted.length === 1 ? "item" : "items"} without GPS`}</strong>
       <button className="secondary" onClick={() => setSort(value => value === "desc" ? "asc" : "desc")}>{sort === "desc" ? "Newest first" : "Oldest first"}</button>
       <button className="secondary" onClick={onClose}>Close</button>
     </div>
@@ -7600,7 +7672,7 @@ export function TrajectoryDialog({item,onClose,onSetStart,onSetEnd,onSetName}:{i
           <button type="submit" disabled={busy || !name.trim()}>Save</button>
         </div>
         {saved && <small className="success">Saved.</small>}
-        {item.trajectoryName?.trim() && <small className="muted">Current: {item.trajectoryName.trim()}</small>}
+        {item.trajectoryName?.trim() && <small className="muted">{`Current: ${item.trajectoryName.trim()}`}</small>}
       </form>}
     </div>
   </ModalBackdrop>;

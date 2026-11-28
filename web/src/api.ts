@@ -254,8 +254,10 @@ export const api = {
     anchor.remove();
     URL.revokeObjectURL(url);
   },
-  playbackUrl: (id:ID, codecs:string[], start = 0) =>
-    authUrl(`/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}${start > 0 ? `&start=${start}` : ""}`)
+  // direct asks for the original file whatever its codecs (the viewer tries
+  // it first and falls back to a transcode when the browser cannot play it).
+  playbackUrl: (id:ID, codecs:string[], start = 0, direct = false) =>
+    authUrl(`/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}${direct ? "&direct=1" : start > 0 ? `&start=${start}` : ""}`)
 };
 
 export interface AdminSettings {

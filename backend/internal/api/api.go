@@ -1918,6 +1918,18 @@ func archiveEntryName(item domain.Media, used map[string]bool) string {
 	return candidate
 }
 
+// servesOriginal reports whether /play streams the file unchanged: always for
+// direct=1 (the browser tries the original whatever its codecs and asks for a
+// transcode itself when it cannot decode it), otherwise when the advertised
+// codecs cover the source video with a matching audio codec and container.
+func servesOriginal(query url.Values, sourceCodec transcode.Codec, sourceAudio, mimeType string) bool {
+	if query.Get("direct") == "1" {
+		return true
+	}
+	return codecSet(query.Get("codecs"))[sourceCodec] && transcode.DirectPlayAudioSupported(sourceCodec, sourceAudio) &&
+		transcode.DirectPlayContainerSupported(sourceCodec, mimeType)
+}
+
 func (a *API) play(w http.ResponseWriter, r *http.Request) {
 	item, file, ok := a.openMedia(w, r)
 	if !ok {
@@ -1938,10 +1950,9 @@ func (a *API) play(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	supported := codecSet(r.URL.Query().Get("codecs"))
-	if supported[sourceCodec] && transcode.DirectPlayAudioSupported(sourceCodec, sourceAudio) &&
-		transcode.DirectPlayContainerSupported(sourceCodec, item.MIMEType) {
-		applog.Printf(applog.Debug, "direct play media %d (%s) for user %d: source video %s", item.ID, item.RelativePath, current(r).ID, sourceCodec)
+	forced := r.URL.Query().Get("direct") == "1"
+	if servesOriginal(r.URL.Query(), sourceCodec, sourceAudio, item.MIMEType) {
+		applog.Printf(applog.Debug, "direct play media %d (%s) for user %d: source video %s, forced %v", item.ID, item.RelativePath, current(r).ID, sourceCodec, forced)
 		info, err := file.Stat()
 		if err != nil {
 			problem(w, http.StatusInternalServerError, "could not read video")
@@ -1964,7 +1975,7 @@ func (a *API) play(w http.ResponseWriter, r *http.Request) {
 	}
 	transcoder := a.Transcoder
 	transcoder.Target = schema
-	if !supported[schema.Video] {
+	if !codecSet(r.URL.Query().Get("codecs"))[schema.Video] {
 		problem(w, http.StatusNotAcceptable, "browser does not support source or configured transcode codec")
 		return
 	}

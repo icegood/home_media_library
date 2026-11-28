@@ -3222,6 +3222,35 @@ test("transcoded video keeps showing the absolute position after a server-side s
   expect(screen.getByText("20:39")).toBeInTheDocument();
 });
 
+test("a video the codec probes reject is still tried as the original file and falls back to a transcode when it fails", async () => {
+  const originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
+  // The browser opens MP4 but denies every HEVC probe string.
+  HTMLVideoElement.prototype.canPlayType = (type:string) => type === "video/mp4" || type.includes("avc1") ? "maybe" : "";
+  try {
+    mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+    const hevc = {codec_type:"video", codec_name:"hevc", profile:"Main", pix_fmt:"yuvj420p"};
+    mockApi.folderEntries.mockResolvedValue({entries:[
+      {id:100, name:"PXL.TS.mp4", relativePath:"PXL.TS.mp4", type:"media", media:{id:100, folderId:20, relativePath:"PXL.TS.mp4", name:"PXL.TS.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"30"}, streams:[hevc, {codec_type:"audio", codec_name:"aac"}]}}, gps:"", takenAt:""}},
+      {id:101, name:"PXL2.TS.mp4", relativePath:"PXL2.TS.mp4", type:"media", media:{id:101, folderId:20, relativePath:"PXL2.TS.mp4", name:"PXL2.TS.mp4", kind:"video", mimeType:"video/mp4", size:20, metadata:{ffprobe:{format:{duration:"30"}, streams:[hevc, {codec_type:"audio", codec_name:"aac"}]}}, gps:"", takenAt:""}}
+    ], chain: []});
+    mockApi.videoThumbnails.mockResolvedValue([]);
+    render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+    const video = () => document.querySelector(".video-stack video") as HTMLVideoElement;
+    await waitFor(() => expect(video().getAttribute("src")).toBe("/api/v1/media/100/play?codecs=h264&direct=1"));
+    expect(screen.getByText("Direct play")).toBeInTheDocument();
+    fireEvent.error(video());
+    // The fallback leaves out the codec that failed, so the server transcodes.
+    await waitFor(() => expect(video().getAttribute("src")).toBe("/api/v1/media/100/play?codecs=h264"));
+    expect(screen.getByRole("button", {name:/Transcoded/})).toBeInTheDocument();
+    // The next file of the same format goes to the transcode at once.
+    fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+    await waitFor(() => expect(video().getAttribute("src")).toBe("/api/v1/media/101/play?codecs=h264"));
+  } finally {
+    sessionStorage.removeItem("media-library-direct-play-failures");
+    HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
+  }
+});
+
 test("transcode badge dropdown explains which parts are incompatible", async () => {
   const originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
   HTMLVideoElement.prototype.canPlayType = (type:string) => type.startsWith("video/webm") ? "maybe" : "";
@@ -3232,16 +3261,21 @@ test("transcode badge dropdown explains which parts are incompatible", async () 
     ], chain: []});
     mockApi.videoThumbnails.mockResolvedValue([]);
     render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+    // Matroska is tried as it is first; the decode error falls back.
+    await screen.findByText("Direct play");
+    fireEvent.error(document.querySelector(".video-stack video") as HTMLVideoElement);
     const badge = await screen.findByRole("button", {name:/Transcoded/});
     expect(screen.queryByText("Why transcoded?")).not.toBeInTheDocument();
     fireEvent.click(badge);
     expect(screen.getByText("Why transcoded?")).toBeInTheDocument();
+    expect(screen.getByText("Your browser could not play the original file.")).toBeInTheDocument();
     expect(screen.queryByText(/Video codec/)).not.toBeInTheDocument();
     expect(screen.getByText(/Audio track is MP3, but VP9 video needs Opus or Vorbis audio to play without transcoding\./)).toBeInTheDocument();
     expect(screen.getByText(/File container is video\/x-matroska, but VP9 video needs a WebM container\./)).toBeInTheDocument();
     fireEvent.click(badge);
     expect(screen.queryByText("Why transcoded?")).not.toBeInTheDocument();
   } finally {
+    sessionStorage.removeItem("media-library-direct-play-failures");
     HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
   }
 });

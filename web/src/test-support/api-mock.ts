@@ -503,8 +503,8 @@ function createMockApi() {
     thumbnailUrl: vi.fn((id:number, index = 0) => `/api/v1/media/${id}/thumbnail?index=${index}`),
     folderThumbnailUrl: vi.fn((id:number) => `/api/v1/folders/${id}/thumbnail`),
     contentUrl: vi.fn((id:number, download = false) => `/api/v1/media/${id}/content${download ? "?download=1" : ""}`),
-    playbackUrl: vi.fn((id:number, codecs:string[], start = 0) =>
-      `/api/v1/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}${start > 0 ? `&start=${start}` : ""}`),
+    playbackUrl: vi.fn((id:number, codecs:string[], start = 0, direct = false) =>
+      `/api/v1/media/${id}/play?codecs=${encodeURIComponent(codecs.join(","))}${direct ? "&direct=1" : start > 0 ? `&start=${start}` : ""}`),
     downloadArchive: vi.fn(async () => {}),
     documentContent: vi.fn(async (_id:number) => "blob:mock-document"),
     // --- admin settings -------------------------------------------------------

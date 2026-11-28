@@ -267,3 +267,13 @@ test("attribute templates win over generic verb composites and confirm texts tra
   applyLanguageSetting("en");
   expect(translateMessage(`Delete favorite view "Trip"?`)).toBe(`Delete favorite view "Trip"?`);
 });
+
+test("labels joined with a value into one text node translate through templates", () => {
+  applyLanguageSetting("ua");
+  const body = translateSnippet(`<summary>Recent completed jobs (3)</summary><small>2 active instances</small><h2>Favorites: trip.jpg</h2><strong>4 items without GPS</strong><small>Good compression — browser: Excellent</small>`);
+  expect(body.querySelector("summary")?.textContent).toBe("Недавні завершені задачі (3)");
+  expect(body.querySelector("small")?.textContent).toBe("Активних екземплярів: 2");
+  expect(body.querySelector("h2")?.textContent).toBe("Обране: trip.jpg");
+  expect(body.querySelector("strong")?.textContent).toBe("Без GPS: 4");
+  expect(body.querySelectorAll("small")[1]?.textContent).not.toContain("compression");
+});
