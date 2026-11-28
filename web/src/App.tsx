@@ -6589,6 +6589,11 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   const location = useLocation();
   const returnMediaId = useReturnMediaId();
   const returnFocus = folderScoped && itemParam == null && returnMediaId != null ? {id:returnMediaId, key:location.key} : undefined;
+  // A refresh reopens the map where it was instead of fitting it to the
+  // markers again; changing the trajectories still fits them.
+  const savedView = useMemo(() => loadMapView(location.key), [location.key]);
+  const keepView = useRef<{key:string; keep:boolean}>({key:"", keep:false});
+  if (keepView.current.key !== location.key) keepView.current = {key:location.key, keep:savedView != null};
   const focused = items.find(item => item.id === Number(query.get("item")));
   const focusedGPS = focused ? parseGPS(focused.gps) : null;
   // "Open on map" links to /map?item=… (no library/folder/favorite scope): show
@@ -6720,7 +6725,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
               anchor={trajDropdownRef.current}
               segments={segments}
               selected={selectedTrajectories}
-              onChange={setSelectedTrajectories}
+              onChange={value => { keepView.current.keep = false; setSelectedTrajectories(value); }}
               showNumbers={showTrajectoryNumbers}
               onShowNumbers={setShowTrajectoryNumbers}
               onClose={() => setTrajDropdownOpen(false)}
@@ -6734,7 +6739,6 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
           <button type="button" className={`map-icon-button select-area-button ${selectMode ? "active" : ""}`} aria-pressed={selectMode} aria-label={selectMode ? "Cancel area selection" : "Select area"} title={selectMode ? "Cancel area selection" : "Select area — drag a rectangle on the map to list the media inside it"} onClick={() => setSelectMode(value => !value)}>
             <MapToolIcon name={selectMode ? "cancel" : "area"}/>
           </button>
-          {area && <button type="button" className="map-icon-button secondary" aria-label="Clear selection" title="Clear selection — remove the selected area and its list" onClick={() => setArea(null)}><MapToolIcon name="clear"/></button>}
         </div>
         <form className="map-coordinate-input" onSubmit={event => { event.preventDefault(); setByCoordinates(); }}>
           <input aria-label="Set point by coordinates" value={coordinateInput} onChange={event => { setCoordinateInput(event.target.value); setCoordinateError(""); }} placeholder="lat, lng or Google Maps link"/>
@@ -6782,16 +6786,17 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
     </div></div>
     <div className="map-stage">
       {(mapError) && <div className="map-notice" role="alert">{mapError}</div>}
-      <MapContainer ref={mapRef} center={focusedGPS ?? [20,0]} zoom={focusedGPS ? 15 : 2} className={`map${filterDark ? " dark-tile-filter" : ""}`}>
+      <MapContainer ref={mapRef} center={savedView ? [savedView.lat, savedView.lng] : focusedGPS ?? [20,0]} zoom={savedView ? savedView.zoom : focusedGPS ? 15 : 2} className={`map${filterDark ? " dark-tile-filter" : ""}`}>
         <TileLayer key={`${theme}-${mapyTiles ? source : isSatellite ? `satellite-${imageryRelease?.release ?? "latest"}` : cartoTiles ? effectiveSubStyle || "voyager" : esriTiles ? "esri" : "osm"}`} attribution={tileAttribution} url={tileUrl}
           maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>
         {source === "mapy:aerial" && <TileLayer key={`${theme}-mapy-names`} url={mapyTileUrl("names-overlay", mapyKey)} maxZoom={24} maxNativeZoom={mapMaxZoom} minZoom={2}/>}
         {mapyTiles && <MapyLogo/>}
         <ScaleControl position="bottomleft" imperial={false}/>
+        <MapViewMemory storageKey={location.key} saved={savedView}/>
         <PlaceSearch onWalkFrom={walkFrom}/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
-        {clustered && <ServerClusters scope={mapScope} selectMode={selectMode} hideMarkers={hideMarkers} onSelectCluster={selectCluster} onLoading={setRendering} onError={setMapError} myPosition={myPosition}/>}
-        <MapItems items={displayItems} focused={focused} returnFocus={returnFocus} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
+        {clustered && <ServerClusters scope={mapScope} keepView={savedView != null} selectMode={selectMode} hideMarkers={hideMarkers} onSelectCluster={selectCluster} onLoading={setRendering} onError={setMapError} myPosition={myPosition}/>}
+        <MapItems items={displayItems} keepView={keepView} focused={focused} returnFocus={returnFocus} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
         {myPosition && <MyPositionLayer key={walkAnchor ? walkAnchor.join(",") : "device"} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} recenterTick={recenterTick}/>}
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
@@ -6901,6 +6906,39 @@ function haversineKm(lat1:number, lon1:number, lat2:number, lon2:number) {
   const dLon = toRad(lon2 - lon1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * 6371 * Math.asin(Math.sqrt(a));
+}
+
+const MAP_VIEW_KEY = "media-library-map-view";
+type SavedMapView = {lat:number; lng:number; zoom:number};
+
+// Only the latest map position is kept (sessionStorage, with the router
+// location key it belongs to, which a refresh keeps), so a reload of that
+// same page reopens it there; any other map page fits its markers as usual.
+export function loadMapView(key:string):SavedMapView|null {
+  try {
+    const entry = JSON.parse(sessionStorage.getItem(MAP_VIEW_KEY) ?? "null") as ({key:string}&SavedMapView)|null;
+    return entry && entry.key === key && Number.isFinite(entry.lat) && Number.isFinite(entry.lng) && Number.isFinite(entry.zoom) ? {lat:entry.lat, lng:entry.lng, zoom:entry.zoom} : null;
+  } catch { return null; }
+}
+
+export function saveMapView(key:string, view:SavedMapView) {
+  try { sessionStorage.setItem(MAP_VIEW_KEY, JSON.stringify({key, ...view})); } catch { /* storage disabled: nothing to remember */ }
+}
+
+function MapViewMemory({storageKey, saved}:{storageKey:string; saved:SavedMapView|null}) {
+  const map = useMap();
+  const keyRef = useRef(storageKey);
+  useEffect(() => {
+    if (keyRef.current === storageKey) return;
+    keyRef.current = storageKey;
+    if (saved) map.setView([saved.lat, saved.lng], saved.zoom);
+  }, [storageKey, saved, map]);
+  useMapEvents({moveend: () => {
+    if (map.getSize().x === 0) return;
+    const center = map.getCenter();
+    saveMapView(keyRef.current, {lat:center.lat, lng:center.lng, zoom:map.getZoom()});
+  }});
+  return null;
 }
 
 function AreaSelector({enabled,onArea}:{enabled:boolean; onArea:(start:L.LatLng,end:L.LatLng)=>void}) {
@@ -7336,7 +7374,7 @@ function POILayer({active, categories, pois, onFetch, onError}:{active:boolean; 
 // quarter each way) is requested grouped server-side into cells of the zoom's
 // cluster size, so only what is on screen is loaded. The first answer's scope
 // extent fits the map; a click lists the cell's media through its box.
-function ServerClusters({scope, selectMode, hideMarkers, onSelectCluster, onLoading, onError, myPosition}:{scope:{libraryId?:ID; favoriteViewId?:ID}; selectMode:boolean; hideMarkers:boolean; onSelectCluster:(items:MapMedia[])=>void; onLoading:(loading:boolean)=>void; onError:(message:string)=>void; myPosition?:MyPosition|null}) {
+function ServerClusters({scope, keepView, selectMode, hideMarkers, onSelectCluster, onLoading, onError, myPosition}:{scope:{libraryId?:ID; favoriteViewId?:ID}; keepView:boolean; selectMode:boolean; hideMarkers:boolean; onSelectCluster:(items:MapMedia[])=>void; onLoading:(loading:boolean)=>void; onError:(message:string)=>void; myPosition?:MyPosition|null}) {
   const map = useMap();
   const [clusters, setClusters] = useState<MapCluster[]>([]);
   const [loading, setLoading] = useState(false);
@@ -7347,7 +7385,7 @@ function ServerClusters({scope, selectMode, hideMarkers, onSelectCluster, onLoad
   }, [loading, visibleClusters.length, clusters.length, onLoading]);
   const fitted = useRef(false);
   useMapEvents({moveend: () => setMoves(count => count + 1)});
-  useEffect(() => { fitted.current = false; }, [scope]);
+  useEffect(() => { fitted.current = keepView; }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const controller = new AbortController();
     const load = () => {
@@ -7397,7 +7435,7 @@ function ServerClusters({scope, selectMode, hideMarkers, onSelectCluster, onLoad
 
 const RETURN_FOCUS_ZOOM = 17;
 
-function MapItems({items,focused,returnFocus,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; focused?:MapMedia; returnFocus?:{id:ID; key:string}; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
+function MapItems({items,keepView,focused,returnFocus,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; keepView?:{current:{keep:boolean}}; focused?:MapMedia; returnFocus?:{id:ID; key:string}; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
@@ -7420,6 +7458,7 @@ function MapItems({items,focused,returnFocus,pickedGPS,selectMode,onPick,onSelec
   const hideMarkersRef = useRef(hideMarkers);
   hideMarkersRef.current = hideMarkers;
   useEffect(() => {
+    if (keepView?.current.keep) return;
     const gps = focused ? parseGPS(focused.gps) : null;
     if (gps) {
       map.setView(gps, Math.max(map.getZoom(), 15));
@@ -7640,11 +7679,10 @@ function MapLayersPanel({anchor, layers, onClose}:{anchor:HTMLElement; layers:{l
   </div>;
 }
 
-function MapToolIcon({name}:{name:"area"|"cancel"|"clear"|"pin"}) {
+function MapToolIcon({name}:{name:"area"|"cancel"|"pin"}) {
   return <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
     {name === "area" && <><rect x="4" y="4" width="16" height="16" rx="1" strokeDasharray="3 3"/><path d="M12 9v6M9 12h6"/></>}
     {name === "cancel" && <path d="M6 6l12 12M18 6L6 18"/>}
-    {name === "clear" && <><rect x="4" y="4" width="16" height="16" rx="1" strokeDasharray="3 3"/><path d="M9 9l6 6M15 9l-6 6"/></>}
     {name === "pin" && <><path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></>}
   </svg>;
 }

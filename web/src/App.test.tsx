@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { servedBundleChanged, App, clearAdjustCacheForTests, fuzzyKeyScore, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, placeCardMenu, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { servedBundleChanged, App, clearAdjustCacheForTests, fuzzyKeyScore, ErrorPopup, loadMapView, saveMapView, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, placeCardMenu, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -5136,4 +5136,16 @@ test("stopVideoDownload drops the source and resets the element so the stream is
     expect(pause).toHaveBeenCalled();
     expect(load).toHaveBeenCalled();
   }
+});
+
+test("only the latest map view is remembered, so a refresh of that page reopens it where it was", () => {
+  sessionStorage.removeItem("media-library-map-view");
+  expect(loadMapView("abc")).toBeNull();
+  saveMapView("abc", {lat:50.45, lng:30.52, zoom:14});
+  expect(loadMapView("abc")).toEqual({lat:50.45, lng:30.52, zoom:14});
+  saveMapView("def", {lat:1, lng:2, zoom:3});
+  expect(loadMapView("abc")).toBeNull();
+  expect(loadMapView("def")).toEqual({lat:1, lng:2, zoom:3});
+  sessionStorage.setItem("media-library-map-view", "not json");
+  expect(loadMapView("def")).toBeNull();
 });
