@@ -323,6 +323,17 @@ let lastViewerItemId:ID|null = null;
 // Going Back from a subfolder to its parent carries no navigation state, so
 // the parent focuses this subfolder instead.
 let lastBrowsedFolderId:ID|null = null;
+// The folder map shown last and its first geotagged item (oldest first), so
+// going up to an ancestor's map (Back or breadcrumb) centres on that item.
+let lastFolderMap:{folderId:ID; firstId:ID|null}|null = null;
+export function firstGeotaggedItem(items:readonly MapMedia[]):ID|null {
+  let best:MapMedia|null = null;
+  for (const item of items) {
+    if (!parseGPS(item.gps)) continue;
+    if (!best || (item.takenAt || "") < (best.takenAt || "") || ((item.takenAt || "") === (best.takenAt || "") && item.relativePath < best.relativePath)) best = item;
+  }
+  return best ? best.id : null;
+}
 // The media of the folder timeline shown last. Going up from a subfolder's
 // timeline to an ancestor's (Back or a breadcrumb) focuses the first of them
 // in the ancestor's order, since a timeline has no folder card to focus.
@@ -529,7 +540,7 @@ function useBreadcrumb(): Crumb[] | null {
       if (!library) return null;
       const base: Crumb[] = [{label:`Map of ${library.name}`, to:`/map?library=${libraryID}`}];
       if (folderID != null && Number.isFinite(folderID) && folderData?.chain) {
-        base.push(...folderData.chain.map(folder => ({label:folderCrumbName(folder), to:`/map?library=${libraryID}&folder=${folder.id}`, ...(Number.isFinite(mapItemId) ? {returnToMediaId: mapItemId} : {})})));
+        base.push(...folderData.chain.map((folder, index) => ({label:folderCrumbName(folder), to:`/map?library=${libraryID}&folder=${folder.id}`, ...(Number.isFinite(mapItemId) ? {returnToMediaId: mapItemId} : folderData.chain[index + 1] ? {returnToFolderId: folderData.chain[index + 1].id} : {})})));
       }
       if (Number.isFinite(mapItemId) && viewerItemName) {
         base.push({label:viewerItemName, to:null, current:true});
@@ -6547,7 +6558,15 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
       api.media(Number(itemParam)).then(item => setItems([{...item, libraryId:Number(inLibraryParam)}])).catch(cause => setMapError((cause as Error).message));
       return;
     }
-    api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(setItems).catch(cause => setMapError((cause as Error).message));
+    // Drop the previous scope's points so they never stand in for this one's.
+    setItems([]);
+    let cancelled = false;
+    api.map(libraryParam ? Number(libraryParam) : undefined, folderParam ? Number(folderParam) : undefined, undefined, favoriteParam ? Number(favoriteParam) : undefined).then(loaded => {
+      if (cancelled) return;
+      setItems(loaded);
+      if (folderParam && itemParam == null) lastFolderMap = {folderId:Number(folderParam), firstId:firstGeotaggedItem(loaded)};
+    }).catch(cause => { if (!cancelled) setMapError((cause as Error).message); });
+    return () => { cancelled = true; };
   }, [libraryParam, folderParam, favoriteParam, itemParam, inLibraryParam, clustered]);
   // Walking mode lists the media around the position: on a clustered map they
   // are fetched for the radius box instead of picked from loaded points.
@@ -6588,7 +6607,18 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
   // item that was open, once per arrival.
   const location = useLocation();
   const returnMediaId = useReturnMediaId();
-  const returnFocus = folderScoped && itemParam == null && returnMediaId != null ? {id:returnMediaId, key:location.key} : undefined;
+  // Going up from a subfolder's map (Back or a breadcrumb) centres on that
+  // subfolder's first geotagged item; fixed per arrival, read before this map
+  // records itself as the folder map shown last.
+  const navigationType = useNavigationType();
+  const returnFolderItem = useRef<{key:string; id:ID|null}>({key:"", id:null});
+  if (returnFolderItem.current.key !== location.key) {
+    const handed = (location.state as {returnToFolderId?:ID} | null)?.returnToFolderId != null;
+    const last = lastFolderMap;
+    returnFolderItem.current = {key:location.key, id:folderScoped && (handed || navigationType === "POP") && last && last.folderId !== Number(folderParam) ? last.firstId : null};
+  }
+  const returnTarget = returnMediaId ?? returnFolderItem.current.id;
+  const returnFocus = folderScoped && itemParam == null && returnTarget != null ? {id:returnTarget, key:location.key} : undefined;
   // A refresh reopens the map where it was instead of fitting it to the
   // markers again; changing the trajectories still fits them.
   const savedView = useMemo(() => loadMapView(location.key), [location.key]);
@@ -6624,6 +6654,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
     ).then(selected => {
       const sortedItems = sortMedia(selected, "desc");
       storeMapSelection(sortedItems);
+      setMapError("");
       setArea({bounds, items: sortedItems});
     }).catch(cause => setMapError((cause as Error).message));
   }
@@ -6796,7 +6827,7 @@ function GeoMap({theme, tileSettings}:{theme:"light"|"dark"|"forest"; tileSettin
         <PlaceSearch onWalkFrom={walkFrom}/>
         <POILayer active={showPOIs} categories={poiCategories} pois={pois} onFetch={fetchPOIs} onError={setPoiError}/>
         {clustered && <ServerClusters scope={mapScope} keepView={savedView != null} selectMode={selectMode} hideMarkers={hideMarkers} onSelectCluster={selectCluster} onLoading={setRendering} onError={setMapError} myPosition={myPosition}/>}
-        <MapItems items={displayItems} keepView={keepView} focused={focused} returnFocus={returnFocus} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
+        <MapItems items={displayItems} keepView={keepView} focused={focused} returnFocus={returnFocus} returnZoom={mapMaxZoom} pickedGPS={pickedGPS} selectMode={selectMode} onPick={value => setPickedGPS(value)} onSelectCluster={selectCluster} onRenderProgress={setRendering} segments={segments} selectedTrajectories={selectedTrajectories} hideMarkers={hideMarkers} showTrajectoryNumbers={showTrajectoryNumbers} flyTo={flyTo} myPosition={myPosition} onWalkFrom={walkFrom}/>
         {myPosition && <MyPositionLayer key={walkAnchor ? walkAnchor.join(",") : "device"} position={myPosition} custom={walkAnchor !== null} radius={walkRadius} recenterTick={recenterTick}/>}
         <AreaSelector enabled={selectMode} onArea={selectArea}/>
         {area && <SelectionRectangle bounds={area.bounds}/>}
@@ -6941,6 +6972,8 @@ function MapViewMemory({storageKey, saved}:{storageKey:string; saved:SavedMapVie
   return null;
 }
 
+const AREA_MIN_DRAG_PX = 5;
+
 function AreaSelector({enabled,onArea}:{enabled:boolean; onArea:(start:L.LatLng,end:L.LatLng)=>void}) {
   const map = useMap();
   const rectangleRef = useRef<L.Rectangle|null>(null);
@@ -6954,7 +6987,9 @@ function AreaSelector({enabled,onArea}:{enabled:boolean; onArea:(start:L.LatLng,
   function finishDrag() {
     const drag = dragRef.current;
     if (!drag) return;
-    onArea(drag.start, drag.current);
+    // A press without a real drag (a click beside the selected box) is not an
+    // area: it used to send a zero-size box that the server rejected.
+    if (map.latLngToContainerPoint(drag.start).distanceTo(map.latLngToContainerPoint(drag.current)) >= AREA_MIN_DRAG_PX) onArea(drag.start, drag.current);
     dragRef.current = null;
     clearRectangle();
   }
@@ -7433,9 +7468,8 @@ function ServerClusters({scope, keepView, selectMode, hideMarkers, onSelectClust
   })}</>;
 }
 
-const RETURN_FOCUS_ZOOM = 17;
 
-function MapItems({items,keepView,focused,returnFocus,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; keepView?:{current:{keep:boolean}}; focused?:MapMedia; returnFocus?:{id:ID; key:string}; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
+function MapItems({items,keepView,focused,returnFocus,returnZoom,pickedGPS,selectMode,onPick,onSelectCluster,onRenderProgress,segments,selectedTrajectories,hideMarkers,showTrajectoryNumbers,flyTo,myPosition,onWalkFrom}:{items:MapMedia[]; keepView?:{current:{keep:boolean}}; focused?:MapMedia; returnFocus?:{id:ID; key:string}; returnZoom:number; pickedGPS:string; selectMode:boolean; onPick:(gps:string)=>void; onSelectCluster:(items:MapMedia[])=>void; onRenderProgress:(rendering:boolean)=>void; segments:TrajectorySegment[]; selectedTrajectories:number[]; hideMarkers:boolean; showTrajectoryNumbers:boolean; flyTo:string; myPosition?:MyPosition|null; onWalkFrom?:(gps:string)=>void}) {
   const map = useMap();
   const [zoom, setZoom] = useState(map.getZoom());
   useMapEvents({
@@ -7483,8 +7517,8 @@ function MapItems({items,keepView,focused,returnFocus,pickedGPS,selectMode,onPic
     returnedKey.current = returnFocus.key;
     consumeReturnMediaId(returnFocus.id);
     const gps = parseGPS(item.gps);
-    if (gps) map.setView(gps, Math.max(map.getZoom(), RETURN_FOCUS_ZOOM));
-  }, [returnFocus?.id, returnFocus?.key, items, map]);
+    if (gps) map.setView(gps, returnZoom);
+  }, [returnFocus?.id, returnFocus?.key, items, map]); // eslint-disable-line react-hooks/exhaustive-deps
   // External "set point by coordinates" (from the map menu) recenters the map.
   const flyToRef = useRef<string | null>(null);
   useEffect(() => {

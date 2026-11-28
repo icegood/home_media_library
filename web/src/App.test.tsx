@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { servedBundleChanged, App, clearAdjustCacheForTests, fuzzyKeyScore, ErrorPopup, loadMapView, saveMapView, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, placeCardMenu, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { servedBundleChanged, App, clearAdjustCacheForTests, fuzzyKeyScore, ErrorPopup, loadMapView, saveMapView, firstGeotaggedItem, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, placeCardMenu, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -5148,4 +5148,26 @@ test("only the latest map view is remembered, so a refresh of that page reopens 
   expect(loadMapView("def")).toEqual({lat:1, lng:2, zoom:3});
   sessionStorage.setItem("media-library-map-view", "not json");
   expect(loadMapView("def")).toBeNull();
+});
+
+test("going up to a parent's map centres on the subfolder's oldest geotagged item", () => {
+  const base = {folderId:21, kind:"image" as const, mimeType:"image/jpeg", size:1, metadata:{}, libraryId:1, name:"x"};
+  expect(firstGeotaggedItem([])).toBeNull();
+  expect(firstGeotaggedItem([
+    {...base, id:1, relativePath:"a.jpg", gps:"", takenAt:"2019-01-01T00:00:00Z"},
+    {...base, id:2, relativePath:"c.jpg", gps:"50.1,30.1", takenAt:"2020-05-01T00:00:00Z"},
+    {...base, id:3, relativePath:"b.jpg", gps:"50.2,30.2", takenAt:"2020-05-01T00:00:00Z"},
+    {...base, id:4, relativePath:"d.jpg", gps:"50.3,30.3", takenAt:"2021-01-01T00:00:00Z"},
+  ])).toBe(3);
+});
+
+test("ancestor crumbs of a subfolder map hand over the child folder", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  mockApi.folderEntries.mockResolvedValue({entries:[], chain:[
+    {id:20, parentId:-1, relativePath:"Photos", name:"Photos"},
+    {id:21, parentId:20, relativePath:"Photos/Nested", name:"Nested"}
+  ]});
+  render(<MemoryRouter initialEntries={["/map?library=1&folder=21"]}><App/></MemoryRouter>);
+  const link = await screen.findByRole("link", {name:"Photos"});
+  expect(link).toHaveAttribute("href", "/map?library=1&folder=20");
 });
