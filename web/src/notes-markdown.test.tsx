@@ -59,32 +59,28 @@ test("toolbar actions write Markdown around the selection or insert a selected p
   expect(applyMarkdown("intro\ntitle", 8, 8, "heading").value).toBe("intro\n## title");
 });
 
-test("the notes editor shows one view at a time and remembers Plain or Markdown", () => {
-  localStorage.removeItem("media-library-notes-mode");
+test("the notes editor shows the formatted note or the toolbar editor, never both", () => {
   function Harness({initial}:{initial:string}) {
     const [value, setValue] = useState(initial);
     return <NotesEditor value={value} onChange={setValue}/>;
   }
   const {unmount} = render(<Harness initial="**hi** https://a.b"/>);
-  // Markdown mode opens formatted when there is a note.
+  // A note opens formatted.
   expect(screen.getByLabelText("Formatted notes").querySelector("strong")?.textContent).toBe("hi");
   expect(screen.queryByRole("textbox")).toBeNull();
+  expect(screen.queryByRole("toolbar")).toBeNull();
   fireEvent.click(screen.getByRole("button", {name:"Edit"}));
   const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(screen.getByRole("toolbar", {name:"Formatting"})).toBeInTheDocument();
   expect(screen.queryByLabelText("Formatted notes")).toBeNull();
   box.setSelectionRange(0, 0);
   fireEvent.click(screen.getByRole("button", {name:"Heading"}));
   expect(box.value).toBe("## **hi** https://a.b");
   fireEvent.click(screen.getByRole("button", {name:"View"}));
   expect(screen.getByLabelText("Formatted notes").querySelector(".notes-heading")).not.toBeNull();
-  // Plain: just the text box, no toolbar, remembered for next time.
-  fireEvent.click(screen.getByRole("button", {name:"Plain"}));
-  expect(screen.getByRole("textbox")).toHaveValue("## **hi** https://a.b");
-  expect(screen.queryByRole("toolbar")).toBeNull();
-  expect(screen.queryByLabelText("Formatted notes")).toBeNull();
   unmount();
-  render(<Harness initial="note"/>);
-  expect(screen.getByRole("button", {name:"Plain"})).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("textbox")).toHaveValue("note");
-  localStorage.removeItem("media-library-notes-mode");
+  // An empty note opens in the editor.
+  render(<Harness initial=""/>);
+  expect(screen.getByRole("textbox")).toHaveValue("");
+  expect(screen.getByRole("toolbar", {name:"Formatting"})).toBeInTheDocument();
 });

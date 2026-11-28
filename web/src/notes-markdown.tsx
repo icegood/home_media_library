@@ -139,7 +139,6 @@ export function applyMarkdown(value:string, start:number, end:number, action:Mar
   }
 }
 
-const NOTES_MODE_KEY = "media-library-notes-mode";
 const TOOLBAR:{action:MarkdownAction; label:string; text:string}[] = [
   {action:"bold", label:"Bold", text:"B"},
   {action:"italic", label:"Italic", text:"I"},
@@ -149,15 +148,9 @@ const TOOLBAR:{action:MarkdownAction; label:string; text:string}[] = [
   {action:"code", label:"Code", text:"</>"},
 ];
 
-function storedMode():"plain"|"markdown" {
-  try { return localStorage.getItem(NOTES_MODE_KEY) === "plain" ? "plain" : "markdown"; } catch { return "markdown"; }
-}
-
-// NotesEditor shows one view at a time. Plain: a text box. Markdown: the
-// formatted note, or (Edit) a text box with a toolbar that writes the
-// Markdown syntax. The Plain/Markdown choice is remembered in this browser.
+// NotesEditor shows one view at a time: the formatted note, or (Edit) the
+// text box with a toolbar that writes the Markdown syntax.
 export function NotesEditor({value, onChange, placeholder}:{value:string; onChange:(value:string)=>void; placeholder?:string}) {
-  const [mode, setModeState] = useState<"plain"|"markdown">(storedMode);
   const [editing, setEditing] = useState(() => value.trim() === "");
   const textareaRef = useRef<HTMLTextAreaElement|null>(null);
   const pendingSelection = useRef<{start:number; end:number}|null>(null);
@@ -169,10 +162,6 @@ export function NotesEditor({value, onChange, placeholder}:{value:string; onChan
     textarea.focus();
     textarea.setSelectionRange(selection.start, selection.end);
   });
-  function setMode(next:"plain"|"markdown") {
-    setModeState(next);
-    try { localStorage.setItem(NOTES_MODE_KEY, next); } catch { /* private mode */ }
-  }
   function apply(action:MarkdownAction) {
     const textarea = textareaRef.current;
     const start = textarea?.selectionStart ?? value.length;
@@ -181,20 +170,15 @@ export function NotesEditor({value, onChange, placeholder}:{value:string; onChan
     pendingSelection.current = {start: result.start, end: result.end};
     onChange(result.value);
   }
-  const showEditor = mode === "plain" || editing;
   return <div className="notes-editor">
     <div className="notes-editor-bar">
-      <div className="notes-mode" role="group" aria-label="Notes format">
-        <button type="button" aria-pressed={mode === "plain"} className={mode === "plain" ? "active" : ""} onClick={() => setMode("plain")}>Plain</button>
-        <button type="button" aria-pressed={mode === "markdown"} className={mode === "markdown" ? "active" : ""} onClick={() => setMode("markdown")}>Markdown</button>
-      </div>
-      {mode === "markdown" && <button type="button" className="secondary notes-edit-toggle" onClick={() => setEditing(current => !current)}>{editing ? "View" : "Edit"}</button>}
+      {editing ? <div className="notes-toolbar" role="toolbar" aria-label="Formatting">
+        {TOOLBAR.map(tool => <button key={tool.action} type="button" aria-label={tool.label} title={tool.label}
+          onMouseDown={event => event.preventDefault()} onClick={() => apply(tool.action)}>{tool.text}</button>)}
+      </div> : <span/>}
+      <button type="button" className="secondary notes-edit-toggle" onClick={() => setEditing(current => !current)}>{editing ? "View" : "Edit"}</button>
     </div>
-    {mode === "markdown" && editing && <div className="notes-toolbar" role="toolbar" aria-label="Formatting">
-      {TOOLBAR.map(tool => <button key={tool.action} type="button" aria-label={tool.label} title={tool.label}
-        onMouseDown={event => event.preventDefault()} onClick={() => apply(tool.action)}>{tool.text}</button>)}
-    </div>}
-    {showEditor
+    {editing
       ? <textarea ref={textareaRef} className="notes-editor-input" aria-label="Notes" value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
       : <div className="notes-editor-view" aria-label="Formatted notes" onDoubleClick={() => setEditing(true)}>
           {value.trim() ? <NotesMarkdown text={value}/> : <p className="muted">No notes yet.</p>}

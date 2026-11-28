@@ -63,8 +63,6 @@ export const UI_ROWS: [string, string[]][] = [
   ["Your browser could not play the original file.", ["Ваш браузер не зміг відтворити оригінальний файл.", "Ihr Browser konnte die Originaldatei nicht abspielen.", "Je browser kon het originele bestand niet afspelen.", "Selaimesi ei pystynyt toistamaan alkuperäistä tiedostoa.", "Din webbläsare kunde inte spela upp originalfilen.", "Przeglądarka nie mogła odtworzyć oryginalnego pliku.", "Váš prohlížeč nedokázal přehrát původní soubor.", "Váš prehliadač nedokázal prehrať pôvodný súbor.", "A böngésző nem tudta lejátszani az eredeti fájlt.", "Tu navegador no pudo reproducir el archivo original.", "Il browser non è riuscito a riprodurre il file originale.", "Brskalnik ni mogel predvajati izvirne datoteke.", "Nettleseren kunne ikke spille av originalfilen.", "O navegador não conseguiu reproduzir o ficheiro original."]],
 
 
-  ["Plain", ["Текст", "Text", "Platte tekst", "Pelkkä teksti", "Ren text", "Zwykły tekst", "Prostý text", "Obyčajný text", "Egyszerű szöveg", "Texto sin formato", "Testo semplice", "Navadno besedilo", "Ren tekst", "Texto simples"]],
-  ["Markdown", ["Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown", "Markdown"]],
   ["View", ["Перегляд", "Ansicht", "Weergave", "Näytä", "Visa", "Podgląd", "Zobrazit", "Zobraziť", "Megtekintés", "Ver", "Visualizza", "Ogled", "Vis", "Ver"]],
   ["Bold", ["Жирний", "Fett", "Vet", "Lihavoitu", "Fetstil", "Pogrubienie", "Tučné", "Tučné", "Félkövér", "Negrita", "Grassetto", "Krepko", "Fet", "Negrito"]],
   ["Italic", ["Курсив", "Kursiv", "Cursief", "Kursiivi", "Kursiv", "Kursywa", "Kurzíva", "Kurzíva", "Dőlt", "Cursiva", "Corsivo", "Ležeče", "Kursiv", "Itálico"]],
@@ -73,7 +71,6 @@ export const UI_ROWS: [string, string[]][] = [
   ["Heading", ["Заголовок", "Überschrift", "Kop", "Otsikko", "Rubrik", "Nagłówek", "Nadpis", "Nadpis", "Címsor", "Encabezado", "Titolo", "Naslov", "Overskrift", "Título"]],
   ["Code", ["Код", "Code", "Code", "Koodi", "Kod", "Kod", "Kód", "Kód", "Kód", "Código", "Codice", "Koda", "Kode", "Código"]],
   ["Formatting", ["Форматування", "Formatierung", "Opmaak", "Muotoilu", "Formatering", "Formatowanie", "Formátování", "Formátovanie", "Formázás", "Formato", "Formattazione", "Oblikovanje", "Formatering", "Formatação"]],
-  ["Notes format", ["Формат нотаток", "Notizformat", "Notitie-opmaak", "Muistiinpanojen muoto", "Anteckningsformat", "Format notatek", "Formát poznámek", "Formát poznámok", "Jegyzetformátum", "Formato de las notas", "Formato delle note", "Oblika opomb", "Notatformat", "Formato das notas"]],
   ["Formatted notes", ["Відформатовані нотатки", "Formatierte Notizen", "Opgemaakte notities", "Muotoillut muistiinpanot", "Formaterade anteckningar", "Sformatowane notatki", "Formátované poznámky", "Formátované poznámky", "Formázott jegyzetek", "Notas con formato", "Note formattate", "Oblikovane opombe", "Formaterte notater", "Notas formatadas"]],
   ["No notes yet.", ["Нотаток ще немає.", "Noch keine Notizen.", "Nog geen notities.", "Ei vielä muistiinpanoja.", "Inga anteckningar än.", "Brak notatek.", "Zatím žádné poznámky.", "Zatiaľ žiadne poznámky.", "Még nincs jegyzet.", "Aún no hay notas.", "Nessuna nota.", "Še ni opomb.", "Ingen notater ennå.", "Ainda sem notas."]],
 
