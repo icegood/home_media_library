@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { servedBundleChanged, App, clearAdjustCacheForTests, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, placeCardMenu, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
+import { servedBundleChanged, App, clearAdjustCacheForTests, fuzzyKeyScore, ErrorPopup, POPUP_TIMEOUT_MS, fitTurned, mapyTileUrl, parseFolderReference, placeCardMenu, resetFolderEntriesCache, resetTimelineMediaCacheForTests, setNativePlatformForTests, stopVideoDownload, TrajectoryNameDialog, TrajectoryPopup, useBufferedFolderEntries } from "./App";
 import { mockApi, resetMockApi } from "./test-support/api-mock";
 
 // Parses a top-level CSS rule block for the given selector and returns its
@@ -2375,6 +2375,46 @@ test("notes render Markdown with clickable links on cards and in the viewer Note
   expect(within(screen.getByRole("tabpanel", {name:"Notes"})).queryByRole("textbox")).toBeNull();
 });
 
+test("fuzzy metadata key scores prefer exact, prefix, substring, then letters in order", () => {
+  expect(fuzzyKeyScore("Model", "model")).toBe(0);
+  expect(fuzzyKeyScore("Model", "ode")).not.toBeNull();
+  expect(fuzzyKeyScore("Model", "mdl")).not.toBeNull();
+  expect(fuzzyKeyScore("Make", "ode")).toBeNull();
+  expect(fuzzyKeyScore("ModelID", "mod")!).toBeLessThan(fuzzyKeyScore("Model", "ode")!);
+  expect(fuzzyKeyScore("Model", "ode")!).toBeLessThan(fuzzyKeyScore("ExposureMode", "ode")!);
+  expect(fuzzyKeyScore("Model", "ode")!).toBeLessThan(fuzzyKeyScore("Model", "mdl")!);
+  expect(fuzzyKeyScore("Model", " ")).toBeNull();
+});
+
+test("metadata key search jumps to the match without filtering and survives paging to the next item", async () => {
+  mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
+  const exif = (model:string) => ({Make:"Google", Model:model, ExposureMode:0, ISO:50});
+  mockApi.folderEntries.mockResolvedValue({entries:[
+    {id:100, name:"one.jpg", relativePath:"one.jpg", type:"media", media:{id:100, folderId:20, relativePath:"one.jpg", name:"one.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{exif:exif("Pixel 7a")}, gps:"", takenAt:""}},
+    {id:101, name:"two.jpg", relativePath:"two.jpg", type:"media", media:{id:101, folderId:20, relativePath:"two.jpg", name:"two.jpg", kind:"image", mimeType:"image/jpeg", size:10, metadata:{exif:exif("Pixel 8")}, gps:"", takenAt:""}}
+  ], chain: []});
+  render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
+  fireEvent.click(await screen.findByRole("tab", {name:"Metadata"}));
+  const search = await screen.findByLabelText("Find metadata key");
+  fireEvent.change(search, {target:{value:"ode"}});
+  const currentLine = () => document.querySelector(".metadata-line.current")?.textContent ?? "";
+  // Model ranks first; nothing is filtered out.
+  await waitFor(() => expect(currentLine()).toContain('"Model": "Pixel 7a"'));
+  expect(document.querySelector(".metadata-json-section pre")?.textContent).toContain('"Make": "Google"');
+  expect(screen.getByText("1/2")).toBeInTheDocument();
+  fireEvent.keyDown(search, {key:"Enter"});
+  await waitFor(() => expect(currentLine()).toContain('"ExposureMode"'));
+  fireEvent.click(screen.getByRole("button", {name:"Previous match"}));
+  await waitFor(() => expect(currentLine()).toContain('"Model"'));
+  // The search stays when paging; the next item jumps to its own match.
+  fireEvent.click(screen.getByRole("button", {name:"Next media"}));
+  expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
+  expect(screen.getByLabelText("Find metadata key")).toHaveValue("ode");
+  await waitFor(() => expect(currentLine()).toContain('"Model": "Pixel 8"'));
+  fireEvent.change(screen.getByLabelText("Find metadata key"), {target:{value:""}});
+});
+
 test("media notes are edited and saved from the Notes tab after metadata", async () => {
   mockApi.me.mockResolvedValue({id:0, login:"admin", role:"admin"});
   mockApi.folderEntries.mockResolvedValue({entries:[
@@ -2537,8 +2577,11 @@ test("media info groups metadata into one subtab per source (exif, ffprobe)", as
   const subtabs = screen.getAllByRole("tab", {hidden:false}).filter(tab => tab.id?.startsWith("metadata-tab-"));
   expect(subtabs).toHaveLength(2);
   expect(subtabs.map(tab => tab.textContent).sort()).toEqual(["exif","ffprobe"]);
-  // exif is the alphabetically first source and starts active.
-  expect(screen.getByRole("heading", {name:"exif"})).toBeInTheDocument();
+  // exif is the alphabetically first source and starts active; the subtab
+  // names the section, so no extra caption repeats it.
+  expect(screen.getByRole("tab", {name:"exif"})).toHaveAttribute("aria-selected", "true");
+  expect(screen.queryByRole("heading", {name:"exif"})).toBeNull();
+  expect(screen.queryByRole("heading", {name:"Metadata"})).toBeNull();
   expect(screen.getByText(/"Make": "NIKON CORPORATION"/)).toBeInTheDocument();
   expect(screen.getByText(/"HistoryParams": "darktable-noise"/)).toBeInTheDocument();
   expect(screen.getByText(new RegExp('"BlueTRC": "\\(Binary data\\)"'))).toBeInTheDocument();
@@ -2547,7 +2590,7 @@ test("media info groups metadata into one subtab per source (exif, ffprobe)", as
   // ffprobe content should not be visible until the user switches to it.
   expect(screen.queryByText(/"codec_name": "mjpeg"/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("tab", {name:"ffprobe"}));
-  expect(screen.getByRole("heading", {name:"ffprobe"})).toBeInTheDocument();
+  expect(screen.getByRole("tab", {name:"ffprobe"})).toHaveAttribute("aria-selected", "true");
   expect(screen.getByText(/"codec_name": "mjpeg"/)).toBeInTheDocument();
   expect(screen.queryByText(/"Make"/)).not.toBeInTheDocument();
 });

@@ -5708,14 +5708,42 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
       <ErrorPopup message={error} onClose={() => setError("")}/>
     </div>}
     {activeTab === "metadata" && <div role="tabpanel" aria-label="Metadata" aria-labelledby="media-tab-metadata"><MetadataSummary metadata={current.metadata}/></div>}
-    {activeTab === "notes" && <div className="media-edit" role="tabpanel" aria-label="Notes" aria-labelledby="media-tab-notes">
-      <div className="media-edit-row media-notes-row"><span>Notes</span><NotesEditor key={item.id} value={notes} onChange={setNotes} placeholder="Add notes about this media"/></div>
+    {activeTab === "notes" && <div className="media-notes-panel" role="tabpanel" aria-label="Notes" aria-labelledby="media-tab-notes">
+      <div className="media-notes-row"><NotesEditor key={item.id} value={notes} onChange={setNotes} placeholder="Add notes about this media"/></div>
     </div>}
     <div className="action-row media-action-row">
       <button type="button" disabled={saving || !(dirty || adjustDirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
     </div>
   </div>;
 }
+
+// The metadata key search survives paging to the previous/next item, so the
+// same field (e.g. "Model") stays in view while stepping through photos.
+let lastMetadataQuery = "";
+
+// fuzzyKeyScore ranks a metadata key for a typed query (lower is better):
+// exact, then prefix, then substring (earlier and shorter first), then the
+// query's letters in order with gaps; null when the key does not match.
+export function fuzzyKeyScore(key:string, query:string):number|null {
+  const k = key.toLowerCase();
+  const q = query.toLowerCase().trim();
+  if (!q) return null;
+  if (k === q) return 0;
+  if (k.startsWith(q)) return 1 + k.length / 1000;
+  const at = k.indexOf(q);
+  if (at >= 0) return 2 + at / 100 + k.length / 1000;
+  let position = 0;
+  let gaps = 0;
+  for (const char of q) {
+    const found = k.indexOf(char, position);
+    if (found < 0) return null;
+    gaps += found - position;
+    position = found + 1;
+  }
+  return 10 + gaps + k.length / 1000;
+}
+
+const METADATA_KEY_LINE = /^\s*"((?:[^"\\]|\\.)*)":/;
 
 function MetadataSummary({metadata}:{metadata:Record<string, unknown>}) {
   const entries = Object.entries(metadata ?? {})
@@ -5727,16 +5755,69 @@ function MetadataSummary({metadata}:{metadata:Record<string, unknown>}) {
   useEffect(() => {
     if (entries.length > 0 && !entries.some(([key]) => key === active)) setActive(entries[0][0]);
   }, [entries, active]);
+  const sections = useMemo(() => Object.entries(metadata ?? {})
+    .filter(([, value]) => value != null)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => ({key, lines: (JSON.stringify(value, null, 2) ?? "").split("\n")})), [metadata]);
+  // Typing a key (fuzzy: "ode" finds Model) jumps to it without filtering;
+  // Enter/↓ and Shift+Enter/↑ step through every match across the sections.
+  const [query, setQueryState] = useState(lastMetadataQuery);
+  const [matchIndex, setMatchIndex] = useState(0);
+  function setQuery(value:string) {
+    lastMetadataQuery = value;
+    setQueryState(value);
+    setMatchIndex(0);
+  }
+  useEffect(() => { setMatchIndex(0); }, [metadata]);
+  const matches = useMemo(() => {
+    if (!query.trim()) return [];
+    const found:{section:string; line:number; score:number; order:number}[] = [];
+    sections.forEach((section, order) => section.lines.forEach((line, index) => {
+      const key = line.match(METADATA_KEY_LINE)?.[1];
+      const score = key == null ? null : fuzzyKeyScore(key, query);
+      if (score != null) found.push({section:section.key, line:index, score, order});
+    }));
+    return found.sort((left, right) => left.score - right.score || left.order - right.order || left.line - right.line);
+  }, [sections, query]);
+  const current = matches.length > 0 ? matches[((matchIndex % matches.length) + matches.length) % matches.length] : null;
+  useEffect(() => {
+    if (current && current.section !== active) setActive(current.section);
+  }, [current, active]);
+  const preRef = useRef<HTMLPreElement|null>(null);
+  useLayoutEffect(() => {
+    const pre = preRef.current;
+    if (!pre || !current || current.section !== active) return;
+    const line = pre.querySelector<HTMLElement>(`[data-line="${current.line}"]`);
+    if (line) pre.scrollTop = Math.max(0, line.offsetTop - pre.clientHeight / 2);
+  }, [current, active]);
   if (entries.length === 0) return <p className="muted">No camera metadata.</p>;
   const activeEntry = entries.find(([key]) => key === active) ?? entries[0];
+  const activeSection = sections.find(section => section.key === activeEntry[0]);
+  const hitLines = new Set(matches.filter(match => match.section === activeEntry[0]).map(match => match.line));
+  function step(delta:number) {
+    if (matches.length > 0) setMatchIndex(index => index + delta);
+  }
   return <div className="metadata-summary">
-    <h3>Metadata</h3>
+    <div className="metadata-head">
+      <div className="metadata-search">
+        <input type="search" aria-label="Find metadata key" placeholder="Find key…" value={query}
+          onChange={event => setQuery(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === "Enter" || event.key === "ArrowDown") { event.preventDefault(); step(event.key === "Enter" && event.shiftKey ? -1 : 1); }
+            else if (event.key === "ArrowUp") { event.preventDefault(); step(-1); }
+            else if (event.key === "Escape" && query) { event.preventDefault(); event.stopPropagation(); setQuery(""); }
+          }}/>
+        {query.trim() && <span className="metadata-search-count" aria-live="polite">{matches.length > 0 ? `${matches.indexOf(current!) + 1}/${matches.length}` : "0/0"}</span>}
+        <button type="button" className="metadata-search-step" aria-label="Previous match" disabled={matches.length < 2} onClick={() => step(-1)}>↑</button>
+        <button type="button" className="metadata-search-step" aria-label="Next match" disabled={matches.length < 2} onClick={() => step(1)}>↓</button>
+      </div>
+    </div>
     <div className="metadata-tabs info-tabs" role="tablist" aria-label="Metadata sections">
       {entries.map(([key]) => <button type="button" role="tab" key={key} id={`metadata-tab-${key}`} aria-selected={key === active} className={`info-tab small ${key === active ? "active" : ""}`} onClick={() => setActive(key)}>{key}</button>)}
     </div>
     <section className="metadata-json-section" role="tabpanel" aria-labelledby={`metadata-tab-${activeEntry[0]}`}>
-      <h4>{activeEntry[0]}</h4>
-      <pre>{JSON.stringify(activeEntry[1], null, 2)}</pre>
+      <pre ref={preRef} translate="no">{(activeSection?.lines ?? []).map((line, index) =>
+        <span key={index} data-line={index} className={current && current.section === activeEntry[0] && current.line === index ? "metadata-line current" : hitLines.has(index) ? "metadata-line hit" : "metadata-line"}>{line}{"\n"}</span>)}</pre>
     </section>
   </div>;
 }

@@ -761,12 +761,21 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 
 /* ===== Metadata ===== */
 .metadata-summary { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding-right: 4px; }
-.metadata-summary h3 { margin: 0; flex-shrink: 0; }
 .metadata-summary .metadata-tabs { padding: 3px; }
 .metadata-summary .info-tab.small { font-size: .82rem; padding: 7px 10px; }
 .metadata-json-section { display: grid; gap: 6px; flex: 1; min-height: 0; }
-.metadata-json-section h4 { margin: 0; color: var(--info-gps-text); font-size: .95rem; }
 .metadata-json-section pre { max-height: 100%; flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px; border: 1px solid var(--code-border); border-radius: 10px; background: var(--code-bg); color: var(--code-text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .78rem; line-height: 1.35; }
+.metadata-json-section pre { position: relative; }
+.metadata-line { display: block; border-radius: 4px; }
+.metadata-line.hit { background: color-mix(in srgb, var(--info-link) 14%, transparent); }
+.metadata-line.current { background: color-mix(in srgb, var(--info-link) 34%, transparent); outline: 1px solid var(--info-link); }
+.metadata-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0; }
+.metadata-search { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; }
+.metadata-search input { flex: 1; width: auto; min-width: 0; padding: 4px 8px; font-size: .82rem; border: 1px solid var(--code-border); border-radius: 8px; background: var(--code-bg); color: var(--code-text); }
+.metadata-search input:focus { outline: none; border-color: var(--info-link); }
+.metadata-search-count { font-size: .78rem; color: var(--info-gps-text); white-space: nowrap; }
+.metadata-search-step { padding: 2px 7px; font-size: .8rem; border: 1px solid var(--code-border); border-radius: 6px; background: var(--code-bg); color: var(--code-text); }
+.metadata-search-step:disabled { opacity: .4; }
 
 /* ===== Info panel tabs ===== */
 .info-tabs { display: flex; gap: 6px; margin-top: 14px; padding: 4px; border: 1px solid var(--info-gps-border); border-radius: 12px; background: var(--overlay-btn-bg); }
@@ -782,6 +791,7 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 .media-edit-row > span:first-child { padding-top: 12px; }
 .media-edit-row > span:first-child { font-weight: 800; }
 .media-edit input { width: 100%; min-width: 0; color: var(--text); }
+.media-notes-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 14px; }
 .media-notes-row { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: stretch; }
 .media-notes-row > span:first-child { padding-top: 12px; }
 /* Links in notes run inline with the text (the info panel otherwise puts each
@@ -790,8 +800,8 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 /* Notes editor: one view at a time (formatted note, or the Markdown text box
    with a toolbar), filling the Notes tab. */
 .notes-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
-.notes-editor-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
-.notes-edit-toggle { padding: 4px 12px; font-size: .85rem; }
+.notes-edit-tabs { margin-top: 0; padding: 3px; flex-shrink: 0; }
+.notes-edit-tabs .info-tab.small { font-size: .82rem; padding: 7px 10px; }
 .notes-toolbar { display: flex; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
 .notes-toolbar button { min-width: 32px; padding: 4px 8px; font-size: .85rem; border: 1px solid var(--code-border); border-radius: 6px; background: var(--code-bg); color: var(--code-text); }
 .notes-toolbar button:hover { border-color: var(--info-link); }

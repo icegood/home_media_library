@@ -171,13 +171,14 @@ export function NotesEditor({value, onChange, placeholder}:{value:string; onChan
     onChange(result.value);
   }
   return <div className="notes-editor">
-    <div className="notes-editor-bar">
-      {editing ? <div className="notes-toolbar" role="toolbar" aria-label="Formatting">
-        {TOOLBAR.map(tool => <button key={tool.action} type="button" aria-label={tool.label} title={tool.label}
-          onMouseDown={event => event.preventDefault()} onClick={() => apply(tool.action)}>{tool.text}</button>)}
-      </div> : <span/>}
-      <button type="button" className="secondary notes-edit-toggle" onClick={() => setEditing(current => !current)}>{editing ? "View" : "Edit"}</button>
+    {/* Styled like the Metadata section subtabs (the "exif" pill). */}
+    <div className="info-tabs metadata-tabs notes-edit-tabs">
+      <button type="button" className="info-tab small active notes-edit-toggle" onClick={() => setEditing(current => !current)}>{editing ? "View" : "Edit"}</button>
     </div>
+    {editing && <div className="notes-toolbar" role="toolbar" aria-label="Formatting">
+      {TOOLBAR.map(tool => <button key={tool.action} type="button" aria-label={tool.label} title={tool.label}
+        onMouseDown={event => event.preventDefault()} onClick={() => apply(tool.action)}>{tool.text}</button>)}
+    </div>}
     {editing
       ? <textarea ref={textareaRef} className="notes-editor-input" aria-label="Notes" value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
       : <div className="notes-editor-view" aria-label="Formatted notes" onDoubleClick={() => setEditing(true)}>
