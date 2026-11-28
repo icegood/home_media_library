@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
 import { applyLanguageSetting, installDomTranslation, LANGUAGES, translateMessage, useLanguage } from "./i18n";
 import type { LanguageSetting } from "./api";
-import { NotesMarkdown } from "./notes-markdown";
+import { NotesEditor, NotesMarkdown } from "./notes-markdown";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router-dom";
 import L from "leaflet";
 import { Circle, CircleMarker, MapContainer, Marker, Polyline, Popup, ScaleControl, TileLayer, useMap, useMapEvents } from "react-leaflet";
@@ -5709,8 +5709,7 @@ function MediaInfo({item, mapContext, onUpdated, activeTab, onTabChange, adjust,
     </div>}
     {activeTab === "metadata" && <div role="tabpanel" aria-label="Metadata" aria-labelledby="media-tab-metadata"><MetadataSummary metadata={current.metadata}/></div>}
     {activeTab === "notes" && <div className="media-edit" role="tabpanel" aria-label="Notes" aria-labelledby="media-tab-notes">
-      <label className="media-edit-row media-notes-row"><span>Notes</span><textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Add notes about this media"/></label>
-      {notes.trim() && <div className="media-notes-preview" aria-label="Notes preview"><NotesMarkdown text={notes}/></div>}
+      <div className="media-edit-row media-notes-row"><span>Notes</span><NotesEditor key={item.id} value={notes} onChange={setNotes} placeholder="Add notes about this media"/></div>
     </div>}
     <div className="action-row media-action-row">
       <button type="button" disabled={saving || !(dirty || adjustDirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>

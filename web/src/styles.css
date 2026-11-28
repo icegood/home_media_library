@@ -653,7 +653,6 @@ button.danger { color: var(--danger); border-color: var(--danger-surface-border)
 .notes-markdown .notes-h2 { font-size: 1.05em; }
 .notes-markdown code { font-size: .9em; padding: 0 .25em; border-radius: 4px; background: color-mix(in srgb, currentColor 12%, transparent); }
 .notes-markdown a { color: var(--text-link); text-decoration: underline; overflow-wrap: anywhere; }
-.media-notes-preview { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, currentColor 6%, transparent); }
 .trajectory-controls { position: absolute; z-index: 6; right: 10px; top: calc(10px + 46px); display: flex; flex-direction: column; gap: 8px; }
 .trajectory-controls button { width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--overlay-border); border-radius: 999px; background: var(--overlay-bg); color: var(--overlay-text); font-size: 17px; line-height: 1; box-shadow: var(--shadow-md); cursor: pointer; }
 .trajectory-controls button:hover:not(:disabled) { background: var(--handle-bg); color: white; }
@@ -786,6 +785,24 @@ body:has(.viewer-media:fullscreen) .info-handle, body:has(.viewer-media.ml-fulls
 .media-notes-row { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: stretch; }
 .media-notes-row > span:first-child { padding-top: 12px; }
 .media-notes-row textarea { flex: 1; min-height: 0; width: 100%; min-width: 0; resize: none; color: var(--text); padding: 10px 12px; border: 1px solid var(--border-input); border-radius: 8px; background: var(--surface); font: inherit; line-height: 1.5; }
+/* Links in notes run inline with the text (the info panel otherwise puts each
+   link on its own line). */
+.info-panel .notes-markdown a { display: inline; margin: 0; }
+/* Notes editor: one view at a time (plain text box, formatted view, or
+   Markdown text box with a toolbar), filling the Notes tab. */
+.notes-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.notes-editor-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
+.notes-mode { display: inline-flex; border: 1px solid var(--border-input); border-radius: 8px; overflow: hidden; }
+.notes-mode button { padding: 4px 10px; border: 0; border-radius: 0; background: transparent; color: var(--text-secondary); font-size: .85rem; }
+.notes-mode button.active { background: var(--surface-interactive); color: var(--text); font-weight: 700; }
+.notes-edit-toggle { padding: 4px 12px; font-size: .85rem; }
+.notes-toolbar { display: flex; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
+.notes-toolbar button { min-width: 32px; padding: 4px 8px; font-size: .85rem; border: 1px solid var(--border-input); border-radius: 6px; background: var(--surface); color: var(--text); }
+.notes-toolbar button[aria-label="Bold"] { font-weight: 800; }
+.notes-toolbar button[aria-label="Italic"] { font-style: italic; }
+.notes-editor-input, .notes-editor-view { flex: 1; min-height: 8em; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--border-input); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; line-height: 1.5; }
+.notes-editor-input { resize: none; }
+.notes-editor-view { overflow: auto; }
 .media-action-row { margin-top: 10px; }
 .media-edit .error { flex-shrink: 0; }
 /* Joined field: an input (or pick button) and its icon actions share one

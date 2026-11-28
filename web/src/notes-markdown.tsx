@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 // A small, safe Markdown subset for media notes. It builds React elements
 // (never HTML strings), so a note cannot inject markup or scripts.
@@ -99,4 +99,105 @@ export function NotesMarkdown({text, className = "notes-text"}:{text:string; cla
   flushList();
   // translate="no": a note is the user's own text, never UI to translate.
   return <div className={`${className} notes-markdown`} translate="no">{blocks}</div>;
+}
+
+export type MarkdownAction = "bold" | "italic" | "link" | "list" | "heading" | "code";
+
+// applyMarkdown inserts the syntax for one toolbar action around the selection
+// [start, end) of value; with nothing selected it inserts a placeholder and
+// selects it, so typing replaces it. Returns the new text and selection.
+export function applyMarkdown(value:string, start:number, end:number, action:MarkdownAction):{value:string; start:number; end:number} {
+  const selected = value.slice(start, end);
+  const wrap = (before:string, after:string, placeholder:string) => {
+    const inner = selected || placeholder;
+    const next = value.slice(0, start) + before + inner + after + value.slice(end);
+    return {value: next, start: start + before.length, end: start + before.length + inner.length};
+  };
+  const prefixLines = (prefix:string) => {
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = end > start && value[end - 1] === "\n" ? end - 1 : (value.indexOf("\n", end) === -1 ? value.length : value.indexOf("\n", end));
+    const block = value.slice(lineStart, lineEnd);
+    const prefixed = block.split("\n").map(line => line.startsWith(prefix) ? line : prefix + line).join("\n");
+    return {value: value.slice(0, lineStart) + prefixed + value.slice(lineEnd), start: lineStart, end: lineStart + prefixed.length};
+  };
+  switch (action) {
+    case "bold": return wrap("**", "**", "bold text");
+    case "italic": return wrap("*", "*", "italic text");
+    case "code": return wrap("`", "`", "code");
+    case "list": return prefixLines("- ");
+    case "heading": return prefixLines("## ");
+    case "link": {
+      if (/^https?:\/\/\S+$/.test(selected)) {
+        const next = value.slice(0, start) + `[link](${selected})` + value.slice(end);
+        return {value: next, start: start + 1, end: start + 5};
+      }
+      const label = selected || "text";
+      const next = value.slice(0, start) + `[${label}](https://)` + value.slice(end);
+      const urlStart = start + label.length + 3;
+      return {value: next, start: urlStart, end: urlStart + "https://".length};
+    }
+  }
+}
+
+const NOTES_MODE_KEY = "media-library-notes-mode";
+const TOOLBAR:{action:MarkdownAction; label:string; text:string}[] = [
+  {action:"bold", label:"Bold", text:"B"},
+  {action:"italic", label:"Italic", text:"I"},
+  {action:"link", label:"Link", text:"🔗"},
+  {action:"list", label:"Bulleted list", text:"•"},
+  {action:"heading", label:"Heading", text:"H"},
+  {action:"code", label:"Code", text:"</>"},
+];
+
+function storedMode():"plain"|"markdown" {
+  try { return localStorage.getItem(NOTES_MODE_KEY) === "plain" ? "plain" : "markdown"; } catch { return "markdown"; }
+}
+
+// NotesEditor shows one view at a time. Plain: a text box. Markdown: the
+// formatted note, or (Edit) a text box with a toolbar that writes the
+// Markdown syntax. The Plain/Markdown choice is remembered in this browser.
+export function NotesEditor({value, onChange, placeholder}:{value:string; onChange:(value:string)=>void; placeholder?:string}) {
+  const [mode, setModeState] = useState<"plain"|"markdown">(storedMode);
+  const [editing, setEditing] = useState(() => value.trim() === "");
+  const textareaRef = useRef<HTMLTextAreaElement|null>(null);
+  const pendingSelection = useRef<{start:number; end:number}|null>(null);
+  useEffect(() => {
+    const selection = pendingSelection.current;
+    const textarea = textareaRef.current;
+    if (!selection || !textarea) return;
+    pendingSelection.current = null;
+    textarea.focus();
+    textarea.setSelectionRange(selection.start, selection.end);
+  });
+  function setMode(next:"plain"|"markdown") {
+    setModeState(next);
+    try { localStorage.setItem(NOTES_MODE_KEY, next); } catch { /* private mode */ }
+  }
+  function apply(action:MarkdownAction) {
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? value.length;
+    const end = textarea?.selectionEnd ?? value.length;
+    const result = applyMarkdown(value, start, end, action);
+    pendingSelection.current = {start: result.start, end: result.end};
+    onChange(result.value);
+  }
+  const showEditor = mode === "plain" || editing;
+  return <div className="notes-editor">
+    <div className="notes-editor-bar">
+      <div className="notes-mode" role="group" aria-label="Notes format">
+        <button type="button" aria-pressed={mode === "plain"} className={mode === "plain" ? "active" : ""} onClick={() => setMode("plain")}>Plain</button>
+        <button type="button" aria-pressed={mode === "markdown"} className={mode === "markdown" ? "active" : ""} onClick={() => setMode("markdown")}>Markdown</button>
+      </div>
+      {mode === "markdown" && <button type="button" className="secondary notes-edit-toggle" onClick={() => setEditing(current => !current)}>{editing ? "View" : "Edit"}</button>}
+    </div>
+    {mode === "markdown" && editing && <div className="notes-toolbar" role="toolbar" aria-label="Formatting">
+      {TOOLBAR.map(tool => <button key={tool.action} type="button" aria-label={tool.label} title={tool.label}
+        onMouseDown={event => event.preventDefault()} onClick={() => apply(tool.action)}>{tool.text}</button>)}
+    </div>}
+    {showEditor
+      ? <textarea ref={textareaRef} className="notes-editor-input" aria-label="Notes" value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder}/>
+      : <div className="notes-editor-view" aria-label="Formatted notes" onDoubleClick={() => setEditing(true)}>
+          {value.trim() ? <NotesMarkdown text={value}/> : <p className="muted">No notes yet.</p>}
+        </div>}
+  </div>;
 }

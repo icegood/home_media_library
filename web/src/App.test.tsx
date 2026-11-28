@@ -2368,9 +2368,11 @@ test("notes render Markdown with clickable links on cards and in the viewer Note
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
   fireEvent.click(await screen.findByRole("tab", {name:"Notes"}));
-  const preview = await screen.findByLabelText("Notes preview");
-  expect(within(preview).getAllByRole("link")[1]).toHaveAttribute("href", "https://www.google.com/maps/@50.4,30.4,3a");
-  expect(within(preview).getAllByRole("link")[1]).toHaveAttribute("target", "_blank");
+  const formatted = await screen.findByLabelText("Formatted notes");
+  expect(within(formatted).getAllByRole("link")[1]).toHaveAttribute("href", "https://www.google.com/maps/@50.4,30.4,3a");
+  expect(within(formatted).getAllByRole("link")[1]).toHaveAttribute("target", "_blank");
+  // Only one view at a time: the formatted note, no text box.
+  expect(within(screen.getByRole("tabpanel", {name:"Notes"})).queryByRole("textbox")).toBeNull();
 });
 
 test("media notes are edited and saved from the Notes tab after metadata", async () => {
@@ -2384,6 +2386,8 @@ test("media notes are edited and saved from the Notes tab after metadata", async
   const notesTab = screen.getByRole("tab", {name:"Notes"});
   expect(metadataTab.compareDocumentPosition(notesTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   fireEvent.click(notesTab);
+  // A note opens formatted; Edit switches to the text box.
+  fireEvent.click(within(screen.getByRole("tabpanel", {name:"Notes"})).getByRole("button", {name:"Edit"}));
   const textarea = within(screen.getByRole("tabpanel", {name:"Notes"})).getByRole("textbox");
   expect(textarea).toHaveValue("existing note");
   expect(screen.getByRole("button", {name:"Save"})).toBeDisabled();
@@ -2403,11 +2407,11 @@ test("selected media info tab is remembered when navigating to adjacent items", 
   render(<MemoryRouter initialEntries={["/library/1/view/20?item=100"]}><App/></MemoryRouter>);
   fireEvent.click(await screen.findByRole("button", {name:"Show info panel"}));
   fireEvent.click(screen.getByRole("tab", {name:"Notes"}));
-  expect(within(screen.getByRole("tabpanel", {name:"Notes"})).getByRole("textbox")).toHaveValue("note one");
+  expect(within(screen.getByRole("tabpanel", {name:"Notes"})).getByLabelText("Formatted notes")).toHaveTextContent("note one");
   fireEvent.click(screen.getByRole("button", {name:"Next media"}));
   expect(await screen.findByRole("img", {name:"two.jpg"})).toBeInTheDocument();
   expect(screen.getByRole("tab", {name:"Notes"})).toHaveAttribute("aria-selected", "true");
-  expect(within(screen.getByRole("tabpanel", {name:"Notes"})).getByRole("textbox")).toHaveValue("note two");
+  expect(within(screen.getByRole("tabpanel", {name:"Notes"})).getByLabelText("Formatted notes")).toHaveTextContent("note two");
   fireEvent.click(screen.getByRole("button", {name:"Previous media"}));
   expect(await screen.findByRole("img", {name:"one.jpg"})).toBeInTheDocument();
   expect(screen.getByRole("tab", {name:"Notes"})).toHaveAttribute("aria-selected", "true");

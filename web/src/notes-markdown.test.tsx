@@ -1,6 +1,7 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { expect, test } from "vitest";
-import { linkLabel, NotesMarkdown } from "./notes-markdown";
+import { applyMarkdown, linkLabel, NotesEditor, NotesMarkdown } from "./notes-markdown";
 
 function html(text:string) {
   return render(<NotesMarkdown text={text}/>).container.firstElementChild as HTMLElement;
@@ -41,4 +42,49 @@ test("unsafe link targets and raw HTML stay plain text", () => {
   expect(root.querySelector("img")).toBeNull();
   expect(root.textContent).toContain("<img src=x onerror=alert(1)>");
   expect(root).toHaveAttribute("translate", "no");
+});
+
+test("toolbar actions write Markdown around the selection or insert a selected placeholder", () => {
+  expect(applyMarkdown("make this bold", 5, 9, "bold")).toEqual({value:"make **this** bold", start:7, end:11});
+  expect(applyMarkdown("ab", 1, 1, "italic")).toEqual({value:"a*italic text*b", start:2, end:13});
+  expect(applyMarkdown("x", 1, 1, "code").value).toBe("x`code`");
+  const link = applyMarkdown("see https://a.b/c now", 4, 17, "link");
+  expect(link.value).toBe("see [link](https://a.b/c) now");
+  expect(link.value.slice(link.start, link.end)).toBe("link");
+  const named = applyMarkdown("the park", 4, 8, "link");
+  expect(named.value).toBe("the [park](https://)");
+  expect(named.value.slice(named.start, named.end)).toBe("https://");
+  expect(applyMarkdown("one\ntwo\nthree", 0, 7, "list").value).toBe("- one\n- two\nthree");
+  expect(applyMarkdown("- one\ntwo", 0, 9, "list").value).toBe("- one\n- two");
+  expect(applyMarkdown("intro\ntitle", 8, 8, "heading").value).toBe("intro\n## title");
+});
+
+test("the notes editor shows one view at a time and remembers Plain or Markdown", () => {
+  localStorage.removeItem("media-library-notes-mode");
+  function Harness({initial}:{initial:string}) {
+    const [value, setValue] = useState(initial);
+    return <NotesEditor value={value} onChange={setValue}/>;
+  }
+  const {unmount} = render(<Harness initial="**hi** https://a.b"/>);
+  // Markdown mode opens formatted when there is a note.
+  expect(screen.getByLabelText("Formatted notes").querySelector("strong")?.textContent).toBe("hi");
+  expect(screen.queryByRole("textbox")).toBeNull();
+  fireEvent.click(screen.getByRole("button", {name:"Edit"}));
+  const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(screen.queryByLabelText("Formatted notes")).toBeNull();
+  box.setSelectionRange(0, 0);
+  fireEvent.click(screen.getByRole("button", {name:"Heading"}));
+  expect(box.value).toBe("## **hi** https://a.b");
+  fireEvent.click(screen.getByRole("button", {name:"View"}));
+  expect(screen.getByLabelText("Formatted notes").querySelector(".notes-heading")).not.toBeNull();
+  // Plain: just the text box, no toolbar, remembered for next time.
+  fireEvent.click(screen.getByRole("button", {name:"Plain"}));
+  expect(screen.getByRole("textbox")).toHaveValue("## **hi** https://a.b");
+  expect(screen.queryByRole("toolbar")).toBeNull();
+  expect(screen.queryByLabelText("Formatted notes")).toBeNull();
+  unmount();
+  render(<Harness initial="note"/>);
+  expect(screen.getByRole("button", {name:"Plain"})).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("textbox")).toHaveValue("note");
+  localStorage.removeItem("media-library-notes-mode");
 });
